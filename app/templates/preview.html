@@ -1,0 +1,16 @@
+<div class="preview">
+  <h2>Update {{ cs.container.name }} to {{ tag }}</h2>
+  {% if refused %}
+  <p class="notice notice-error">{{ refused }}</p>
+  {% else %}
+  <p>This changes one line in <code>{{ change.path }}</code> (a backup is kept), then pulls and restarts the service. If it doesn't become healthy, the change is rolled back.</p>
+  <pre class="diff">{% for line in change.diff.splitlines() %}<span class="{% if line.startswith('+') and not line.startswith('+++') %}add{% elif line.startswith('-') and not line.startswith('---') %}del{% endif %}">{{ line }}</span>
+{% endfor %}</pre>
+  <form method="post" action="/containers/{{ cs.container.id }}/version">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="tag" value="{{ tag }}">
+    <input type="hidden" name="sha" value="{{ change.file_sha256 }}">
+    <button type="submit" class="primary">Update to {{ tag }}</button>
+  </form>
+  {% endif %}
+</div>

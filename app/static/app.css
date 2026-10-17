@@ -1,0 +1,75 @@
+:root {
+  --bg: #f6f7f9; --fg: #1d2330; --muted: #5d6675; --line: #dde1e7; --card: #fff;
+  --accent: #1f5fbf; --ok: #1e7a3c; --warn: #9a5b00; --err: #b3261e;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; word-break: break-all; }
+h1 { font-size: 1.4rem; }
+.hidden { display: none !important; }
+.meta { color: var(--muted); font-size: 0.9em; }
+
+.site-header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+.brand { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.server { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+.header-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.inline { display: inline; margin: 0; }
+
+button, .button { display: inline-block; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 6px;
+  background: var(--card); color: var(--accent); font: inherit; cursor: pointer; text-decoration: none; }
+button.primary { background: var(--accent); color: #fff; }
+button.secondary { border-color: var(--line); color: var(--fg); }
+.link-button { border: 0; padding: 0; background: none; color: var(--accent); text-decoration: underline; }
+.actions form { display: inline; }
+.actions button, .actions .button { margin: 2px 4px 2px 0; }
+
+.notice { padding: 10px 12px; border-radius: 6px; background: #e8f0fc; border: 1px solid #c4d6f3; }
+.notice-error { background: #fdecea; border-color: #f2c4bf; }
+.notice-ok { background: #e7f5ec; border-color: #bfe3cb; }
+
+.summary { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 0 0 16px; }
+.summary li { flex: 1 1 140px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.summary strong { display: block; font-size: 1.4rem; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 4px; font-size: 1.1rem; }
+
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.85em; font-weight: 600;
+  border: 1px solid currentColor; }
+.badge-up_to_date, .badge-ok, .badge-succeeded { color: var(--ok); }
+.badge-newer_build, .badge-pulled_not_recreated, .badge-update, .badge-running { color: var(--accent); }
+.badge-major { color: var(--warn); font-weight: 500; border-radius: 6px; }
+.badge-error, .badge-failed { color: var(--err); }
+.badge-not_checkable, .badge-muted { color: var(--muted); }
+
+.filter { display: inline-flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+table.data { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); }
+.data th, .data td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.data thead th { font-size: 0.85em; color: var(--muted); }
+.data th.group { background: #eef1f5; font-size: 0.95em; }
+.only-updates tr[data-has-update="0"], .only-updates tbody[data-has-update="0"] { display: none; }
+
+pre.log, pre.diff { background: #111720; color: #e6e9ef; padding: 12px; border-radius: 6px; overflow-x: auto;
+  white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; }
+pre.log { min-height: 200px; max-height: 70vh; overflow-y: auto; }
+.diff .add { color: #7ee2a0; }
+.diff .del { color: #ff9b94; }
+
+dialog { width: min(720px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+dialog h2 { margin-top: 0; font-size: 1.1rem; }
+
+@media (max-width: 700px) {
+  main { padding: 12px; }
+  table.data, .data thead, .data tbody, .data tr, .data th, .data td { display: block; }
+  table.data { border: 0; background: none; }
+  .data thead { display: none; }
+  .data tr { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; padding: 6px 0; }
+  .data tr.group-row { background: none; border: 0; padding: 0; margin: 16px 0 6px; }
+  .data th.group { background: none; padding: 0; font-size: 1rem; border: 0; }
+  .data td { border: 0; padding: 4px 12px; }
+  .data td[data-label]::before { content: attr(data-label); display: block; font-size: 0.8em; color: var(--muted); }
+}

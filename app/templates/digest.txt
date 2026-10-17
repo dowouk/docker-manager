@@ -1,0 +1,11 @@
+{{ server_name }}: {{ headline }}
+Last checked {{ checked_at }}
+{% for section in sections %}
+
+{{ section.heading }}
+{% for row in section.rows %}
+- {{ row.name }}{% if row.image %} ({{ row.image }}){% endif %}: {{ row.change }}
+{% endfor %}
+{% endfor %}
+
+Dashboard: {{ public_url }}

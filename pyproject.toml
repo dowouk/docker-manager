@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docker-manager"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.143.*",
+    "uvicorn[standard]==0.54.*",
+    "jinja2==3.1.*",
+    "httpx==0.28.*",
+    "authlib==1.9.*",
+    "joserfc==1.7.*",
+    "itsdangerous==2.2.*",
+    "docker==7.2.*",
+    "apscheduler==3.11.*",
+    "azure-communication-email==1.1.*",
+    "pydantic-settings==2.16.*",
+    "python-multipart==0.0.*",
+]
+
+[project.urls]
+Repository = "https://github.com/dowouk/docker-manager"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.*",
+    "pytest-asyncio==1.4.*",
+    "respx==0.23.*",
+    "pyyaml==6.0.*",  # tests parse the example compose files
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["templates/*", "static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The httpx module is deprecated; please use httpx2 instead.:authlib.deprecate.AuthlibDeprecationWarning",
+]

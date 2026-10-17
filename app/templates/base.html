@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Updates{% endblock %} – {{ server_name }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <a href="/" class="server">{{ server_name }}</a>
+      {% block header_meta %}{% endblock %}
+    </div>
+    <nav class="header-actions">
+      {% block header_actions %}{% endblock %}
+      <a href="/history">History</a>
+      <span class="user" title="{{ user.email }}">{{ user.name }}</span>
+      <form method="post" action="/auth/logout" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit" class="link-button">Sign out</button>
+      </form>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

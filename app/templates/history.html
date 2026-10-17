@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<h1>Update history</h1>
+{% if jobs %}
+<table class="data">
+  <thead><tr><th>When</th><th>Who</th><th>What</th><th>Result</th><th>Log</th></tr></thead>
+  <tbody>
+  {% for job in jobs %}
+    <tr>
+      <td data-label="When">{{ job.started_at | uk_date }}</td>
+      <td data-label="Who">{{ job.user }}</td>
+      <td data-label="What">{{ JOB_KIND_LABELS.get(job.kind, job.kind) }} – {{ job.target }}</td>
+      <td data-label="Result"><span class="badge badge-{{ job.status }}">{{ JOB_STATUS_LABELS.get(job.status, job.status) }}</span></td>
+      <td data-label="Log"><a href="/jobs/{{ job.id }}">View log</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No updates have been run yet.</p>
+{% endif %}
+<p><a href="/">Back to dashboard</a></p>
+{% endblock %}

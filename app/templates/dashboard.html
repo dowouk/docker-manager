@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block header_meta %}
+<span class="meta">Last checked {{ result.checked_at | uk_date if result else "never" }}</span>
+{% endblock %}
+{% block header_actions %}
+<form method="post" action="/check" class="inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <button type="submit">Check now</button>
+</form>
+{% if digest_enabled %}
+<form method="post" action="/digest/send" class="inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <button type="submit">Send digest now</button>
+</form>
+{% endif %}
+{% endblock %}
+{% block content %}
+{% if flash %}{% set text, level = flash %}{% if level == "ok" %}<p class="notice notice-ok" role="status">{{ text }}</p>{% else %}<p class="notice notice-error" role="alert">{{ text }}</p>{% endif %}{% endif %}
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+
+{% if summary %}
+<ul class="summary">
+  <li><strong>{{ summary.up_to_date }}</strong> up to date</li>
+  <li><strong>{{ summary.updates }}</strong> updates available</li>
+  <li><strong>{{ summary.major }}</strong> major available</li>
+  <li><strong>{{ summary.errors }}</strong> errors</li>
+</ul>
+{% endif %}
+
+{% if result and result.mailcow %}
+{% set mc = result.mailcow %}
+<section class="card mailcow">
+  <h2>Mailcow</h2>
+  <p>
+    {% if mc.error %}<span class="badge badge-error">Error</span> {{ mc.error }}
+    {% elif mc.update_available %}<span class="badge badge-update">Update available</span>
+    {% elif mc.update_available is sameas false %}<span class="badge badge-ok">Up to date</span>
+    {% else %}<span class="badge badge-muted">Unknown</span>{% endif %}
+  </p>
+  <p class="meta">Installed: {{ mc.current_version or "unknown" }} · Latest release: {{ mc.latest_release or "unknown" }}</p>
+  {% if mc.update_available %}
+  <form method="post" action="/mailcow/update">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button type="submit" class="primary">Update Mailcow</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if groups %}
+<label class="filter"><input type="checkbox" id="only-updates"> Show only updates</label>
+<table class="data containers">
+  <thead>
+    <tr><th>Container</th><th>Service</th><th>Image</th><th>Digest</th><th>Status</th><th>Newest versions</th><th>Actions</th></tr>
+  </thead>
+  {% for project, rows in groups %}
+  {% set ns = namespace(any=false) %}{% for cs in rows %}{% if has_update(cs) %}{% set ns.any = true %}{% endif %}{% endfor %}
+  <tbody data-has-update="{{ 1 if ns.any else 0 }}">
+    <tr class="group-row"><th colspan="7" class="group">{{ project }}</th></tr>
+    {% for cs in rows %}
+    {% set c = cs.container %}
+    <tr data-has-update="{{ 1 if has_update(cs) else 0 }}">
+      <td data-label="Container"><strong>{{ c.name }}</strong>{% if c.is_self %} <span class="badge badge-muted">This dashboard</span>{% endif %}{% if c.state != "running" %} <span class="meta">({{ c.state }})</span>{% endif %}</td>
+      <td data-label="Service">{{ c.service or "–" }}</td>
+      <td data-label="Image"><code>{{ c.image_ref }}</code></td>
+      <td data-label="Digest"><code>{{ short_digest(cs) }}</code></td>
+      <td data-label="Status">
+        <span class="badge badge-{{ cs.status.value }}">{{ STATUS_LABELS[cs.status] }}</span>
+        {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
+      </td>
+      <td data-label="Newest versions">
+        {% if cs.minor_update %}<div><code>{{ cs.minor_update }}</code></div>{% endif %}
+        {% if cs.major_update %}<div><code>{{ cs.major_update }}</code> <span class="badge badge-major">Major version – may need a data migration. Update by hand.</span></div>{% endif %}
+        {% if not cs.minor_update and not cs.major_update %}–{% endif %}
+      </td>
+      <td data-label="Actions" class="actions">
+        {% if not cs.updatable %}
+          <span class="meta">{{ cs.not_updatable_reason }}</span>
+        {% elif c.is_self %}
+          {% if cs.status in BUILD_UPDATE %}
+          <form method="post" action="/self/update">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit">Update dashboard</button>
+          </form>
+          {% endif %}
+        {% else %}
+          {% if cs.status in BUILD_UPDATE %}
+          <form method="post" action="/containers/{{ c.id }}/update">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" name="mode" value="build">Update</button>
+            {% if offers_project(cs) %}<button type="submit" name="mode" value="project" class="secondary">Update whole project</button>{% endif %}
+          </form>
+          {% if c.state == "exited" %}<div class="meta">Stopped – updating will start it</div>{% endif %}
+          {% endif %}
+          {% if cs.minor_update %}
+          <a class="button preview-link" href="/containers/{{ c.id }}/version-preview?tag={{ cs.minor_update | urlencode }}">Update to {{ cs.minor_update }}</a>
+          {% endif %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  {% endfor %}
+</table>
+<p class="empty-filter hidden" id="no-updates">Everything is up to date.</p>
+{% elif result %}
+<p>No containers found.</p>
+{% endif %}
+
+<dialog id="preview-dialog">
+  <div id="preview-body"></div>
+  <form method="dialog"><button type="submit" class="secondary">Cancel</button></form>
+</dialog>
+{% endblock %}

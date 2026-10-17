@@ -1,0 +1,10 @@
+# Add this to the Caddyfile your existing Caddy uses, then reload Caddy.
+# Change the host name to this server's dashboard address. Caddy gets the
+# HTTPS certificate automatically and sends X-Forwarded-* headers by default.
+#
+# This only works if Caddy and the dashboard share a Docker network
+# (`proxy` in compose.yml) – Caddy finds the dashboard by its container name.
+
+updates.example.com {
+	reverse_proxy docker-manager:8000
+}

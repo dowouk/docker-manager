@@ -1,0 +1,96 @@
+# Docker Manager – server behind Traefik
+#
+# Put this file at /docker/docker-manager/compose.yml, with a filled-in
+# .env next to it (copy examples/.env.example), then run: docker compose up -d
+#
+# Do not set `hostname:` – the dashboard uses the container ID that Docker puts
+# in HOSTNAME to recognise itself (for its own update button).
+# There is no `ports:` section on purpose: the dashboard is only reachable
+# through the reverse proxy, which is what makes trusting its
+# X-Forwarded-* headers safe.
+#
+# The labels below tell your existing Traefik how to reach the dashboard.
+#
+# If this server also runs Mailcow, uncomment the three lines marked [Mailcow]
+# (and set MAILCOW_DIR if Mailcow isn't in /opt/mailcow-dockerized). They let
+# the dashboard run Mailcow's own update.sh directly on the server, exactly as
+# if you had logged in as root and run it by hand. That is a lot of power – but
+# the Docker socket mounted below already gives root-level control of the
+# server, so these options remove friction rather than adding a new kind of
+# risk. The protection is the Entra sign-in (see Security in the README).
+
+services:
+  docker-manager:
+    image: ghcr.io/dowouk/docker-manager:latest
+    container_name: docker-manager
+    restart: unless-stopped
+    # Mailcow only: see the host processes and run update.sh on the server itself.
+    # [Mailcow] pid: host
+    # [Mailcow] privileged: true
+    environment:
+      # ---- Required -------------------------------------------------------
+      # Shown in the page header and the weekly email.
+      SERVER_NAME: "server1"
+      # The address you open in the browser – must match the redirect URI in
+      # the Entra app registration (https://<this host>/auth/callback).
+      PUBLIC_URL: "https://updates.example.com"
+      # Entra app registration → Overview. Use the Directory (tenant) ID – the
+      # long code, not your domain name.
+      AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000"
+      # Entra app registration → Overview → Application (client) ID.
+      AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000000"
+      # Secrets come from the .env file next to this one (see ../.env.example).
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+      SESSION_SECRET: "${SESSION_SECRET}"
+
+      # ---- Optional extra restrictions (on top of "Assignment required") --
+      # Sign-in names (UPNs), comma-separated – not mail addresses, if they differ.
+      # ALLOWED_EMAILS: "you@yourcompany.onmicrosoft.com"
+      # Object ID of an Entra group; needs a groups claim (see README).
+      # ALLOWED_GROUP_ID: "00000000-0000-0000-0000-000000000000"
+
+      # ---- Weekly email (optional – leave ACS_CONNECTION_STRING empty to turn it off)
+      ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"
+      DIGEST_FROM: "DoNotReply@example.com"
+      DIGEST_TO: "you@example.com"
+      # DIGEST_SCHEDULE: "0 8 * * MON"   # minute hour day month weekday (MON, MON-FRI, SAT,SUN)
+      # DIGEST_WHEN_NONE: "true"         # also email when everything is up to date
+
+      # ---- Other optional settings (defaults shown) -----------------------
+      # CHECK_INTERVAL_HOURS: "6"
+      # COMPOSE_ROOT: "/docker"
+      # TZ: "Europe/London"
+      # MAILCOW_DIR: "/opt/mailcow-dockerized"   # where Mailcow is installed
+    volumes:
+      # Lets the dashboard see and update containers. This is root-level
+      # access to the server – the Entra sign-in is what protects it.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Your compose projects, mounted at the SAME path as on the server.
+      - /docker:/docker
+      # The dashboard's own database and compose-file backups.
+      - dashboard-data:/data
+      # Mailcow only: the Mailcow folder, at the same path as on the server.
+      # [Mailcow] - /opt/mailcow-dockerized:/opt/mailcow-dockerized
+    labels:
+      - "traefik.enable=true"
+      # Change the host name to this server's dashboard address.
+      - "traefik.http.routers.docker-manager.rule=Host(`updates.example.com`)"
+      # Your HTTPS entry point name (often `websecure` or `https`).
+      - "traefik.http.routers.docker-manager.entrypoints=websecure"
+      - "traefik.http.routers.docker-manager.tls=true"
+      # The certificate resolver name from your Traefik config (often `letsencrypt`).
+      - "traefik.http.routers.docker-manager.tls.certresolver=letsencrypt"
+      - "traefik.http.services.docker-manager.loadbalancer.server.port=8000"
+      # Must match the network name below.
+      - "traefik.docker.network=proxy"
+    networks:
+      - proxy
+
+networks:
+  # The Docker network your reverse proxy is on. Change `proxy` to its real
+  # name (`docker network ls` lists them). It must already exist.
+  proxy:
+    external: true
+
+volumes:
+  dashboard-data:
