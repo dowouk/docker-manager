@@ -79,7 +79,9 @@ def test_errors_listed_and_escaped(settings):
     assert "Couldn&#39;t check" in html and "Couldn't check" in plain
     assert "&lt;b&gt;boom&lt;/b&gt;" in html and "<b>boom</b>" not in html
     assert "<b>boom</b>" in plain
-    assert "Pinned by digest" in html and "update.sh failed" in plain
+    assert "update.sh failed" in plain
+    # a pinned or local image isn't something that went wrong
+    assert "Pinned by digest" not in html and "pin" not in plain.split("Couldn't check", 1)[1]
 
 
 def test_none_when_nothing_and_disabled(settings):

@@ -1,12 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Job {{ job.id }}{% endblock %}
 {% block content %}
-<h1>{{ JOB_KIND_LABELS.get(job.kind, job.kind) }} – {{ job.target }}</h1>
-<p class="meta">Started {{ job.started_at | uk_date }} by {{ job.user }}</p>
+<section class="intro">
+  <div>
+    <h1>{{ JOB_KIND_LABELS.get(job.kind, job.kind) }} – {{ job.target }}</h1>
+    <p class="lede">Started {{ job.started_at | uk_date }} by {{ job.user }}</p>
+  </div>
+</section>
 <p id="job-result" class="notice{% if job.status == 'running' %} hidden{% elif job.status == 'failed' %} notice-error{% else %} notice-ok{% endif %}" role="status">
   {% if job.status == 'succeeded' %}Update succeeded{% elif job.status == 'failed' %}Update failed – see the log{% endif %}
 </p>
 <pre id="job-log" class="log" data-job-id="{{ job.id }}" data-status="{{ job.status }}">{{ job.log }}</pre>
 {% if job.status == 'running' %}<noscript><p>The update is still running – reload this page to see the latest log.</p></noscript>{% endif %}
-<p id="job-back" class="{% if job.status == 'running' %}hidden{% endif %}"><a href="/">Back to dashboard</a></p>
+<p id="job-back" class="back{% if job.status == 'running' %} hidden{% endif %}"><a class="button button-quiet" href="/">Back to dashboard</a></p>
 {% endblock %}

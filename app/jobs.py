@@ -4,6 +4,7 @@ import os
 import signal
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from app.logfilter import is_pull_progress
 from app.store import Store
 
 BUSY_MESSAGE = "Another update is running – try again when it finishes"
@@ -68,7 +69,8 @@ class JobContext:
             async for line in proc.stdout:
                 text = line.decode(errors="replace")
                 self.last_output += text
-                self.log(text)
+                if not is_pull_progress(text):
+                    self.log(text)
 
         reader = asyncio.ensure_future(pump())
 

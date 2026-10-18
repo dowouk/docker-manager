@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
+<section class="intro">
+  <h1>{{ title }}</h1>
+</section>
 <p class="notice">{{ message }}</p>
-{% if job_id %}<p><a href="/jobs/{{ job_id }}">View the log</a></p>{% endif %}
-<p><a href="/">Back to dashboard</a></p>
+<p class="back">
+  {% if job_id %}<a class="button button-quiet" href="/jobs/{{ job_id }}">View the log</a>{% endif %}
+  <a class="button button-quiet" href="/">Back to dashboard</a>
+</p>
 {% endblock %}

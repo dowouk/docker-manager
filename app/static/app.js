@@ -8,19 +8,83 @@
     try { window.localStorage.setItem(key, value); } catch (e) { /* storage unavailable */ }
   }
 
-  // "Show only updates" filter, remembered per browser.
-  function initFilter() {
-    var box = document.getElementById("only-updates");
-    if (!box) return;
-    var empty = document.getElementById("no-updates");
-    var anyUpdates = document.querySelector('tbody[data-has-update="1"]') !== null;
-    function apply() {
-      document.body.classList.toggle("only-updates", box.checked);
-      if (empty) empty.classList.toggle("hidden", !(box.checked && !anyUpdates));
-      storageSet("onlyUpdates", box.checked ? "1" : "0");
+  // Light/dark theme. With nothing saved the page follows the system setting;
+  // the toggle saves an explicit choice (applied early by the inline script in <head>).
+  function initTheme() {
+    var button = document.getElementById("theme-toggle");
+    if (!button) return;
+    var root = document.documentElement;
+    var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+    function current() {
+      var chosen = root.getAttribute("data-theme");
+      if (chosen === "light" || chosen === "dark") return chosen;
+      return media && media.matches ? "dark" : "light";
     }
-    box.checked = storageGet("onlyUpdates") === "1";
-    box.addEventListener("change", apply);
+    function render() {
+      var theme = current();
+      button.setAttribute("data-current", theme);
+      button.setAttribute("aria-label", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
+    }
+    button.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      storageSet("theme", next);
+      render();
+    });
+    if (media && media.addEventListener) media.addEventListener("change", render);
+    button.hidden = false;
+    render();
+  }
+
+  // Close the account menu on Escape or a click elsewhere.
+  function initAccountMenu() {
+    var menu = document.querySelector("details.account");
+    if (!menu) return;
+    document.addEventListener("click", function (event) {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
+    menu.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && menu.open) {
+        menu.open = false;
+        menu.querySelector("summary").focus();
+      }
+    });
+  }
+
+  // Filter buttons and search over the container table. The filter is remembered per browser.
+  function initFilter() {
+    var tools = document.getElementById("table-tools");
+    if (!tools) return;
+    var buttons = tools.querySelectorAll("button[data-filter]");
+    var search = document.getElementById("container-search");
+    var rows = document.querySelectorAll("table.containers tbody tr[data-state]");
+    var empty = document.getElementById("no-matches");
+    var filter = storageGet("containerFilter") || "all";
+    function apply() {
+      var query = (search.value || "").trim().toLowerCase();
+      var shown = 0;
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var visible = (filter === "all" || row.getAttribute("data-state") === filter) &&
+          (!query || (row.getAttribute("data-search") || "").indexOf(query) !== -1);
+        row.hidden = !visible;
+        if (visible) shown++;
+      }
+      for (var j = 0; j < buttons.length; j++) {
+        buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-filter") === filter ? "true" : "false");
+      }
+      if (empty) empty.hidden = shown !== 0;
+    }
+    for (var k = 0; k < buttons.length; k++) {
+      buttons[k].addEventListener("click", function () {
+        filter = this.getAttribute("data-filter");
+        storageSet("containerFilter", filter);
+        apply();
+      });
+    }
+    if (!tools.querySelector('button[data-filter="' + filter + '"]')) filter = "all";
+    search.addEventListener("input", apply);
+    tools.hidden = false;
     apply();
   }
 
@@ -81,6 +145,8 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    initTheme();
+    initAccountMenu();
     initFilter();
     initPreview();
     initJobLog();

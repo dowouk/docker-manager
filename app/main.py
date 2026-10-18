@@ -28,6 +28,7 @@ from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.registry import RegistryClient
 from app.store import Store
+from app import view
 from app.updaters import (
     UpdateFailed,
     follow_self_update,
@@ -58,10 +59,9 @@ STATUS_LABELS = {
     Status.UP_TO_DATE: "Up to date",
     Status.NEWER_BUILD: "Newer build available",
     Status.PULLED_NOT_RECREATED: "Pulled – not recreated",
-    Status.NOT_CHECKABLE: "Not checkable",
+    Status.NOT_CHECKABLE: "Can't check",
     Status.ERROR: "Error",
 }
-_BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
 JOB_STATUS_LABELS = {"running": "Running", "succeeded": "Succeeded", "failed": "Failed"}
 JOB_KIND_LABELS = {
     "build": "Image update",
@@ -79,21 +79,6 @@ def _short_digest(cs: ContainerStatus) -> str:
     if not digests:
         return "–"
     return digests[0].rsplit("@", 1)[-1].removeprefix("sha256:")[:12]
-
-
-def _group(result: CheckResult) -> list[tuple[str, list[ContainerStatus]]]:
-    groups: dict[str, list[ContainerStatus]] = {}
-    for cs in result.containers:
-        groups.setdefault(cs.container.project or "", []).append(cs)
-    named = sorted(k for k in groups if k)
-    ordered = [(k, groups[k]) for k in named]
-    if "" in groups:
-        ordered.append(("Other", groups[""]))
-    return [(name, sorted(rows, key=lambda cs: cs.container.name)) for name, rows in ordered]
-
-
-def _has_update(cs: ContainerStatus) -> bool:
-    return cs.status in _BUILD_UPDATE or bool(cs.minor_update or cs.major_update)
 
 
 async def run_check(app: FastAPI) -> CheckResult:
@@ -241,9 +226,12 @@ def create_app(
         STATUS_LABELS=STATUS_LABELS,
         JOB_STATUS_LABELS=JOB_STATUS_LABELS,
         JOB_KIND_LABELS=JOB_KIND_LABELS,
-        BUILD_UPDATE=_BUILD_UPDATE,
+        BUILD_UPDATE=view.BUILD_UPDATE,
         short_digest=_short_digest,
-        has_update=_has_update,
+        row_state=view.row_state,
+        mailcow_state=view.mailcow_state,
+        initials=view.initials,
+        user_initials=view.user_initials,
     )
     templates = Jinja2Templates(env=env)
 
@@ -290,8 +278,11 @@ def create_app(
         return render(
             request, "dashboard.html", user,
             result=result,
-            groups=_group(result) if result else [],
-            summary=result.summary() if result else None,
+            rows=view.by_urgency(result) if result else [],
+            overview=view.overview(result) if result else None,
+            attention=view.attention(result) if result else [],
+            greeting=view.greeting(datetime.now(tz)),
+            first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
             offers_project=functools.partial(_offers_project, result),
             digest_enabled=settings.digest_enabled,

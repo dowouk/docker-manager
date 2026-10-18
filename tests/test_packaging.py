@@ -30,7 +30,9 @@ def test_examples_set_every_required_setting_and_mount():
             assert f"{var}:" in text, f"{name} example is missing {var}"
         assert "/var/run/docker.sock:/var/run/docker.sock" in text
         assert "/docker:/docker" in text
-        assert "dashboard-data:/data" in text
+        # data lives next to the compose file, not in a named volume
+        assert "- ./data:/data" in text
+        assert "dashboard-data" not in text
         assert "restart: unless-stopped" in text
         # Docker sets HOSTNAME to the container ID; the dashboard uses it to find itself
         keys = [line.split(":", 1)[0].strip() for line in text.splitlines()
@@ -60,10 +62,18 @@ def test_examples_carry_the_mailcow_lines_commented_out():
         assert "/opt/mailcow-dockerized:/opt/mailcow-dockerized" in service["volumes"]
 
 
-def test_env_example_covers_secrets_used_by_examples():
+ENV_FILE_VARS = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "SESSION_SECRET",
+                 "ACS_CONNECTION_STRING", "DIGEST_FROM", "DIGEST_TO")
+
+
+def test_env_example_covers_every_value_the_examples_read_from_it():
     env = (ROOT / "examples" / ".env.example").read_text(encoding="utf-8")
-    for var in ("AZURE_CLIENT_SECRET", "SESSION_SECRET", "ACS_CONNECTION_STRING"):
-        assert f"{var}=" in env
+    for var in ENV_FILE_VARS:
+        assert f"\n{var}=" in env, f".env.example is missing {var}"
+    for name in EXAMPLES:
+        text = (ROOT / "examples" / name / "compose.yml").read_text(encoding="utf-8")
+        for var in ENV_FILE_VARS:
+            assert f'{var}: "${{{var}}}"' in text, f"{name} example should read {var} from .env"
 
 
 def test_readme_documents_every_setting():

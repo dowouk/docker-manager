@@ -145,7 +145,12 @@ def test_all_routes_guarded(settings, tmp_path, seeded):
     assert_all_routes_guarded(make_app(settings, tmp_path, seeded))
 
 
-def test_dashboard_grouped_with_badges(client_for, seeded):
+def _table(html: str) -> str:
+    """Just the "All containers" table – update buttons also appear on the attention cards."""
+    return html[html.index('<table class="data containers">'):html.index("</table>")]
+
+
+def test_dashboard_rows_by_urgency_with_badges(client_for, seeded):
     c, _ = client_for(result=seeded)
     r = c.get("/")
     assert r.status_code == 200
@@ -153,9 +158,13 @@ def test_dashboard_grouped_with_badges(client_for, seeded):
     assert "test-server" in html
     assert "17 Oct 2026, 08:00" in html
     assert "Test User" in html
-    # groups: alphabetical, "Other" last
-    groups = re.findall(r'<th[^>]*class="group"[^>]*>([^<]+)</th>', html)
-    assert groups == ["dash", "site", "Other"]
+    # one flat table: Mailcow first, then updates by name; the stack is shown on each row
+    names = re.findall(r'<div class="who-name">([^<]+?)\s*(?:<|$)', _table(html))
+    assert names == ["Mailcow", "dash", "db", "lone", "web"]
+    assert "stack · site" in html and "no stack" in html
+    # stat cards and attention cards agree with the rows
+    assert "4 need your attention" not in html and "5 need your attention" in html
+    assert html.count('class="card attention-card"') == 5
     assert "Newer build available" in html
     assert "Up to date" in html
     assert "Major version – may need a data migration. Update by hand." in html
@@ -417,7 +426,7 @@ def test_dashboard_runs_check_when_none_stored(client_for, tmp_path):
     r = c.get("/")
     assert r.status_code == 200
     assert "orphan" in r.text
-    assert "Not checkable" in r.text
+    assert "Can&#39;t check" in r.text
     assert app.state.store.latest_check() is not None
 
 
@@ -674,7 +683,7 @@ def test_whole_project_only_offered_when_image_shared(client_for, tmp_path):
     result = _project_result(tmp_path)
     c, _ = client_for(result=result, runner=runner)
     html = c.get("/").text
-    assert html.count("Update whole project") == 2  # a and b share redis:7; solo doesn't
+    assert _table(html).count("Update whole project") == 2  # a and b share redis:7; solo doesn't
     a_id, solo_id = result.containers[0].container.id, result.containers[2].container.id
     r = c.post(f"/containers/{solo_id}/update", data={"mode": "project", "csrf_token": CSRF})
     assert r.status_code == 400

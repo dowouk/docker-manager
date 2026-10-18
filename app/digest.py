@@ -11,7 +11,6 @@ from app.imageref import parse_image_ref
 
 _TEMPLATES = os.path.join(os.path.dirname(__file__), "templates")
 _BUILD = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
-_UNCHECKED = (Status.ERROR, Status.NOT_CHECKABLE)
 _COULDNT_CHECK = "Couldn't check"
 
 
@@ -49,7 +48,9 @@ def _sections(result: CheckResult) -> list[dict]:
             minors.append(_row(cs, f"{tag} → {cs.minor_update}"))
         if cs.major_update:
             majors.append(_row(cs, f"{tag} → {cs.major_update}"))
-        if cs.status in _UNCHECKED:
+        if cs.status == Status.NOT_CHECKABLE:
+            continue  # a local or pinned image: nothing to report
+        if cs.status == Status.ERROR:
             unchecked.append(_row(cs, cs.message or STATUS_TEXT[cs.status]))
         elif cs.message:
             # The digest was checked but the tag listing failed (tags_error).

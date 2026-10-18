@@ -9,7 +9,7 @@ from enum import StrEnum
 from app.config import Settings
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
-from app.registry import RegistryClient
+from app.registry import NotFoundError, RegistryClient
 from app.versions import find_version_updates, parse_version_tag
 
 _MAILCOW_PROJECT = "mailcowdockerized"
@@ -75,7 +75,9 @@ class CheckResult:
         for cs in self.containers:
             if cs.major_update:
                 majors += 1
-            if cs.status in (Status.ERROR, Status.NOT_CHECKABLE):
+            if cs.status == Status.NOT_CHECKABLE:
+                continue  # local or pinned images: neither current nor a problem
+            if cs.status == Status.ERROR:
                 errors += 1
             elif (
                 cs.status in (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
@@ -96,6 +98,7 @@ class CheckResult:
 class _Remote:
     digest: str | None = None
     digest_error: str | None = None
+    not_found: bool = False
     versions: tuple[str | None, str | None] = (None, None)
     tags_error: str | None = None
 
@@ -130,6 +133,7 @@ async def _check_image(image_ref: str, registry: RegistryClient) -> _Remote:
     remote = _Remote()
     if isinstance(results[0], BaseException):
         remote.digest_error = str(results[0]) or type(results[0]).__name__
+        remote.not_found = isinstance(results[0], NotFoundError)
     else:
         remote.digest = results[0]
     if wants_tags:
@@ -155,6 +159,8 @@ def _status_for(c: ContainerInfo, remote: _Remote | None) -> ContainerStatus:
     if not c.running_repo_digests:
         return make(Status.NOT_CHECKABLE, message="Image built locally")
     assert remote is not None
+    if remote.not_found:
+        return make(Status.NOT_CHECKABLE, message=remote.digest_error)
     if remote.digest_error is not None:
         return make(Status.ERROR, message=remote.digest_error)
     running = {_sha(d) for d in c.running_repo_digests}

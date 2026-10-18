@@ -34,12 +34,10 @@ services:
       # The address you open in the browser – must match the redirect URI in
       # the Entra app registration (https://<this host>/auth/callback).
       PUBLIC_URL: "https://updates.example.com"
-      # Entra app registration → Overview. Use the Directory (tenant) ID – the
-      # long code, not your domain name.
-      AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000"
-      # Entra app registration → Overview → Application (client) ID.
-      AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000000"
-      # Secrets come from the .env file next to this one (see ../.env.example).
+      # The Entra app registration and the secrets come from the .env file next
+      # to this one (see ../.env.example).
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
       AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
       SESSION_SECRET: "${SESSION_SECRET}"
 
@@ -49,10 +47,11 @@ services:
       # Object ID of an Entra group; needs a groups claim (see README).
       # ALLOWED_GROUP_ID: "00000000-0000-0000-0000-000000000000"
 
-      # ---- Weekly email (optional – leave ACS_CONNECTION_STRING empty to turn it off)
+      # ---- Weekly email (optional – set in .env; leave ACS_CONNECTION_STRING
+      # empty there to turn it off)
       ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"
-      DIGEST_FROM: "DoNotReply@example.com"
-      DIGEST_TO: "you@example.com"
+      DIGEST_FROM: "${DIGEST_FROM}"
+      DIGEST_TO: "${DIGEST_TO}"
       # DIGEST_SCHEDULE: "0 8 * * MON"   # minute hour day month weekday (MON, MON-FRI, SAT,SUN)
       # DIGEST_WHEN_NONE: "true"         # also email when everything is up to date
 
@@ -67,8 +66,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Your compose projects, mounted at the SAME path as on the server.
       - /docker:/docker
-      # The dashboard's own database and compose-file backups.
-      - dashboard-data:/data
+      # The dashboard's own database and compose-file backups, kept in a
+      # `data` folder next to this file so everything is in one place.
+      - ./data:/data
       # Mailcow only: the Mailcow folder, at the same path as on the server.
       # [Mailcow] - /opt/mailcow-dockerized:/opt/mailcow-dockerized
     networks:
@@ -79,6 +79,3 @@ networks:
   # name (`docker network ls` lists them). It must already exist.
   proxy:
     external: true
-
-volumes:
-  dashboard-data:

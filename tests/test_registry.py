@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.imageref import parse_image_ref
-from app.registry import RateLimitError, RegistryClient, RegistryError
+from app.registry import NotFoundError, RateLimitError, RegistryClient, RegistryError
 
 MANIFEST = "https://registry-1.docker.io/v2/library/nginx/manifests/1.25"
 TOKEN = "https://auth.docker.io/token"
@@ -184,9 +184,27 @@ async def test_double_401_retries_once(respx_mock, http):
         return_value=httpx.Response(401, headers={"WWW-Authenticate": CHALLENGE})
     )
     respx_mock.get(TOKEN).mock(return_value=httpx.Response(200, json={"token": "t"}))
-    with pytest.raises(RegistryError, match="401"):
+    # Docker Hub refuses a valid token like this when the repository doesn't exist
+    with pytest.raises(NotFoundError, match="Not found on Docker Hub"):
         await RegistryClient(http).head_digest(parse_image_ref("nginx:1.25"))
     assert route.call_count == 2
+
+
+async def test_double_401_elsewhere_is_an_auth_error(respx_mock, http):
+    challenge = 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:o/app:pull"'
+    route = respx_mock.head("https://ghcr.io/v2/o/app/manifests/1").mock(
+        return_value=httpx.Response(401, headers={"WWW-Authenticate": challenge}))
+    respx_mock.get("https://ghcr.io/token").mock(return_value=httpx.Response(200, json={"token": "t"}))
+    with pytest.raises(RegistryError, match="401") as exc:
+        await RegistryClient(http).head_digest(parse_image_ref("ghcr.io/o/app:1"))
+    assert not isinstance(exc.value, NotFoundError)
+    assert route.call_count == 2
+
+
+async def test_404_is_not_found(respx_mock, http):
+    respx_mock.head("https://ghcr.io/v2/o/gone/manifests/1").mock(return_value=httpx.Response(404))
+    with pytest.raises(NotFoundError, match="Not found on ghcr.io – a local or private image can't be checked"):
+        await RegistryClient(http).head_digest(parse_image_ref("ghcr.io/o/gone:1"))
 
 
 async def test_token_endpoint_429(respx_mock, http):
@@ -266,3 +284,90 @@ async def test_tag_list_failure_cached_briefly(respx_mock, http):
     with pytest.raises(RegistryError):
         await client.list_tags(ref)
     assert route.call_count == 2
+
+
+# ---- Registries that are fronts for Docker Hub (docker.n8n.io) ----------------------
+
+N8N_MANIFEST = "https://docker.n8n.io/v2/n8nio/n8n/manifests/1.2.3"
+HUB_N8N_MANIFEST = "https://registry-1.docker.io/v2/n8nio/n8n/manifests/1.2.3"
+N8N_CHALLENGE = (
+    'Bearer realm="https://auth.docker.io/token",'
+    'service="registry.docker.io",scope="repository:n8nio/n8n:pull"'
+)
+
+
+def _hub_n8n(respx_mock):
+    def manifest(request):
+        if request.headers.get("Authorization") == "Bearer hub":
+            return httpx.Response(200, headers={"Docker-Content-Digest": "sha256:n8n"})
+        return httpx.Response(401, headers={"WWW-Authenticate": N8N_CHALLENGE})
+
+    return respx_mock.head(HUB_N8N_MANIFEST).mock(side_effect=manifest)
+
+
+async def test_docker_hub_front_is_checked_on_docker_hub(respx_mock, http):
+    front = respx_mock.head(N8N_MANIFEST).mock(
+        return_value=httpx.Response(401, headers={"WWW-Authenticate": N8N_CHALLENGE}))
+    hub = _hub_n8n(respx_mock)
+    token = respx_mock.get(TOKEN).mock(return_value=httpx.Response(200, json={"token": "hub"}))
+    client = RegistryClient(http)
+    ref = parse_image_ref("docker.n8n.io/n8nio/n8n:1.2.3")
+    assert await client.head_digest(ref) == "sha256:n8n"
+    assert front.call_count == 1 and hub.call_count == 2 and token.call_count == 1
+    # remembered: later checks go straight to Docker Hub
+    assert await client.head_digest(ref) == "sha256:n8n"
+    assert front.call_count == 1
+
+
+async def test_docker_hub_front_rate_limit_never_reached(respx_mock, http):
+    """The front's shared quota is used up; the check must not depend on it."""
+    def front(request):
+        if "Authorization" in request.headers:
+            return httpx.Response(429)
+        return httpx.Response(401, headers={"WWW-Authenticate": N8N_CHALLENGE})
+
+    front_route = respx_mock.head(N8N_MANIFEST).mock(side_effect=front)
+    _hub_n8n(respx_mock)
+    respx_mock.get(TOKEN).mock(return_value=httpx.Response(200, json={"token": "hub"}))
+    assert await RegistryClient(http).head_digest(parse_image_ref("docker.n8n.io/n8nio/n8n:1.2.3")) == "sha256:n8n"
+    assert all("Authorization" not in c.request.headers for c in front_route.calls)
+
+
+async def test_docker_hub_front_uses_docker_hub_login(respx_mock, http, tmp_path):
+    auth = base64.b64encode(b"me:pat").decode()
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"auths": {"https://index.docker.io/v1/": {"auth": auth}}}))
+    respx_mock.head(N8N_MANIFEST).mock(
+        return_value=httpx.Response(401, headers={"WWW-Authenticate": N8N_CHALLENGE}))
+    _hub_n8n(respx_mock)
+    token = respx_mock.get(TOKEN).mock(return_value=httpx.Response(200, json={"token": "hub"}))
+    await RegistryClient(http, auth_file=str(cfg)).head_digest(parse_image_ref("docker.n8n.io/n8nio/n8n:1.2.3"))
+    assert token.calls[0].request.headers["Authorization"] == f"Basic {auth}"
+
+
+async def test_docker_hub_front_tags_come_from_docker_hub(respx_mock, http):
+    respx_mock.get("https://docker.n8n.io/v2/n8nio/n8n/tags/list?n=1000").mock(
+        return_value=httpx.Response(401, headers={"WWW-Authenticate": N8N_CHALLENGE}))
+    hub = respx_mock.get(url__startswith="https://hub.docker.com/v2/repositories/n8nio/n8n/tags").mock(
+        return_value=httpx.Response(200, json={"results": [{"name": "1.2.4"}], "next": None}))
+    tags = await RegistryClient(http).list_tags(parse_image_ref("docker.n8n.io/n8nio/n8n:1.2.3"))
+    assert tags == ["1.2.4"] and hub.call_count == 1
+
+
+@pytest.mark.parametrize("challenge", [
+    'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:o/app:pull"',
+    # Docker Hub's service name but someone else's login host: not trusted as Docker Hub
+    'Bearer realm="https://auth.docker.io.evil.example/token",service="registry.docker.io"',
+])
+async def test_other_registries_keep_their_own_login(respx_mock, http, challenge):
+    realm = challenge.split('"')[1]
+
+    def manifest(request):
+        if request.headers.get("Authorization") == "Bearer own":
+            return httpx.Response(200, headers={"Docker-Content-Digest": "sha256:own"})
+        return httpx.Response(401, headers={"WWW-Authenticate": challenge})
+
+    respx_mock.head("https://ghcr.io/v2/o/app/manifests/1").mock(side_effect=manifest)
+    token = respx_mock.get(url__startswith=realm).mock(return_value=httpx.Response(200, json={"token": "own"}))
+    assert await RegistryClient(http).head_digest(parse_image_ref("ghcr.io/o/app:1")) == "sha256:own"
+    assert token.call_count == 1

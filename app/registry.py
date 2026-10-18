@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from app.imageref import ImageRef
+from app.imageref import DOCKER_HUB, ImageRef
 
 MANIFEST_ACCEPT = ", ".join(
     [
@@ -23,6 +23,9 @@ HUB_TAGS_URL = "https://hub.docker.com/v2/repositories/{repo}/tags"
 _HUB_CONFIG_KEYS = ("https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io")
 _PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
 _NEXT_LINK_RE = re.compile(r'<([^>]*)>\s*;[^,]*rel="?next"?')
+# The login service Docker Hub's own registry sends clients to.
+_HUB_AUTH_HOST = "auth.docker.io"
+_HUB_SERVICE = "registry.docker.io"
 
 
 class RegistryError(Exception):
@@ -31,6 +34,15 @@ class RegistryError(Exception):
 
 class RateLimitError(RegistryError):
     pass
+
+
+class NotFoundError(RegistryError):
+    """The registry doesn't have this image (or won't say it exists): typically one
+    built or loaded on the server, or a private image without credentials."""
+
+
+class _UsesDockerHub(Exception):
+    """A registry sent us to Docker Hub's own login: it is a front for Docker Hub."""
 
 
 class RegistryClient:
@@ -53,8 +65,30 @@ class RegistryClient:
         self._tag_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
         self._tag_failures: dict[tuple[str, str], tuple[float, Exception]] = {}
         self._tag_inflight: dict[tuple[str, str], asyncio.Task[list[str]]] = {}
+        # Registries found to be fronts for Docker Hub (for example docker.n8n.io).
+        self._hub_fronts: set[str] = set()
+
+    # Some registries (docker.n8n.io, for one) serve Docker Hub images through their own
+    # host but fetch them from Docker Hub anonymously, from a few shared addresses whose
+    # Docker Hub quota is nearly always used up – so every check through them fails with
+    # HTTP 429. When a registry sends us to Docker Hub's own login, the image is the same
+    # repository on Docker Hub, so check it there: that uses this server's own quota, and
+    # its Docker Hub login when one is configured. Docker still pulls from the registry
+    # named in the compose file; only the check is redirected.
+    def _resolve(self, ref: ImageRef) -> ImageRef:
+        if ref.registry in self._hub_fronts:
+            return ImageRef(DOCKER_HUB, ref.repository, ref.tag, ref.digest, ref.original_name)
+        return ref
 
     async def head_digest(self, ref: ImageRef) -> str:
+        resolved = self._resolve(ref)
+        try:
+            return await self._head_digest(resolved)
+        except _UsesDockerHub:
+            self._hub_fronts.add(ref.registry)
+            return await self._head_digest(self._resolve(ref))
+
+    async def _head_digest(self, ref: ImageRef) -> str:
         reference = ref.tag or ref.digest
         url = f"https://{ref.api_host}/v2/{ref.repository}/manifests/{reference}"
         resp = await self._request("HEAD", url, ref, {"Accept": MANIFEST_ACCEPT})
@@ -64,6 +98,13 @@ class RegistryClient:
         return digest
 
     async def list_tags(self, ref: ImageRef) -> list[str]:
+        try:
+            return await self._list_tags(self._resolve(ref))
+        except _UsesDockerHub:
+            self._hub_fronts.add(ref.registry)
+            return await self._list_tags(self._resolve(ref))
+
+    async def _list_tags(self, ref: ImageRef) -> list[str]:
         key = (ref.registry, ref.repository)
         cached = self._tag_cache.get(key)
         if cached and self._clock() - cached[0] < self._ttl:
@@ -158,11 +199,19 @@ class RegistryClient:
             challenge = resp.headers.get("WWW-Authenticate", "")
             if not challenge.lower().startswith("bearer"):
                 raise RegistryError(f"{ref.registry} returned HTTP 401 (unauthorised)")
+            if not ref.is_docker_hub and _is_hub_challenge(challenge):
+                raise _UsesDockerHub()
             self._tokens[key] = await self._fetch_token(challenge, ref)
             resp = await self._send(method, url, ref, self._with_token(headers, key))
         if resp.status_code == 429:
             name = "Docker Hub" if ref.is_docker_hub else ref.registry
             raise RateLimitError(f"{name} rate limit reached – try again later")
+        if resp.status_code not in allow:
+            # Docker Hub answers 401 even with a valid token when the repository
+            # doesn't exist (or is private and we have no access); others answer 404.
+            if resp.status_code == 404 or (resp.status_code == 401 and ref.is_docker_hub):
+                name = "Docker Hub" if ref.is_docker_hub else ref.registry
+                raise NotFoundError(f"Not found on {name} – a local or private image can't be checked")
         if not resp.is_success and resp.status_code not in allow:
             raise RegistryError(f"{ref.registry} returned HTTP {resp.status_code} for {url}")
         return resp
@@ -219,3 +268,11 @@ class RegistryClient:
         except (OSError, ValueError, AttributeError, binascii.Error):
             return None
         return None
+
+
+def _is_hub_challenge(challenge: str) -> bool:
+    params = dict(_PARAM_RE.findall(challenge))
+    return (
+        params.get("service") == _HUB_SERVICE
+        and urlsplit(params.get("realm", "")).netloc.lower() == _HUB_AUTH_HOST
+    )

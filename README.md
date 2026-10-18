@@ -1,4 +1,8 @@
+<img src="app/static/icon-512.png" alt="" width="72" height="72" align="left">
+
 # Docker Manager
+
+<br clear="left">
 
 A small web page, running on each of your servers, that shows whether your Docker containers are on the newest images – and lets you update them with one click.
 
@@ -37,7 +41,7 @@ If the newer image has already been pulled but the container was never recreated
 
 **Newer version** – the tag is a version number (for example `postgres:16.2` or `1.25.4-alpine`) and a higher version exists. Only tags that look the same are compared – same `v` prefix or not, same ending (`-alpine`, `-bookworm` and so on) and the same number of parts – and test releases (`rc`, `beta`, `alpha`, `dev`, `nightly`, `preview`, `snapshot`) are ignored.
 
-- **Minor or patch** (for example `16.2` → `16.4`): you get a button. You are shown exactly what will change in the compose file first. The file is backed up to the dashboard's data volume (`/data/backups/<project>/<file>.<date-time>`), the tag is changed on that one line only, and the service is pulled and restarted. It then has to stay running (and healthy, if it has a healthcheck) without restarting for 20 seconds, within `HEALTH_TIMEOUT_SECONDS`. If it doesn't, the backup is put back and the old version restarted.
+- **Minor or patch** (for example `16.2` → `16.4`): you get a button. You are shown exactly what will change in the compose file first. The file is backed up to the dashboard's `data` folder (`data/backups/<project>/<file>.<date-time>` next to the dashboard's compose file), the tag is changed on that one line only, and the service is pulled and restarted. It then has to stay running (and healthy, if it has a healthcheck) without restarting for 20 seconds, within `HEALTH_TIMEOUT_SECONDS`. If it doesn't, the backup is put back and the old version restarted.
 - **Major** (for example `16` → `17`): shown with a warning that it may need a data migration. There's no button – do these by hand.
 
 If the version comes from a variable (for example `image: postgres:${PG_VERSION}`), the dashboard won't edit it and asks you to update by hand.
@@ -153,9 +157,11 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
 3. Copy the right example into this folder as `compose.yml`, and copy [`examples/.env.example`](examples/.env.example) as `.env`.
 
-4. Edit `compose.yml`: set `SERVER_NAME`, `PUBLIC_URL`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and (for the email) `DIGEST_FROM` and `DIGEST_TO`. For Traefik, also set the host name, entry point and certificate resolver in the labels. If the server runs Mailcow, uncomment the lines marked `[Mailcow]`.
+   Everything for the dashboard then lives in this folder: `compose.yml`, `.env`, and a `data` folder that is created on first start and holds the database and compose-file backups. Back up this one folder.
 
-5. Edit `.env`: paste in the client secret and (for the email) the ACS connection string, and make a session secret:
+4. Edit `compose.yml`: set `SERVER_NAME` and `PUBLIC_URL`. For Traefik, also set the host name, entry point and certificate resolver in the labels. If the server runs Mailcow, uncomment the lines marked `[Mailcow]`.
+
+5. Edit `.env`: fill in `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and the client secret, and (for the email) the ACS connection string, `DIGEST_FROM` and `DIGEST_TO`. Then make a session secret:
 
    ```sh
    openssl rand -hex 32
@@ -184,7 +190,7 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
 ## Configuration reference
 
-All settings are environment variables in the compose file. Secrets go in `.env` next to it.
+All settings are environment variables in the compose file. The Entra app registration, the secrets and the email addresses go in `.env` next to it; the examples read them from there.
 
 | Variable | Required | Default | What it's for |
 | --- | --- | --- | --- |
@@ -207,7 +213,7 @@ All settings are environment variables in the compose file. Secrets go in `.env`
 | `TZ` | No | `Europe/London` | Time zone for the schedule and the times shown |
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
 | `REGISTRY_AUTH_FILE` | No | – | Path to a mounted Docker-style `config.json` with registry logins, only for checking private registries |
-| `DATA_DIR` | No | `/data` | Where the database and backups are kept. Leave as it is |
+| `DATA_DIR` | No | `/data` | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 
 The email is only sent when `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are all set.
 

@@ -5,7 +5,7 @@ import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status, check_all
 from app.inventory import ContainerInfo
-from app.registry import RateLimitError, RegistryError
+from app.registry import NotFoundError, RateLimitError, RegistryError
 
 
 class FakeRegistry:
@@ -85,7 +85,8 @@ async def test_locally_built_and_pinned_not_checkable(tmp_path, settings):
     assert result.containers[0].message == "Image built locally"
     assert result.containers[1].message == "Pinned by digest"
     assert reg.head_calls == []
-    assert result.summary()["errors"] == 2
+    # neutral: neither errors nor up to date
+    assert result.summary() == {"up_to_date": 0, "updates": 0, "major": 0, "errors": 0}
 
 
 async def test_one_registry_failure_does_not_stop_others(tmp_path, settings):
@@ -97,6 +98,16 @@ async def test_one_registry_failure_does_not_stop_others(tmp_path, settings):
     assert result.containers[0].message == "boom"
     assert result.containers[0].minor_update is None
     assert result.containers[1].status == Status.UP_TO_DATE
+
+
+async def test_image_not_on_any_registry_is_neutral(tmp_path, settings):
+    msg = "Not found on Docker Hub – a local or private image can't be checked"
+    reg = FakeRegistry({"readdy-mcp:latest": NotFoundError(msg)})
+    local = info(tmp_path, name="readdy", image="readdy-mcp:latest", digests=["readdy-mcp@sha256:a"])
+    result = await run([local], reg, settings)
+    assert result.containers[0].status == Status.NOT_CHECKABLE
+    assert result.containers[0].message == msg
+    assert result.summary()["errors"] == 0
 
 
 async def test_rate_limit_message_verbatim(tmp_path, settings):

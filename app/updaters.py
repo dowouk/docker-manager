@@ -13,6 +13,7 @@ from datetime import datetime, tzinfo
 from app.compose_edit import TagChange, apply_tag_change, restore_backup
 from app.inventory import ContainerInfo
 from app.jobs import JobContext
+from app.logfilter import ProgressFilter
 
 RATE_LIMIT_MESSAGE = "Docker Hub rate limit reached – try again later"
 ENV_FILE_MESSAGE = "Project uses an env file that isn't mounted – update by hand"
@@ -273,11 +274,12 @@ def _watch_helper(helper, loop: asyncio.AbstractEventLoop, log, done: asyncio.Fu
 
     try:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        progress = ProgressFilter()
         for chunk in helper.logs(stream=True, follow=True):
-            text = decoder.decode(chunk)
+            text = progress.feed(decoder.decode(chunk))
             if text and not post(log, text):
                 return
-        tail = decoder.decode(b"", final=True)
+        tail = progress.feed(decoder.decode(b"", final=True)) + progress.flush()
         if tail:
             post(log, tail)
         code = int((helper.wait() or {}).get("StatusCode", -1))

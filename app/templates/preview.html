@@ -10,7 +10,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <input type="hidden" name="tag" value="{{ tag }}">
     <input type="hidden" name="sha" value="{{ change.file_sha256 }}">
-    <button type="submit" class="primary">Update to {{ tag }}</button>
+    <button type="submit" class="button button-update">Update to {{ tag }}</button>
   </form>
   {% endif %}
 </div>
