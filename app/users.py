@@ -321,5 +321,9 @@ class UserStore:
 
     # --- sessions ----------------------------------------------------------
 
-    def end_sessions(self, user_id: int) -> int:
-        return self._store.session_delete_for_user(user_id)
+    def end_sessions(self, user_id: int, keep_token_hash: str | None = None) -> int:
+        """Delete the user's sessions, optionally sparing one (by token hash)."""
+        return self._store.session_delete_for_user(user_id, keep_token_hash)
+
+    def now(self) -> datetime:
+        return self._clock()

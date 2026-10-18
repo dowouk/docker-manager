@@ -18,7 +18,13 @@ def make_user(app: FastAPI, role: Role = Role.ADMIN, email: str = EMAIL, name: s
     users = app.state.users
     rec = users.by_email("local", email)
     if rec is None:
-        return users.create("local", email, name, role.value)
+        rec = users.create("local", email, name, role.value)
+        if role == Role.ADMIN:
+            # local Admins must have two-step on (require_totp_admins), or the guard
+            # would send every test to the enrolment page; flag only, no secret needed
+            with users._store.write_tx() as db:
+                db.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", (rec.id,))
+        return users.get(rec.id)
     if rec.role != role.value:
         # direct write: the last-admin rule is not what these tests are about
         with users._store.write_tx() as db:
@@ -46,13 +52,23 @@ def logged_in_client(app: FastAPI, role: Role = Role.ADMIN, **kwargs) -> TestCli
 
 EXPECTED_AUTH_ROUTES = {
     ("/auth/login", "GET"),
+    ("/auth/login", "POST"),
+    ("/auth/totp", "GET"),
+    ("/auth/totp", "POST"),
+    ("/auth/entra", "GET"),
     ("/auth/callback", "GET"),
     ("/auth/logout", "POST"),
     ("/auth/signed-out", "GET"),
 }
 
 
-def assert_all_routes_guarded(app: FastAPI) -> None:
+# What setup_auth alone registers (test apps that don't go through create_app).
+BARE_AUTH_ROUTES = EXPECTED_AUTH_ROUTES - {
+    ("/auth/login", "GET"), ("/auth/login", "POST"), ("/auth/totp", "GET"), ("/auth/totp", "POST"),
+}
+
+
+def assert_all_routes_guarded(app: FastAPI, expected_auth: set | None = None) -> None:
     """Every route outside /auth/, /static/ and /healthz must refuse anonymous requests.
 
     /healthz must answer 200/503 and never redirect; /setup* is skipped only while
@@ -114,5 +130,5 @@ def assert_all_routes_guarded(app: FastAPI) -> None:
                     if r.status_code == 302:
                         assert r.headers["location"] == "/auth/login"
         checked += 1
-    assert auth_routes == EXPECTED_AUTH_ROUTES, f"unexpected /auth routes: {auth_routes}"
+    assert auth_routes == (EXPECTED_AUTH_ROUTES if expected_auth is None else expected_auth), f"unexpected /auth routes: {auth_routes}"
     assert checked, "no routes were checked"

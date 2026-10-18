@@ -27,7 +27,7 @@ from app.roles import Role
 from app.sessions import SessionStore
 from app.users import UserStore
 from app.store import Store
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, make_user, set_session, sign_in
+from auth_helpers import BARE_AUTH_ROUTES, CSRF, assert_all_routes_guarded, logged_in_client, make_user, set_session, sign_in
 
 CALLS: list[str] = []
 
@@ -108,7 +108,7 @@ def good_claims(settings, **over):
 # ---- guard ----
 
 def test_every_route_requires_auth(settings):
-    assert_all_routes_guarded(make_app(settings))
+    assert_all_routes_guarded(make_app(settings), BARE_AUTH_ROUTES)
     assert CALLS == []
 
 
@@ -486,7 +486,7 @@ def test_login_redirects_to_entra_with_pkce(client_app):
     respx.get(
         "https://login.microsoftonline.com/tenant/v2.0/.well-known/openid-configuration"
     ).mock(return_value=Response(200, json=METADATA))
-    r = client_app.get("/auth/login")
+    r = client_app.get("/auth/entra")
     assert r.status_code == 302
     loc = r.headers["location"]
     assert loc.startswith(METADATA["authorization_endpoint"])
@@ -578,7 +578,7 @@ def test_helper_handles_static_mount(settings, tmp_path):
     (tmp_path / "a.txt").write_text("hi")
     app = make_app(settings)
     app.mount("/static", StaticFiles(directory=tmp_path), name="static")
-    assert_all_routes_guarded(app)
+    assert_all_routes_guarded(app, BARE_AUTH_ROUTES)
     with TestClient(app, base_url="https://testserver") as c:
         assert c.get("/static/a.txt").status_code == 200
 
@@ -591,7 +591,7 @@ def test_helper_flags_unexpected_auth_route(settings):
         return {}
 
     with pytest.raises(AssertionError, match="unexpected /auth routes"):
-        assert_all_routes_guarded(app)
+        assert_all_routes_guarded(app, BARE_AUTH_ROUTES)
 
 
 def test_helper_covers_guarded_websocket_route(settings):
@@ -602,7 +602,7 @@ def test_helper_covers_guarded_websocket_route(settings):
     async def ws(websocket: WebSocket):
         await websocket.accept()
 
-    assert_all_routes_guarded(app)  # guarded: must pass
+    assert_all_routes_guarded(app, BARE_AUTH_ROUTES)  # guarded: must pass
 
 
 def test_helper_fails_on_unguarded_http_route():
@@ -613,7 +613,7 @@ def test_helper_fails_on_unguarded_http_route():
         return {}
 
     with pytest.raises(AssertionError, match="returned 200"):
-        assert_all_routes_guarded(app)
+        assert_all_routes_guarded(app, BARE_AUTH_ROUTES)
 
 
 def test_helper_fails_on_unguarded_websocket():
@@ -626,7 +626,7 @@ def test_helper_fails_on_unguarded_websocket():
         await websocket.close()
 
     with pytest.raises(AssertionError, match="accepted an unauthenticated"):
-        assert_all_routes_guarded(app)
+        assert_all_routes_guarded(app, BARE_AUTH_ROUTES)
 
 
 def test_helper_rejects_plain_route_under_static(settings):
@@ -637,7 +637,7 @@ def test_helper_rejects_plain_route_under_static(settings):
         return {}
 
     with pytest.raises(AssertionError, match="not a StaticFiles mount"):
-        assert_all_routes_guarded(app)
+        assert_all_routes_guarded(app, BARE_AUTH_ROUTES)
 
 
 def test_login_without_entra_is_503_page(settings, monkeypatch):
@@ -648,7 +648,7 @@ def test_login_without_entra_is_503_page(settings, monkeypatch):
     app = make_app(Settings(_env_file=None))
     try:
         with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-            r = c.get("/auth/login")
+            r = c.get("/auth/entra")
             assert r.status_code == 503
             assert "Microsoft sign-in isn't set up" in r.text
             assert c.get("/auth/signed-out").status_code == 200
@@ -666,7 +666,7 @@ def test_no_public_url_means_not_set_up_and_headers_never_used(settings, monkeyp
     app = make_app(s)
     try:
         with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-            for path in ("/auth/login", "/auth/callback"):
+            for path in ("/auth/entra", "/auth/callback"):
                 r = c.get(path, headers={"X-Forwarded-Host": "evil.example",
                                          "Host": "evil.example"})
                 assert r.status_code == 503

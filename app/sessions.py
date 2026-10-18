@@ -69,6 +69,10 @@ class SessionStore:
     def delete(self, token: str) -> None:
         self._store.session_delete(_hash(token))
 
+    @staticmethod
+    def token_hash(token: str) -> str:
+        return _hash(token)
+
     def purge_expired(self) -> int:
         now = self._clock()
         self._last_purge = now

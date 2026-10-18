@@ -35,6 +35,7 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.sessions import SessionStore
+from app.signin import setup_signin
 from app.users import UserStore
 from app.settings_service import (
     FIELDS, KEY_UNUSABLE_MESSAGE, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
@@ -302,6 +303,7 @@ def create_app(
     )
     templates = Jinja2Templates(env=env)
     app.state.templates = templates
+    setup_signin(app)
 
     def render(request: Request, name: str, user: User, status_code: int = 200, **ctx):
         return templates.TemplateResponse(

@@ -288,9 +288,11 @@ class Store:
                 )
             return cur.rowcount > 0
 
-    def session_delete_for_user(self, user_id: int) -> int:
+    def session_delete_for_user(self, user_id: int, keep_hash: str | None = None) -> int:
         with self._lock, self._db:
-            cur = self._db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            cur = self._db.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND token_hash IS NOT ?",
+                (user_id, keep_hash))
             return cur.rowcount
 
     def session_delete(self, token_hash: str) -> None:

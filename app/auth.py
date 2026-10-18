@@ -19,7 +19,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from app.config import Settings
 from app.roles import Role
 from app.sessions import ServerSessionMiddleware, SessionStore
-from app.users import UserStore
+from app.users import UserRecord, UserStore
 
 _PUBLIC_PREFIXES = ("/auth/", "/static/")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -104,6 +104,23 @@ def _pending_may_visit(path: str) -> bool:
     return path in ("/pending", "/account") or path.startswith("/account/")
 
 
+PASSWORD_PAGE = "/account/password"
+TWO_STEP_PAGE = "/account/two-step"
+
+
+def forced_page(rec: UserRecord, settings) -> str | None:
+    """The one page this user must finish before using anything else, if any.
+
+    Computed from the live record on every request, never from a session flag.
+    """
+    if rec.kind == "local" and rec.must_change_password:
+        return PASSWORD_PAGE
+    if (rec.kind == "local" and rec.role == Role.ADMIN.value and not rec.totp_enabled
+            and settings is not None and settings.require_totp_admins):
+        return TWO_STEP_PAGE
+    return None
+
+
 class AuthGuardMiddleware:
     """Reject every request without a signed-in, enabled user.
 
@@ -113,10 +130,12 @@ class AuthGuardMiddleware:
     """
 
     def __init__(self, app, users_getter: Callable[[], UserStore],
-                 setup_open: Callable[[], bool] = lambda: False):
+                 setup_open: Callable[[], bool] = lambda: False,
+                 settings_getter: Callable[[], object] = lambda: None):
         self.app = app
         self.users_getter = users_getter
         self.setup_open = setup_open
+        self.settings_getter = settings_getter
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -131,7 +150,7 @@ class AuthGuardMiddleware:
             await self._refuse(scope, receive, send, "/setup")
             return
         session = scope.get("session")
-        user = self._load(session)
+        user, rec = self._load(session)
         if user is None:
             if isinstance(session, dict) and session.get("user_id") is not None:
                 # Signed-in session whose user is gone/disabled: persisted as a sign-out.
@@ -139,26 +158,32 @@ class AuthGuardMiddleware:
                 session.clear()
             await self._refuse(scope, receive, send, "/auth/login")
             return
+        forced = forced_page(rec, self.settings_getter())
+        if forced is not None and path != forced:
+            await self._refuse(scope, receive, send, forced, status=403,
+                               detail="Finish setting up your account first")
+            return
         if user.role == Role.PENDING and not _pending_may_visit(path):
             await self._refuse(scope, receive, send, "/pending", status=403)
             return
         scope.setdefault("state", {})["user"] = user
         await self.app(scope, receive, send)
 
-    def _load(self, session) -> User | None:
+    def _load(self, session) -> tuple[User, UserRecord] | tuple[None, None]:
         user_id = session.get("user_id") if isinstance(session, dict) else None
         if not isinstance(user_id, int) or isinstance(user_id, bool):
-            return None
+            return None, None
         rec = self.users_getter().get(user_id)
         if rec is None or rec.disabled:
-            return None
+            return None, None
         try:
             role = Role(rec.role)
         except ValueError:
-            return None
-        return User(id=rec.id, name=rec.name, email=rec.email, role=role, kind=rec.kind)
+            return None, None
+        return User(id=rec.id, name=rec.name, email=rec.email, role=role, kind=rec.kind), rec
 
-    async def _refuse(self, scope, receive, send, location: str, status: int = 401):
+    async def _refuse(self, scope, receive, send, location: str, status: int = 401,
+                      detail: str | None = None):
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -167,7 +192,8 @@ class AuthGuardMiddleware:
         if scope["method"] in ("GET", "HEAD") and "text/html" in accept:
             response: Response = RedirectResponse(location, status_code=302)
         elif status == 403:
-            response = JSONResponse({"detail": "Your account is waiting for approval"}, status_code=403)
+            response = JSONResponse(
+                {"detail": detail or "Your account is waiting for approval"}, status_code=403)
         else:
             response = JSONResponse({"detail": "Not signed in"}, status_code=401)
         await response(scope, receive, send)
@@ -252,7 +278,7 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore,
         # Task 7 replaces this; until then Microsoft sign-in is simply unavailable.
         app.state.oauth = oauth
 
-        @app.get("/auth/login", include_in_schema=False)
+        @app.get("/auth/entra", include_in_schema=False)
         @app.get("/auth/callback", include_in_schema=False)
         async def not_set_up():
             if (settings.azure_tenant_id and settings.azure_client_id
@@ -277,7 +303,7 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore,
     app.state.oauth = oauth
     redirect_uri = settings.public_url.rstrip("/") + "/auth/callback"
 
-    @app.get("/auth/login", include_in_schema=False)
+    @app.get("/auth/entra", include_in_schema=False)
     async def login(request: Request):
         return await oauth.entra.authorize_redirect(request, redirect_uri)
 
@@ -349,5 +375,6 @@ def _finish_setup(app: FastAPI, sessions: SessionStore,
 
     # Added first = innermost: ServerSessionMiddleware (added next) wraps the guard.
     app.add_middleware(AuthGuardMiddleware, users_getter=lambda: app.state.users,
-                       setup_open=setup_open)
+                       setup_open=setup_open,
+                       settings_getter=lambda: getattr(app.state, "settings", None))
     app.add_middleware(ServerSessionMiddleware, sessions=sessions)

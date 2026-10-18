@@ -295,3 +295,19 @@ dialog form[method="dialog"] { margin-top: 12px; }
   .brand-sub { display: none; }
   .stats { grid-template-columns: 1fr; }
 }
+
+/* ---- Sign-in and account forms ------------------------------------------------- */
+.auth-wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 20px; padding: 24px 16px; }
+.auth-brand { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 16px; color: var(--fg-strong); }
+.auth-card { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 16px; }
+.auth-title { font-size: 24px; }
+.auth-form { display: flex; flex-direction: column; gap: 16px; margin: 0; }
+.auth-disclosure > summary { cursor: pointer; color: var(--link); font-weight: 500; padding: 8px 0; }
+.auth-disclosure[open] > summary { margin-bottom: 12px; }
+.form-card { max-width: 480px; display: flex; flex-direction: column; gap: 16px; }
+.qr { width: 100%; max-width: 220px; background: #fff; border-radius: 8px; line-height: 0; }
+.qr svg { width: 100%; height: auto; display: block; }
+.secret-key { display: block; word-break: break-all; letter-spacing: 0.05em; }
+.recovery-codes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.recovery-codes li { background: var(--surface-2); border-radius: 8px; padding: 8px 12px; }
