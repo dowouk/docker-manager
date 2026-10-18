@@ -36,7 +36,7 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.roles import Role
-from app.sessions import SessionStore
+from app.sessions import COOKIE, SessionStore
 from app.setup import Setup, setup_routes
 from app.admin_pages import setup_admin_pages
 from app.signin import setup_signin
@@ -59,6 +59,7 @@ from app.updaters import (
 log = logging.getLogger(__name__)
 _HERE = os.path.dirname(__file__)
 _END = "__END__:"
+STREAM_RECHECK = 5.0  # seconds between access re-checks on an idle job-log stream
 
 # Flash messages: only these fixed strings are ever shown (no reflected text).
 # Each is (text, level); "ok" shows as a status note, "error" as an alert.
@@ -545,9 +546,30 @@ def create_app(
         return render(request, "job.html", user, job=job)
 
     @app.get("/jobs/{job_id}/stream")
-    async def job_stream(job_id: int, user: User = Depends(require_role(Role.OPERATOR))):
+    async def job_stream(request: Request, job_id: int,
+                         user: User = Depends(require_role(Role.OPERATOR))):
+        cookie = request.cookies.get(COOKIE)
+        session_hash = SessionStore.token_hash(cookie) if cookie else None
+
+        def still_allowed() -> bool:
+            """The stream outlives the request that opened it, so re-check the account
+            and the session whenever something is about to be sent."""
+            rec = app.state.users.get(user.id)
+            if rec is None or rec.disabled or session_hash is None:
+                return False
+            try:
+                if Role(rec.role) < Role.OPERATOR:
+                    return False
+            except ValueError:
+                return False
+            return store.session_get(session_hash) is not None
+
         async def events() -> AsyncIterator[str]:
-            async for chunk in runner.subscribe(job_id):
+            async for chunk in runner.subscribe(job_id, idle=STREAM_RECHECK):
+                if not still_allowed():
+                    return
+                if chunk is None:  # idle: nothing to send, the check above was the point
+                    continue
                 if chunk.startswith(_END):
                     yield f"event: end\ndata: {chunk[len(_END):]}\n\n"
                     return

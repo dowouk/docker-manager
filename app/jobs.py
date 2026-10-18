@@ -180,7 +180,9 @@ class JobRunner:
             for q in self._subscribers.pop(job_id, []):
                 q.put_nowait(_END + status)
 
-    async def subscribe(self, job_id: int) -> AsyncIterator[str]:
+    async def subscribe(self, job_id: int, idle: float | None = None) -> AsyncIterator[str | None]:
+        """The log so far, then live chunks. With `idle`, yields None whenever that many
+        seconds pass without output, so the caller can re-check who is listening."""
         job = self._store.get_job(job_id)
         if job is None:
             yield _END + "unknown"
@@ -197,7 +199,11 @@ class JobRunner:
                 yield _END + job.status
                 return
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), idle)
+                except asyncio.TimeoutError:
+                    yield None
+                    continue
                 yield item
                 if item.startswith(_END):
                     return

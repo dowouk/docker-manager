@@ -32,7 +32,7 @@ class FakeRunner:
         self.submitted.append((kind, target, user, work))
         return 7
 
-    async def subscribe(self, job_id):
+    async def subscribe(self, job_id, idle=None):
         yield "line one\nline two\n"
         yield "line three\n"
         yield "__END__:succeeded"
