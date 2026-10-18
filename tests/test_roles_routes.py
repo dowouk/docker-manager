@@ -13,6 +13,7 @@ from test_routes import compose_file, make_app, seeded  # noqa: F401 – fixture
 # test_every_route_has_an_entry fails until you do. Role.PENDING means any signed-in user.
 ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("GET", "/", Role.VIEWER),
+    ("GET", "/layout", Role.VIEWER),
     ("GET", "/history", Role.VIEWER),
     ("GET", "/history?view=changes", Role.ADMIN),
     ("POST", "/check", Role.OPERATOR),

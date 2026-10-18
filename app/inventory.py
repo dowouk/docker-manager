@@ -49,6 +49,14 @@ class ContainerInfo:
     image_source: str | None = None
 
 
+MAILCOW_PROJECT = "mailcowdockerized"
+
+
+def is_mailcow(c: "ContainerInfo", mailcow_dir: str) -> bool:
+    """Whether this is one of Mailcow's own containers (they are managed by its own scripts)."""
+    return c.project == MAILCOW_PROJECT or (c.working_dir is not None and c.working_dir == mailcow_dir)
+
+
 def container_key(info: ContainerInfo) -> str:
     """Identity for rules and skips: project/service for compose containers, else the name."""
     if info.project and info.service:

@@ -55,8 +55,36 @@ def has_layout_data(result: CheckResult | None) -> bool:
 
 
 def layout_problems(result: CheckResult | None, cs: ContainerStatus) -> int:
-    """Layout findings for one container; 0 until the layout check fills them in."""
-    return 0
+    """How many layout findings one container has (0 when there are none or no layout data)."""
+    if result is None:
+        return 0
+    return sum(1 for p in getattr(result, "layout", None) or [] if p.container == cs.container.name)
+
+
+def layout_mounts(result: CheckResult | None, cs: ContainerStatus) -> int:
+    """How many of them are mounts outside the compose root."""
+    if result is None:
+        return 0
+    return sum(1 for p in getattr(result, "layout", None) or []
+               if p.container == cs.container.name and p.kind in ("bind_outside", "named_volume"))
+
+
+def layout_anchor(project: str | None) -> str:
+    """A safe fragment id for a project's section on the Layout page."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", (project or "").lower()).strip("-")
+    return slug or "no-project"
+
+
+def layout_groups(problems) -> list[dict]:
+    """Problems grouped by project (containers without one last), problems before notices."""
+    groups: dict[str, dict] = {}
+    for p in problems:
+        g = groups.setdefault(p.project or "", {
+            "project": p.project, "anchor": layout_anchor(p.project), "problems": []})
+        g["problems"].append(p)
+    for g in groups.values():
+        g["problems"].sort(key=lambda p: (p.severity != "problem", p.container, p.key))
+    return sorted(groups.values(), key=lambda g: (g["project"] is None, (g["project"] or "").lower()))
 
 
 def mailcow_state(mc: MailcowStatus) -> str:

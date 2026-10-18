@@ -8,12 +8,12 @@ from enum import StrEnum
 
 from app.config import Settings
 from app.imageref import parse_image_ref
-from app.inventory import ContainerInfo, Mount
+from app.inventory import ContainerInfo, Mount, is_mailcow
+from app.layout import LayoutProblem
 from app.registry import NotFoundError, RegistryClient
 from app.rules import Rules, TagFilter
 from app.versions import find_version_updates, parse_version_tag
 
-_MAILCOW_PROJECT = "mailcowdockerized"
 _UPDATABLE_STATES = ("running", "exited")
 
 
@@ -59,6 +59,7 @@ class CheckResult:
     checked_at: datetime
     containers: list[ContainerStatus]
     mailcow: MailcowStatus | None = None
+    layout: list[LayoutProblem] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +68,7 @@ class CheckResult:
                 {**asdict(cs), "status": cs.status.value} for cs in self.containers
             ],
             "mailcow": asdict(self.mailcow) if self.mailcow else None,
+            "layout": [asdict(p) for p in self.layout],
         }
 
     @classmethod
@@ -82,7 +84,8 @@ class CheckResult:
             for cs in data["containers"]
         ]
         mailcow = MailcowStatus(**data["mailcow"]) if data.get("mailcow") else None
-        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow)
+        layout = [LayoutProblem(**p) for p in data.get("layout") or []]
+        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow, layout)
 
     def summary(self) -> dict[str, int]:
         updates = majors = errors = up_to_date = 0
@@ -122,9 +125,7 @@ def _sha(digest: str) -> str:
 
 
 def _is_mailcow(c: ContainerInfo, settings: Settings) -> bool:
-    return c.project == _MAILCOW_PROJECT or (
-        c.working_dir is not None and c.working_dir == settings.mailcow_dir
-    )
+    return is_mailcow(c, settings.mailcow_dir)
 
 
 def _updatable(c: ContainerInfo) -> tuple[bool, str | None]:

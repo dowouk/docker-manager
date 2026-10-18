@@ -30,6 +30,7 @@
       <nav class="site-nav" aria-label="Main">
         <a href="/"{% if path == "/" %} aria-current="page"{% endif %}>Containers</a>
         <a href="/history"{% if path.startswith("/history") or path.startswith("/jobs") %} aria-current="page"{% endif %}>History</a>
+        <a href="/layout"{% if path.startswith("/layout") %} aria-current="page"{% endif %}>Layout</a>
         {% if can(user, Role.ADMIN) %}
         <a href="/users"{% if path.startswith("/users") %} aria-current="page"{% endif %}>Users</a>
         <a href="/settings"{% if path.startswith("/settings") %} aria-current="page"{% endif %}>Settings</a>

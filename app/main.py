@@ -35,6 +35,7 @@ from app.imageref import parse_image_ref
 from app.inventory import container_key, detect_self_id, list_containers
 from app.links import release_notes_url
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
+from app.layout import layout_problems
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import KeyUnusable, load_secret_box
 from app.registry import RegistryClient, RegistryError
@@ -153,6 +154,7 @@ async def run_check(app: FastAPI) -> CheckResult:
         async with state.check_lock:
             await asyncio.to_thread(remove_finished_helpers, state.docker)
             containers = await asyncio.to_thread(list_containers, state.docker, detect_self_id())
+            rules_for = state.rules.snapshot()
             result = await check_all(
                 containers,
                 state.registry,
@@ -160,7 +162,11 @@ async def run_check(app: FastAPI) -> CheckResult:
                 mailcow_check=functools.partial(
                     check_mailcow, state.settings.mailcow_dir, run_capture, state.http
                 ),
-                rules_for=state.rules.snapshot(),
+                rules_for=rules_for,
+            )
+            result.layout = layout_problems(
+                containers, state.settings, rules_for,
+                state.settings.data_dir, state.settings.mailcow_dir,
             )
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
@@ -406,6 +412,8 @@ def create_app(
         row_state=view.row_state,
         filter_state=view.filter_state,
         layout_problems=view.layout_problems,
+        layout_mounts=view.layout_mounts,
+        layout_anchor=view.layout_anchor,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
@@ -491,6 +499,7 @@ def create_app(
             skipped=app.state.skips.active(),
             notes_by_id={k: v for k, v in notes.items() if v},
             has_layout=view.has_layout_data(shown),
+            compose_root=app.state.settings.compose_root,
             hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
             rows=view.by_urgency(shown) if shown else [],
             overview=view.overview(shown) if shown else None,
@@ -1100,6 +1109,18 @@ def create_app(
             return render(request, "history.html", user, view="changes", kind=kind,
                           change_kinds=CHANGE_KINDS, changes=store.list_audit(kind=kind or None))
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
+
+    @app.get("/layout", response_class=HTMLResponse)
+    async def layout_page(request: Request, user: User = Depends(require_role(Role.VIEWER))):
+        settings = app.state.settings
+        result = _latest(app)
+        problems = result.layout if (result and settings.layout_check) else []
+        return render(
+            request, "layout.html", user,
+            enabled=settings.layout_check, checked=result is not None,
+            compose_root=settings.compose_root,
+            groups=view.layout_groups(problems),
+        )
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():

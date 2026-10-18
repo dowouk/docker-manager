@@ -235,6 +235,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
                 <div class="meta">{% if c.project %}stack · {{ c.project }}{% else %}no stack{% endif %}{% if c.service and c.service != c.project %} · {{ c.service }}{% endif %}</div>
                 {% if can(user, Role.OPERATOR) %}<div class="meta"><a href="/containers/{{ container_key(c) | urlencode }}/rules">Watch settings</a></div>{% endif %}
                 {% if cs.rule_warnings %}<div class="meta" role="note">{{ cs.rule_warnings | join(" ") }}</div>{% endif %}
+                {% set n_layout = layout_problems(result, cs) %}{% if n_layout %}{% set n_mounts = layout_mounts(result, cs) %}<div class="meta"><a class="pill pill-major" href="/layout#{{ layout_anchor(c.project) }}">{% if n_mounts %}{{ n_mounts }} {{ "mount" if n_mounts == 1 else "mounts" }} outside {{ compose_root }}{% else %}Layout: {{ n_layout }} to review{% endif %}</a></div>{% endif %}
               </div>
             </div>
           </td>
