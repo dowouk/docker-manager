@@ -124,7 +124,8 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
     """
     count = _update_count(result)
     sections = _sections(result, notes_for)
-    problems = any(sec["heading"] == _COULDNT_CHECK for sec in sections)
+    layout = notifiable_layout(result)
+    problems = bool(layout) or any(sec["heading"] == _COULDNT_CHECK for sec in sections)
     if count == 0 and not problems and not settings.digest_when_none:
         return None
     if count == 0:
@@ -133,7 +134,6 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
         headline = f"{count} update{'s' if count != 1 else ''} available"
     subject = f"{settings.server_name}: {headline}"
 
-    layout = notifiable_layout(result)
     local = result.checked_at.astimezone(ZoneInfo(settings.tz))
     ctx = {
         "server_name": settings.server_name,

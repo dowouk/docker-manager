@@ -165,3 +165,23 @@ def test_release_notes_link_is_escaped_and_safe(settings):
     assert 'rel="noopener noreferrer"' in html and "a=1&amp;b=&#34;2&#34;" in html
     assert "release notes: https://x.test/" in plain
     assert "Release notes" not in render_digest(r, settings)[1]
+
+
+def test_layout_problems_alone_send_the_digest(settings):
+    s = settings.model_copy(update={"digest_when_none": False}) if hasattr(settings, "model_copy") \
+        else __import__("dataclasses").replace(settings, digest_when_none=False)
+    r = result([cs("web")])
+    assert render_digest(r, s) is None
+    r.layout = [prob("a")]
+    out = render_digest(r, s)
+    assert out is not None and "Layout problems" in out[1] and "all up to date" in out[0]
+    quiet = result([cs("web", notify=False)])
+    quiet.layout = [prob("a")]
+    assert render_digest(quiet, s) is None
+
+
+def test_layout_detail_is_escaped_in_digest(settings):
+    r = result([cs("web")])
+    r.layout = [prob("a", detail="<b>x</b> & y")]
+    html = render_digest(r, settings)[1]
+    assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in html and "<b>x</b>" not in html

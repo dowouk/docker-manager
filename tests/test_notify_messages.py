@@ -142,3 +142,10 @@ def test_updates_found_release_notes_link(settings):
     m = updates_found_message([with_notes, UpdateItem("b:minor", "b", "img", "1 → 2")], settings)
     assert 'href="https://x.test/?a=1&amp;b=2"' in m.html and 'rel="noopener noreferrer"' in m.html
     assert m.html.count("Release notes") == 1 and m.plain.count("release notes:") == 1
+
+
+def test_layout_message_escapes_html(settings):
+    from app.notify.messages import layout_message
+    m = layout_message(["web: <b>x</b> & y"], settings)
+    assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in m.html and "<b>x</b>" not in m.html
+    assert "<b>x</b> & y" in m.plain
