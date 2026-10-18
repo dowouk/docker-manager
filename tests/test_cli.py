@@ -1,5 +1,6 @@
 """docker-manager reset-admin and the entry point."""
 import tomllib
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,9 @@ def test_clears_the_accounts_failures_and_lock(tmp_path, capsys):
     assert cli.main(["reset-admin", "A@Example.com"]) == 0
     capsys.readouterr()
     store, users = users_of(tmp_path)
-    assert users.failures("account", "a@example.com", 900) == 0
-    assert users.failures("account-lock", "a@example.com", 900) == 0
-    assert users.failures("ip", "1.2.3.4", 900) == 1  # an address block is left alone
+    assert users.failures("account", "a@example.com", timedelta(minutes=15)) == 0
+    assert users.failures("account-lock", "a@example.com", timedelta(minutes=15)) == 0
+    assert users.failures("ip", "1.2.3.4", timedelta(minutes=15)) == 1  # an address block is left alone
 
 
 def test_resets_an_existing_account(tmp_path, capsys):
