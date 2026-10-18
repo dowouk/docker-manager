@@ -10,7 +10,7 @@
 {% if not enabled %}
 <p class="notice">The layout check is switched off. An Admin can turn it on under Checking in Settings.</p>
 {% elif not checked %}
-<p class="notice">No check has run yet.</p>
+<p class="notice">No layout check has run yet – it runs with the next check.</p>
 {% elif not groups %}
 <p class="notice">Nothing stored outside {{ compose_root }}.</p>
 {% else %}
@@ -22,7 +22,7 @@
     <li>
       <span class="pill {% if p.severity == 'problem' %}pill-major{% else %}pill-muted{% endif %}">{{ "Problem" if p.severity == "problem" else "Notice" }}</span>
       <strong>{{ p.container }}</strong> – {{ p.detail }}
-      <div class="meta">{{ p.hint }}</div>
+      <div class="meta">{% for code, text in hint_parts(p.hint) %}{% if code %}<code>{{ text }}</code>{% else %}{{ text }}{% endif %}{% endfor %}</div>
     </li>
   {% endfor %}
   </ul>

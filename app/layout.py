@@ -13,12 +13,20 @@ Kind = Literal["bind_outside", "named_volume", "compose_outside", "env_outside",
 Severity = Literal["problem", "notice"]
 
 _ANONYMOUS_VOLUME = re.compile(r"[0-9a-f]{64}")
+_SYSTEM_PREFIXES = ("/etc", "/usr", "/run", "/var/lib/docker", "/sys", "/proc", "/boot")
+_SYSTEM_HINT = ("System path – if this is intended, add it to the allowed paths "
+                "in Settings → Checking.")
+_MAILCOW_VOLUME_PREFIX = "mailcowdockerized_"
 _ALWAYS_ALLOWED = ("/var/run/docker.sock", "/run/docker.sock", "/etc/localtime", "/etc/timezone")
 
 
 @dataclass(frozen=True)
 class LayoutProblem:
-    key: str  # "<container_key>:<kind>:<path or volume>" – stable, for notification dedupe
+    """One finding. `key` is "<container_key>:<kind>:<source or volume>[:<destination>]" – stable,
+    for notification dedupe. Replicas of one service share keys, so a key can cover several
+    containers: dedupe by key, don't count by it."""
+
+    key: str
     container: str
     project: str | None
     kind: Kind
@@ -71,11 +79,11 @@ def layout_problems(
 
         if not project:
             add("not_compose", "-", "Not started by compose",
-                f"Describe it in a compose file under `{root}/{c.name}` and start it from there, "
+                f"Describe it in a compose file under `{posixpath.join(root, c.name)}` and start it from there, "
                 "so its files live in one place.", "notice")
             continue
 
-        folder = f"{root}/{project}"
+        folder = posixpath.join(root, project)
         compose_paths = c.config_files or ([c.working_dir] if c.working_dir else [])
         for path in compose_paths:
             if not fine(path):
@@ -86,11 +94,11 @@ def layout_problems(
                 add("env_outside", _norm(path), f"Env file outside {root}: {path}",
                     f"Move the env file to `{folder}/.env` and point the project at it.")
         for m in c.mounts:
-            _check_mount(c, m, folder, fine, data_dir, settings, add)
+            _check_mount(c, m, folder, root, fine, data_dir, settings, add)
     return found
 
 
-def _check_mount(c, m: Mount, folder, fine, data_dir, settings, add) -> None:
+def _check_mount(c, m: Mount, folder, root, fine, data_dir, settings, add) -> None:
     if c.is_self and m.destination == data_dir:
         return
     if m.type == "bind":
@@ -102,13 +110,19 @@ def _check_mount(c, m: Mount, folder, fine, data_dir, settings, add) -> None:
         if fine(src):
             return
         last = _last_part(src)
-        add("bind_outside", src, f"Bind mount outside {posixpath.dirname(folder)}: {m.source} to {m.destination}",
+        system = (not m.source.startswith("/") or src == "/"
+                  or any(_under(src, p) for p in _SYSTEM_PREFIXES))
+        hint = _SYSTEM_HINT if system else (
             f"Move the data to `{folder}/{last}` and change `{m.source}:{m.destination}` "
             f"to `./{last}:{m.destination}`.")
+        add("bind_outside", f"{src}:{m.destination}",
+            f"Bind mount outside {root}: {m.source} to {m.destination}", hint)
     elif m.type == "volume":
         name = m.name or ""
-        if settings.named_volumes_allowed or not name or _ANONYMOUS_VOLUME.fullmatch(name):
+        if (settings.named_volumes_allowed or not name or _ANONYMOUS_VOLUME.fullmatch(name)
+                or name.startswith(_MAILCOW_VOLUME_PREFIX)):
             return
-        add("named_volume", name, f"Named volume {name} (stored in Docker's own folder) at {m.destination}",
+        add("named_volume", f"{name}:{m.destination}", f"Named volume {name} (stored in Docker's own folder) at {m.destination}",
             f"Move the data to `{folder}/data` and change `{name}:{m.destination}` "
-            f"to `./data:{m.destination}`.")
+            f"to `./data:{m.destination}`. If the volume is bound to a folder under {root} "
+            "(driver_opts), allow it with the layout.ignore label or the allowed paths in Settings.")

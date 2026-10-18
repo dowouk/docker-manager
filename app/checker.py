@@ -59,7 +59,7 @@ class CheckResult:
     checked_at: datetime
     containers: list[ContainerStatus]
     mailcow: MailcowStatus | None = None
-    layout: list[LayoutProblem] = field(default_factory=list)
+    layout: list[LayoutProblem] | None = None  # None: no layout check has run
 
     def to_dict(self) -> dict:
         return {
@@ -68,7 +68,7 @@ class CheckResult:
                 {**asdict(cs), "status": cs.status.value} for cs in self.containers
             ],
             "mailcow": asdict(self.mailcow) if self.mailcow else None,
-            "layout": [asdict(p) for p in self.layout],
+            "layout": None if self.layout is None else [asdict(p) for p in self.layout],
         }
 
     @classmethod
@@ -84,7 +84,7 @@ class CheckResult:
             for cs in data["containers"]
         ]
         mailcow = MailcowStatus(**data["mailcow"]) if data.get("mailcow") else None
-        layout = [LayoutProblem(**p) for p in data.get("layout") or []]
+        layout = None if data.get("layout") is None else [LayoutProblem(**p) for p in data["layout"]]
         return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow, layout)
 
     def summary(self) -> dict[str, int]:

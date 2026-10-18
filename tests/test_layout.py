@@ -43,16 +43,17 @@ def kinds(problems):
 def test_bind_outside_flagged_with_hint():
     [p] = run([make(mounts=[bind("/srv/app/data", "/data")])])
     assert p.kind == "bind_outside" and p.severity == "problem" and p.project == "site"
-    assert p.key == "site/web:bind_outside:/srv/app/data"
+    assert p.key == "site/web:bind_outside:/srv/app/data:/data"
     assert p.hint == ("Move the data to `/docker/site/data` and change `/srv/app/data:/data` "
                       "to `./data:/data`.")
 
 
 def test_named_volume_flagged_with_hint():
     [p] = run([make(mounts=[volume("pgdata", "/var/lib/postgresql/data")])])
-    assert p.kind == "named_volume" and p.key == "site/web:named_volume:pgdata"
-    assert p.hint == ("Move the data to `/docker/site/data` and change "
-                      "`pgdata:/var/lib/postgresql/data` to `./data:/var/lib/postgresql/data`.")
+    assert p.kind == "named_volume" and p.key == "site/web:named_volume:pgdata:/var/lib/postgresql/data"
+    assert p.hint.startswith("Move the data to `/docker/site/data` and change "
+                             "`pgdata:/var/lib/postgresql/data` to `./data:/var/lib/postgresql/data`.")
+    assert "driver_opts" in p.hint and "layout.ignore" in p.hint
 
 
 def test_compose_and_env_files_outside_flagged():
@@ -133,7 +134,7 @@ def test_result_round_trips_and_old_results_load():
     assert CheckResult.from_dict(r.to_dict()).layout == [p]
     old = r.to_dict()
     del old["layout"]
-    assert CheckResult.from_dict(old).layout == []
+    assert CheckResult.from_dict(old).layout is None
 
 
 def test_view_counts_and_anchors():
@@ -143,7 +144,7 @@ def test_view_counts_and_anchors():
     assert view.layout_problems(r, r.containers[0]) == 2
     assert view.layout_mounts(r, r.containers[0]) == 2
     assert view.layout_anchor("My Site/<x>") == "my-site-x"
-    assert view.layout_anchor(None) == "no-project"
+    assert view.layout_anchor(None) != view.layout_anchor("no-project")
 
 
 # --- page and dashboard -------------------------------------------------------------------
@@ -177,6 +178,71 @@ def test_layout_page_empty_and_disabled(settings, tmp_path):
     with logged_in_client(app, follow_redirects=False) as client:
         page = client.get("/layout").text
         assert "switched off" in page and "Move the data" not in page
+
+
+async def test_unique_keys_per_destination_and_mailcow_volume_allowed():
+    c = make(mounts=[bind("/srv/a", "/one"), bind("/srv/a", "/two"), volume("mailcowdockerized_x")])
+    assert len({p.key for p in run([c])}) == 2
+
+
+@pytest.mark.parametrize("src", ["/", "/run/user/1000/docker.sock", "/etc/ssl/certs", "C:\\data",
+                                 "/var/lib/docker/volumes/x", "/boot"])
+def test_system_paths_get_the_system_hint(src):
+    [p] = run([make(mounts=[bind(src, "/host", ro=True)])])
+    assert p.hint.startswith("System path") and "Settings → Checking" in p.hint
+
+
+def test_root_compose_root_has_no_double_slash():
+    ps = run([make(mounts=[volume("v")]), make("lone", project=None, config_files=[])],
+             compose_root="/")
+    assert len(ps) == 2 and all("//" not in p.hint for p in ps)
+
+
+def test_hints_render_code_and_escape(settings, tmp_path):
+    from app.view import hint_parts
+    assert hint_parts("a `b` c") == [(False, "a "), (True, "b"), (False, " c")]
+    c = make(mounts=[bind("/srv/<script>", "/a")])
+    r = CheckResult(CHECKED_AT, [ContainerStatus(c, Status.UP_TO_DATE)], None, run([c]))
+    with logged_in_client(make_app(settings, tmp_path, r), follow_redirects=False) as client:
+        page = client.get("/layout").text
+        assert "<code>" in page and "/srv/<script>" not in page and "&lt;script&gt;" in page
+
+
+def test_no_layout_data_is_not_all_clear(settings, tmp_path):
+    c = make()
+    for layout in (None,):
+        r = CheckResult(CHECKED_AT, [ContainerStatus(c, Status.UP_TO_DATE)], None, layout)
+        with logged_in_client(make_app(settings, tmp_path, r), follow_redirects=False) as client:
+            page = client.get("/layout").text
+            assert "No layout check has run yet" in page and "Nothing stored" not in page
+
+
+def test_dashboard_hides_layout_when_off(settings, tmp_path):
+    c = make(mounts=[bind("/srv/a")])
+    r = CheckResult(CHECKED_AT, [ContainerStatus(c, Status.UP_TO_DATE)], None, run([c]))
+    app = make_app(settings, tmp_path, r)
+    with logged_in_client(app, follow_redirects=False) as client:
+        assert 'data-chip="layout"' in client.get("/").text
+        app.state.settings = app.state.settings.model_copy(update={"layout_check": False})
+        page = client.get("/").text
+        assert 'data-chip="layout"' not in page and "/layout#" not in page
+        assert 'data-layout="0"' in page
+
+
+async def test_run_check_off_stores_none(settings, tmp_path, monkeypatch):
+    from app.main import run_check
+    from test_routes import StubDocker
+    app = make_app(settings, tmp_path)
+    app.state.settings = app.state.settings.model_copy(update={"layout_check": False})
+    app.state.docker = StubDocker()
+    c = make(mounts=[bind("/srv/a")])
+
+    async def fake_check_all(containers, *a, **kw):
+        return CheckResult(CHECKED_AT, [ContainerStatus(c, Status.UP_TO_DATE)])
+
+    monkeypatch.setattr("app.main.check_all", fake_check_all)
+    monkeypatch.setattr("app.main.list_containers", lambda docker, self_id: [c])
+    assert (await run_check(app)).layout is None
 
 
 async def test_run_check_stores_layout(settings, tmp_path, monkeypatch):

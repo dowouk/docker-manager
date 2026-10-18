@@ -71,8 +71,15 @@ def layout_mounts(result: CheckResult | None, cs: ContainerStatus) -> int:
 
 def layout_anchor(project: str | None) -> str:
     """A safe fragment id for a project's section on the Layout page."""
+    if not project:
+        return "~no-project"  # "~" can't come out of a slug, so no project can collide with it
     slug = re.sub(r"[^a-z0-9_-]+", "-", (project or "").lower()).strip("-")
-    return slug or "no-project"
+    return slug or "~unnamed"
+
+
+def hint_parts(hint: str) -> list[tuple[bool, str]]:
+    """Split a hint on backticks into (is_code, text) pieces; the template escapes each one."""
+    return [(i % 2 == 1, part) for i, part in enumerate(hint.split("`")) if part]
 
 
 def layout_groups(problems) -> list[dict]:

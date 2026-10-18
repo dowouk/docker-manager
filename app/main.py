@@ -1,5 +1,6 @@
 """FastAPI app: dashboard pages, update actions and live job logs."""
 import asyncio
+import dataclasses
 import functools
 import logging
 import os
@@ -167,7 +168,7 @@ async def run_check(app: FastAPI) -> CheckResult:
             result.layout = layout_problems(
                 containers, state.settings, rules_for,
                 state.settings.data_dir, state.settings.mailcow_dir,
-            )
+            ) if state.settings.layout_check else None
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
         state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
@@ -414,6 +415,7 @@ def create_app(
         layout_problems=view.layout_problems,
         layout_mounts=view.layout_mounts,
         layout_anchor=view.layout_anchor,
+        hint_parts=view.hint_parts,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
@@ -490,6 +492,8 @@ def create_app(
                 log.exception("Check failed while loading the dashboard")
                 error = f"The check could not be completed: {str(exc) or type(exc).__name__}"
         shown, hidden = skips_mod.visible_result(result, app.state.skips) if result else (None, [])
+        if shown is not None and not app.state.settings.layout_check:
+            shown = dataclasses.replace(shown, layout=None)  # switched off: no badges or chip
         rules_for = app.state.rules.snapshot()
         notes = {cs.container.id: release_notes_url(cs.container, rules_for(cs.container))
                  for cs in (shown.containers if shown else [])}
@@ -1114,12 +1118,12 @@ def create_app(
     async def layout_page(request: Request, user: User = Depends(require_role(Role.VIEWER))):
         settings = app.state.settings
         result = _latest(app)
-        problems = result.layout if (result and settings.layout_check) else []
+        problems = result.layout if (result and settings.layout_check) else None
         return render(
             request, "layout.html", user,
-            enabled=settings.layout_check, checked=result is not None,
+            enabled=settings.layout_check, checked=problems is not None,
             compose_root=settings.compose_root,
-            groups=view.layout_groups(problems),
+            groups=view.layout_groups(problems or []),
         )
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
