@@ -48,6 +48,7 @@
         <button type="button" class="button button-quiet button-small" data-preset data-host="{{ presets.smtp2go.host }}" data-port="{{ presets.smtp2go.port }}" data-security="{{ presets.smtp2go.security }}">SMTP2GO</button>
         <button type="button" class="button button-quiet button-small" data-preset data-host="{{ presets.m365.host }}" data-port="{{ presets.m365.port }}" data-security="{{ presets.m365.security }}">Microsoft 365</button>
       </div>
+      <p class="field-help">Microsoft 365 is ending username-and-password SMTP sign-in, so this may stop working. Azure Communication Services or SMTP2GO are safer choices.</p>
     </div>
     {% endif %}
 

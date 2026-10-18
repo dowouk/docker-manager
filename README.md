@@ -217,7 +217,7 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 | **Update failed** | Yes | An update, rollback or Mailcow update ends in failure |
 | **Update finished** | No | An update finishes successfully |
 | **Check failing or recovered** | Yes | Every container check failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
-| **Layout problems** | Yes | The dashboard finds a problem with the server layout, such as a compose project folder that isn't mounted |
+| **Layout problems** | Yes | Not sent yet: it comes with the layout check in the next release (0.5). It is ticked by default so you will get it when it arrives |
 | **User waiting for approval** | Yes | Someone signs in with Microsoft for the first time and is waiting for an Admin to approve them |
 
 The **Weekly digest** card on the Settings page holds the digest schedule and whether to send it when everything is up to date. If no channel has the digest ticked, nothing is sent and **Send digest now** is hidden.
@@ -259,7 +259,7 @@ Choose **SMTP** for any mail server, including Microsoft 365. Enter the **Host**
 | Microsoft 365 | `smtp.office365.com` | 587 | STARTTLS |
 
 - **Security** is **STARTTLS** (usually port 587), **TLS** (usually port 465) or **None**. **None** sends everything, including the password, unencrypted, so it is only allowed when the host is a private address (for example a mail relay on your own network). Anything else is refused.
-- For Microsoft 365, the username is the mailbox's address and the sender must be that mailbox (or one it is allowed to send as). SMTP sign-in must be enabled for the mailbox, and the account needs an app password or an exception if your tenant uses multi-factor authentication.
+- **Microsoft 365 is ending username-and-password SMTP sign-in.** Microsoft is turning SMTP AUTH Basic authentication off by default for existing tenants from the end of December 2026, with a final removal date still to be announced. Until then an Admin may have to turn SMTP AUTH on for the tenant or mailbox, and it may stop working (sign-ins fail with `550 5.7.30 Basic authentication is not supported for Client Submission`). This channel only supports a username and password, so we recommend **Azure Communication Services** or **SMTP2GO** instead. If you still use Microsoft 365, the username is the mailbox's address, the sender must be that mailbox (or one it is allowed to send as), and if your tenant uses multi-factor authentication the mailbox needs an exception for this sign-in.
 
 ### Keeping 0.2 and 0.3 email settings
 

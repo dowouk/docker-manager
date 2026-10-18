@@ -334,3 +334,8 @@ def test_digest_sync_failure_still_redirects(app, client, caplog, monkeypatch):
     assert r.status_code == 303 and r.headers["location"].startswith("/settings?msg=channel_saved")
     assert len(app.state.channels.list()) == 1
     assert "RuntimeError" in caplog.text and "secret detail" not in caplog.text
+
+
+def test_microsoft_365_preset_carries_a_warning(client):
+    page = client.get("/settings/channels/new?provider=smtp").text
+    assert "Microsoft 365 is ending username-and-password SMTP sign-in" in page
