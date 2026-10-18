@@ -68,7 +68,7 @@ async def test_digest_job_swallows_errors(monkeypatch, settings, caplog):
     app = fake_app()
     app.state.settings = settings
     await sched_mod.scheduled_digest(app)
-    assert "down" in caplog.text
+    assert "RuntimeError" in caplog.text and "down" not in caplog.text
 
 
 SATURDAY_NOON = datetime(2026, 10, 17, 12, 0, tzinfo=LONDON)

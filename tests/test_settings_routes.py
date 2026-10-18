@@ -111,7 +111,7 @@ def test_email_test_sent(settings, tmp_path):
     assert sent and sent[0]["recipients"]["to"] == [{"address": "b@x.com"}]
 
 
-def test_email_test_failure_hides_error_text(settings, tmp_path):
+def test_email_test_failure_hides_error_text(settings, tmp_path, caplog):
     def factory(conn):
         raise RuntimeError("accesskey=TOPSECRET")
 
@@ -122,6 +122,38 @@ def test_email_test_failure_hides_error_text(settings, tmp_path):
         c.post("/settings/email", data=GOOD_EMAIL)
         r = c.post("/settings/email/test", data={"csrf_token": CSRF})
     assert "TOPSECRET" not in r.text and "The test email could not be sent" in r.text
+    assert "TOPSECRET" not in caplog.text and "RuntimeError" in caplog.text
+
+
+def test_malformed_connection_string_is_failure_not_unconfigured(settings, tmp_path):
+    def factory(conn):
+        raise ValueError("Invalid connection string")
+
+    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
+                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
+                     start_scheduler=False, email_client_factory=factory)
+    with logged_in_client(app, follow_redirects=False) as c:
+        c.post("/settings/email", data=GOOD_EMAIL)
+        r = c.post("/settings/email/test", data={"csrf_token": CSRF})
+    assert r.headers["location"] == "/settings?msg=email_failed#email"
+
+
+def test_digest_send_failure_does_not_log_secret(settings, tmp_path, caplog):
+    def factory(conn):
+        raise RuntimeError("accesskey=TOPSECRET")
+
+    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
+                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
+                     start_scheduler=False, email_client_factory=factory)
+    from datetime import datetime, timezone
+    from app.checker import CheckResult
+    now = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    app.state.store.save_check(CheckResult(checked_at=now, containers=[]).to_dict(), now)
+    with logged_in_client(app, follow_redirects=False) as c:
+        c.post("/settings/email", data={**GOOD_EMAIL, "digest_when_none": "on"})
+        r = c.post("/digest/send", data={"csrf_token": CSRF})
+    assert r.headers["location"] == "/?msg=digest_failed"
+    assert "TOPSECRET" not in caplog.text and "RuntimeError" in caplog.text
 
 
 def _add(client, host="ghcr.io", password="hunter2hunter2"):

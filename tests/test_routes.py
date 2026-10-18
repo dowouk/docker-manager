@@ -638,7 +638,7 @@ def test_digest_send_failure_logged(settings, tmp_path, seeded, caplog):
     with caplog.at_level(logging.ERROR, logger="app.main"):
         r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_failed"
-    assert "Sending the digest failed" in caplog.text and "acs down" in caplog.text
+    assert "Sending the digest failed (RuntimeError)" in caplog.text and "acs down" not in caplog.text
     assert "could not be sent" in c.get("/?msg=digest_failed").text
     c.__exit__(None, None, None)
 

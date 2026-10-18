@@ -140,10 +140,14 @@ def send_digest(settings: Settings, result: CheckResult, email_client_factory=No
     return "sent"
 
 
+class EmailNotConfigured(ValueError):
+    """Email settings are incomplete."""
+
+
 def send_test_email(settings: Settings, email_client_factory=None) -> None:
     """Send a short message to the digest recipients. Blocking, like send_digest."""
     if not settings.digest_enabled:
-        raise ValueError("Email is not configured")
+        raise EmailNotConfigured("Email is not configured")
     name = settings.server_name
     plain = (f"This is a test email from Docker Manager on {name}. "
              "If you can read this, email is working.")

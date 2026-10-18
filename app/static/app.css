@@ -231,6 +231,7 @@ table.data { width: 100%; border-collapse: collapse; }
 .input:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
 .field-invalid .input { border-color: var(--err); }
 .field-help, .field-error { margin: 0; font-size: 13px; color: var(--subtle); }
+.field-help code { white-space: nowrap; word-break: normal; }
 .field-error { color: var(--err-text); font-weight: 500; }
 .check { display: flex; align-items: flex-start; gap: 10px; font-weight: 500; color: var(--fg-strong); }
 .check input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--upd-btn); }

@@ -73,8 +73,9 @@ async def scheduled_digest(app: FastAPI) -> None:
             send_digest, app.state.settings, result, app.state.email_client_factory
         )
         log.info("Scheduled digest: %s", outcome)
-    except Exception:  # noqa: BLE001 – keep the scheduler alive
-        log.exception("Scheduled digest failed")
+    except Exception as exc:  # noqa: BLE001 – keep the scheduler alive
+        # Type only: the message can contain the email connection string.
+        log.error("Scheduled digest failed (%s)", type(exc).__name__)
 
 
 def _add_digest_job(scheduler: AsyncIOScheduler, app: FastAPI, settings: Settings, tz) -> None:

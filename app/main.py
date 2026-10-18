@@ -21,7 +21,7 @@ from app.auth import User, csrf_token, current_user, setup_auth, verify_csrf
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
-from app.digest import send_digest, send_test_email
+from app.digest import EmailNotConfigured, send_digest, send_test_email
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
@@ -369,8 +369,9 @@ def create_app(
             outcome = await asyncio.to_thread(
                 send_digest, app.state.settings, result, app.state.email_client_factory
             )
-        except Exception:  # noqa: BLE001
-            log.exception("Sending the digest failed")
+        except Exception as exc:  # noqa: BLE001
+            # Type only: the message can contain the email connection string.
+            log.error("Sending the digest failed (%s)", type(exc).__name__)
             return _redirect("/?msg=digest_failed")
         code = {
             "sent": "digest_sent",
@@ -577,10 +578,10 @@ def create_app(
             await asyncio.to_thread(
                 send_test_email, app.state.settings, app.state.email_client_factory
             )
-        except ValueError:
+        except EmailNotConfigured:
             return _redirect("/settings?msg=email_unconfigured#email")
-        except Exception:  # noqa: BLE001 – never show the text: it can hold the connection string
-            log.exception("Sending the test email failed")
+        except Exception as exc:  # noqa: BLE001 – the text can hold the connection string: log the type only
+            log.error("Sending the test email failed (%s)", type(exc).__name__)
             return _redirect("/settings?msg=email_failed#email")
         return _redirect("/settings?msg=email_sent#email")
 
