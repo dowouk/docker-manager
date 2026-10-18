@@ -15,6 +15,19 @@ HELPER_LABEL = "docker-manager.helper"
 _MIN_SELF_ID_LEN = 12
 
 
+_RULE_LABEL_PREFIX = "docker-manager."
+_IMAGE_SOURCE_LABEL = "org.opencontainers.image.source"
+
+
+@dataclass(frozen=True)
+class Mount:
+    type: str
+    source: str
+    destination: str
+    read_only: bool
+    name: str | None = None
+
+
 @dataclass
 class ContainerInfo:
     id: str
@@ -31,6 +44,16 @@ class ContainerInfo:
     is_self: bool
     local_tag_repo_digests: list[str] = field(default_factory=list)
     env_files: list[str] = field(default_factory=list)
+    labels: dict[str, str] = field(default_factory=dict)
+    mounts: list[Mount] = field(default_factory=list)
+    image_source: str | None = None
+
+
+def container_key(info: ContainerInfo) -> str:
+    """Identity for rules and skips: project/service for compose containers, else the name."""
+    if info.project and info.service:
+        return f"{info.project}/{info.service}"
+    return info.name
 
 
 def detect_self_id() -> str | None:
@@ -48,6 +71,26 @@ def _get_image(client: docker.DockerClient, ref: str):
 
 def _paths(label: str) -> list[str]:
     return [p.strip() for p in label.split(",") if p.strip()]
+
+
+def _mounts(attrs: dict) -> list[Mount]:
+    return [
+        Mount(
+            type=m.get("Type") or "",
+            source=m.get("Source") or "",
+            destination=m.get("Destination") or "",
+            read_only=not m.get("RW", True),
+            name=m.get("Name") or None,
+        )
+        for m in attrs.get("Mounts") or []
+    ]
+
+
+def _image_source(image) -> str | None:
+    if image is None:
+        return None
+    config = image.attrs.get("Config") or {}
+    return (config.get("Labels") or {}).get(_IMAGE_SOURCE_LABEL) or None
 
 
 def list_containers(client: docker.DockerClient, self_id: str | None) -> list[ContainerInfo]:
@@ -78,6 +121,9 @@ def list_containers(client: docker.DockerClient, self_id: str | None) -> list[Co
                 config_files=config_files,
                 env_files=_paths(labels.get(_LABEL_ENV_FILES, "")),
                 service=labels.get(_LABEL_SERVICE),
+                labels={k: v for k, v in labels.items() if k.startswith(_RULE_LABEL_PREFIX)},
+                mounts=_mounts(attrs),
+                image_source=_image_source(running),
                 state=attrs.get("State", {}).get("Status", c.status),
                 is_self=bool(self_id)
                 and len(self_id) >= _MIN_SELF_ID_LEN

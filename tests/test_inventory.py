@@ -1,6 +1,6 @@
 import docker.errors
 
-from app.inventory import detect_self_id, list_containers
+from app.inventory import Mount, container_key, detect_self_id, list_containers
 
 ID_A = "a" * 64
 ID_B = "b" * 64
@@ -8,7 +8,7 @@ ID_C = "c" * 64
 
 
 class StubContainer:
-    def __init__(self, cid, name, image_ref, image_id, state="running", labels=None):
+    def __init__(self, cid, name, image_ref, image_id, state="running", labels=None, mounts=None):
         self.id = cid
         self.name = name
         self.labels = labels or {}
@@ -17,13 +17,16 @@ class StubContainer:
             "Config": {"Image": image_ref, "Labels": self.labels},
             "Image": image_id,
             "State": {"Status": state},
+            "Mounts": mounts or [],
         }
 
 
 class StubImage:
-    def __init__(self, image_id, digests):
+    def __init__(self, image_id, digests, labels=None, no_config=False):
         self.id = image_id
         self.attrs = {"RepoDigests": digests}
+        if not no_config:
+            self.attrs["Config"] = {"Labels": labels}
 
 
 class StubContainers:
@@ -148,3 +151,62 @@ def test_self_update_helper_is_not_listed():
         ID_C, "vigilant_sutherland", "ghcr.io/dowouk/docker-manager:latest", "sha256:web",
         state="exited", labels={"docker-manager.helper": "self-update"}))
     assert [c.name for c in list_containers(client, None)] == ["web", "plain"]
+
+
+def _one(container, images=None):
+    imgs = images or StubImages({"sha256:i": StubImage("sha256:i", [])})
+    return list_containers(StubClient([container], imgs), None)[0]
+
+
+def test_mounts_parsed():
+    hexname = "f" * 64
+    c = StubContainer(
+        ID_A, "m", "img", "sha256:i",
+        mounts=[
+            {"Type": "bind", "Source": "/srv/a", "Destination": "/a", "RW": True},
+            {"Type": "volume", "Name": "vol", "Source": "/var/lib/docker/volumes/vol/_data",
+             "Destination": "/v", "RW": False},
+            {"Type": "tmpfs", "Destination": "/t", "RW": True},
+            {"Type": "volume", "Name": hexname, "Source": "/x", "Destination": "/anon", "RW": True},
+        ],
+    )
+    m = _one(c).mounts
+    assert m[0] == Mount("bind", "/srv/a", "/a", False, None)
+    assert m[1] == Mount("volume", "/var/lib/docker/volumes/vol/_data", "/v", True, "vol")
+    assert m[2] == Mount("tmpfs", "", "/t", False, None)
+    assert m[3].name == hexname and m[3].destination == "/anon"
+
+
+def test_no_mounts_key_gives_empty_list():
+    c = StubContainer(ID_A, "m", "img", "sha256:i")
+    del c.attrs["Mounts"]
+    assert _one(c).mounts == []
+
+
+def test_only_docker_manager_labels_kept():
+    c = StubContainer(
+        ID_A, "m", "img", "sha256:i",
+        labels={"docker-manager.enable": "false", "docker-manager.notify": "no", "other": "x",
+                "com.docker.compose.project": "p"},
+    )
+    assert _one(c).labels == {"docker-manager.enable": "false", "docker-manager.notify": "no"}
+
+
+def test_image_source_read_from_running_image():
+    imgs = StubImages({"sha256:i": StubImage(
+        "sha256:i", [], labels={"org.opencontainers.image.source": "https://github.com/o/r"})})
+    assert _one(StubContainer(ID_A, "m", "img", "sha256:i"), imgs).image_source == "https://github.com/o/r"
+
+
+def test_image_source_absent_none_or_missing_image():
+    for img in (StubImage("sha256:i", [], labels=None), StubImage("sha256:i", [], no_config=True)):
+        assert _one(StubContainer(ID_A, "m", "img", "sha256:i"),
+                    StubImages({"sha256:i": img})).image_source is None
+    assert _one(StubContainer(ID_A, "m", "img", "sha256:gone"), StubImages({})).image_source is None
+
+
+def test_container_key():
+    compose = _one(StubContainer(ID_A, "site-web-1", "img", "sha256:i", labels={
+        "com.docker.compose.project": "site", "com.docker.compose.service": "web"}))
+    assert container_key(compose) == "site/web"
+    assert container_key(_one(StubContainer(ID_A, "plain", "img", "sha256:i"))) == "plain"

@@ -8,7 +8,7 @@ from enum import StrEnum
 
 from app.config import Settings
 from app.imageref import parse_image_ref
-from app.inventory import ContainerInfo
+from app.inventory import ContainerInfo, Mount
 from app.registry import NotFoundError, RegistryClient
 from app.versions import find_version_updates, parse_version_tag
 
@@ -44,6 +44,12 @@ class ContainerStatus:
     not_updatable_reason: str | None = None
 
 
+def _container_from_dict(data: dict) -> ContainerInfo:
+    # Older stored results lack labels, mounts and image_source: the defaults apply.
+    mounts = [Mount(**m) for m in data.get("mounts") or []]
+    return ContainerInfo(**{**data, "mounts": mounts})
+
+
 @dataclass
 class CheckResult:
     checked_at: datetime
@@ -63,7 +69,11 @@ class CheckResult:
     def from_dict(cls, data: dict) -> "CheckResult":
         containers = [
             ContainerStatus(
-                **{**cs, "container": ContainerInfo(**cs["container"]), "status": Status(cs["status"])}
+                **{
+                    **cs,
+                    "container": _container_from_dict(cs["container"]),
+                    "status": Status(cs["status"]),
+                }
             )
             for cs in data["containers"]
         ]
