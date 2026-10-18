@@ -74,6 +74,7 @@ EXPECTED_AUTH_ROUTES = {
 
 # What setup_auth alone registers (test apps that don't go through create_app).
 BARE_AUTH_ROUTES = EXPECTED_AUTH_ROUTES - {
+    ("/auth/entra", "GET"), ("/auth/callback", "GET"),
     ("/auth/login", "GET"), ("/auth/login", "POST"), ("/auth/totp", "GET"), ("/auth/totp", "POST"),
 }
 

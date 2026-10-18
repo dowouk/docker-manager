@@ -1,4 +1,4 @@
-"""Microsoft Entra ID sign-in (OIDC code flow + PKCE), auth guard and CSRF.
+"""Auth guard, roles on routes and CSRF (Microsoft sign-in is in app.entra).
 
 The guard is a pure ASGI middleware that sits *inside* ServerSessionMiddleware, so
 ``scope["session"]`` is available. Everything except ``/auth/*``, ``/static/*``,
@@ -9,10 +9,6 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import httpx
-from authlib.integrations.starlette_client import OAuth, OAuthError
-from authlib.common.errors import AuthlibBaseError
-from joserfc.errors import JoseError
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
@@ -26,66 +22,12 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 @dataclass(frozen=True)
-class Identity:
-    """Who a verified Entra token says signed in (not yet an account)."""
-    name: str
-    email: str
-
-
-@dataclass(frozen=True)
 class User:
     id: int
     name: str
     email: str
     role: Role
     kind: str
-
-
-def _issuer(settings: Settings) -> str:
-    return f"https://login.microsoftonline.com/{settings.azure_tenant_id}/v2.0"
-
-
-def user_from_claims(claims: dict, settings: Settings) -> Identity | None:
-    """Return the identity if the (already signature-verified) claims are acceptable.
-
-    Fails closed: any configured restriction (ALLOWED_EMAILS, ALLOWED_GROUP_ID)
-    must be satisfied. If groups are missing from the token (e.g. group overage)
-    and a group restriction is configured, access is denied.
-    """
-    if not isinstance(claims, dict):
-        return None
-    if claims.get("tid") != settings.azure_tenant_id:
-        return None
-    if claims.get("iss") != _issuer(settings):
-        return None
-    aud = claims.get("aud")
-    if isinstance(aud, list):
-        # multi-audience token: the authorised party must be this client too
-        if settings.azure_client_id not in aud or claims.get("azp") != settings.azure_client_id:
-            return None
-    elif aud != settings.azure_client_id:
-        return None
-
-    def _clean(value) -> str:
-        return value.strip() if isinstance(value, str) else ""
-
-    username = _clean(claims.get("preferred_username"))
-    email = _clean(claims.get("email"))
-    identity = username or email
-    if not identity:
-        return None
-
-    if settings.allowed_emails:
-        # preferred_username only: the `email` claim may be unverified (guests)
-        allowed = {e.strip().lower() for e in settings.allowed_emails if e and e.strip()}
-        if not username or username.lower() not in allowed:
-            return None
-    if settings.allowed_group_id:
-        groups = claims.get("groups")
-        if not isinstance(groups, list) or settings.allowed_group_id not in groups:
-            return None
-
-    return Identity(name=_clean(claims.get("name")) or identity, email=identity)
 
 
 def _clean_path(path: str) -> bool:
@@ -273,72 +215,8 @@ def _page(title: str, body: str, status: int) -> HTMLResponse:
 
 def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore,
                setup_open: Callable[[], bool] = lambda: False) -> None:
-    oauth = OAuth()
-    if not settings.entra_enabled:
-        # Task 7 replaces this; until then Microsoft sign-in is simply unavailable.
-        app.state.oauth = oauth
-
-        @app.get("/auth/entra", include_in_schema=False)
-        @app.get("/auth/callback", include_in_schema=False)
-        async def not_set_up():
-            if (settings.azure_tenant_id and settings.azure_client_id
-                    and settings.azure_client_secret):
-                return _page("Microsoft sign-in isn't set up",
-                             "Set the dashboard address on the Settings page first.", 503)
-            return _page("Microsoft sign-in isn't set up",
-                         "Ask the administrator to set up Microsoft sign-in.", 503)
-
-        _finish_setup(app, sessions, setup_open)
-        return
-    oauth.register(
-        name="entra",
-        client_id=settings.azure_client_id,
-        client_secret=settings.azure_client_secret,
-        server_metadata_url=(
-            f"https://login.microsoftonline.com/{settings.azure_tenant_id}"
-            "/v2.0/.well-known/openid-configuration"
-        ),
-        client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
-    )
-    app.state.oauth = oauth
-    redirect_uri = settings.public_url.rstrip("/") + "/auth/callback"
-
-    @app.get("/auth/entra", include_in_schema=False)
-    async def login(request: Request):
-        return await oauth.entra.authorize_redirect(request, redirect_uri)
-
-    @app.get("/auth/callback", include_in_schema=False)
-    async def callback(request: Request):
-        try:
-            token = await oauth.entra.authorize_access_token(request)
-        except (OAuthError, AuthlibBaseError, JoseError, httpx.HTTPError):
-            request.session.clear()
-            return _page(
-                "Sign-in failed",
-                "Sign-in could not be completed. <a href=\"/auth/login\">Try again</a>.",
-                400,
-            )
-        identity = user_from_claims(token.get("userinfo") or {}, settings)
-        request.session.clear()  # always start fresh (session fixation)
-        users: UserStore = request.app.state.users
-        # Interim (until Task 7): 0.2 access rules, and 0.2 gave every allowed user full
-        # control, so a first sign-in creates an Admin.
-        record = None
-        if identity is not None:
-            record = users.by_email("entra", identity.email) or users.create(
-                "entra", identity.email, identity.name, Role.ADMIN.value, pinned=True)
-        if record is None or record.disabled:
-            return _page(
-                "You don't have access to this dashboard",
-                "Your account is not permitted to use this dashboard. "
-                "Ask the administrator for access.",
-                403,
-            )
-        users.touch_sign_in(record.id)
-        request.session["user_id"] = record.id
-        request.session["csrf"] = secrets.token_urlsafe(32)
-        return RedirectResponse("/", status_code=302)
-
+    """The guard, session middleware, sign-out and the pending page (Microsoft sign-in
+    itself lives in app.entra)."""
     _finish_setup(app, sessions, setup_open)
 
 

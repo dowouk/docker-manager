@@ -217,7 +217,7 @@ def test_entra_off_hides_microsoft_button(app, client):
 
 @respx.mock
 def test_entra_redirect_moved_to_entra_route(client):
-    from test_auth import METADATA
+    from test_entra import METADATA
     respx.get("https://login.microsoftonline.com/tenant/v2.0/.well-known/openid-configuration"
               ).mock(return_value=httpx.Response(200, json=METADATA))
     r = client.get("/auth/entra")

@@ -17,7 +17,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.auth import User, csrf_token, current_user, setup_auth, verify_csrf
+from app.auth import User, csrf_token, current_user, require_role, setup_auth, verify_csrf
+from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
@@ -34,11 +35,12 @@ from app.registry_logins import (
     test_login,
     write_docker_config,
 )
+from app.roles import Role
 from app.sessions import SessionStore
 from app.signin import setup_signin
 from app.users import UserStore
 from app.settings_service import (
-    FIELDS, KEY_UNUSABLE_MESSAGE, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
+    FIELDS, KEY_UNUSABLE_MESSAGE, MAPPABLE_ROLES, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
 )
 from app.store import Store
 from app import view
@@ -77,6 +79,10 @@ SETTINGS_FLASH = {
     "email_unconfigured": ("Save a connection string, sender and recipient before sending a test", "error"),
     "registry_saved": ("Registry login saved", "ok"),
     "registry_removed": ("Registry login removed", "ok"),
+    "entra_ok": ("Microsoft sign-in settings look right", "ok"),
+    "entra_failed": ("Couldn't reach Microsoft with these settings – check the tenant ID", "error"),
+    "group_saved": ("Group role saved", "ok"),
+    "group_removed": ("Group role removed", "ok"),
 }
 
 STATUS_LABELS = {
@@ -202,6 +208,7 @@ def apply_registry_logins(app: FastAPI) -> None:
 def apply_settings(app: FastAPI) -> None:
     """Make a saved settings change take effect in the running app."""
     app.state.settings = app.state.settings_service.effective()
+    app.state.oauth = build_oauth(app.state.settings)
     apply_registry_logins(app)
     app.state.templates.env.globals["server_name"] = app.state.settings.server_name
     if app.state.scheduler is not None:
@@ -275,6 +282,7 @@ def create_app(
     app.state.sessions = SessionStore(store)
     app.state.sessions.purge_expired()  # dead rows would otherwise pile up
     setup_auth(app, settings, app.state.sessions)
+    setup_entra(app)
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
 
     env = jinja2.Environment(
@@ -560,7 +568,7 @@ def create_app(
     def render_settings(
         request: Request, user: User, status_code: int = 200, *, msg: str = "",
         section: str | None = None, submitted=None, errors=None,
-        registry_form=None, registry_error=None,
+        registry_form=None, registry_error=None, group_form=None, group_error=None,
     ):
         service = app.state.settings_service
         fields = {key: settings_fields(
@@ -575,6 +583,11 @@ def create_app(
             registry_unreadable="registry_logins" in service.unreadable,
             registry_form=registry_form or {"host": "", "username": ""},
             registry_error=registry_error,
+            redirect_uri=redirect_uri(app.state.settings),
+            group_mappings=service.group_mappings(),
+            group_roles=MAPPABLE_ROLES,
+            group_form=group_form or {"group_id": "", "role": "viewer"},
+            group_error=group_error,
             flash=SETTINGS_FLASH.get(msg),
         )
 
@@ -644,6 +657,41 @@ def create_app(
             service.save_registry_logins(kept, user.email, f"Registry login {registry} removed")
             apply_settings(app)
         return _redirect("/settings?msg=registry_removed#registries")
+
+    @app.post("/settings/signin/test", dependencies=[Depends(verify_csrf)])
+    async def settings_signin_test(user: User = Depends(require_role(Role.ADMIN))):
+        ok = await check_settings(app.state.http, app.state.settings)
+        return _redirect(f"/settings?msg={'entra_ok' if ok else 'entra_failed'}#signin")
+
+    @app.post("/settings/group-mappings", dependencies=[Depends(verify_csrf)])
+    async def settings_group_add(
+        request: Request,
+        group_id: str = Form(""),
+        role: str = Form(""),
+        user: User = Depends(require_role(Role.ADMIN)),
+    ):
+        service = app.state.settings_service
+        gid = group_id.strip().lower()
+        mappings = [m for m in service.group_mappings() if m["group_id"].lower() != gid]
+        mappings.append({"group_id": gid, "role": role})
+        try:
+            service.save_group_mappings(
+                mappings, user.email, f"Group {gid} mapped to {MAPPABLE_ROLES.get(role, role)}")
+        except ValueError as exc:  # fixed messages only
+            return render_settings(
+                request, user, 400, group_error=str(exc),
+                group_form={"group_id": group_id.strip(), "role": role})
+        return _redirect("/settings?msg=group_saved#signin")
+
+    @app.post("/settings/group-mappings/{group_id}/delete", dependencies=[Depends(verify_csrf)])
+    async def settings_group_delete(group_id: str, user: User = Depends(require_role(Role.ADMIN))):
+        service = app.state.settings_service
+        gid = group_id.strip().lower()
+        mappings = service.group_mappings()
+        kept = [m for m in mappings if m["group_id"].lower() != gid]
+        if len(kept) != len(mappings):
+            service.save_group_mappings(kept, user.email, f"Group {gid} role removed")
+        return _redirect("/settings?msg=group_removed#signin")
 
     @app.post("/settings/{section}", dependencies=[Depends(verify_csrf)])
     async def settings_save(
