@@ -103,11 +103,6 @@ def test_unknown_section_404(client):
     assert client.post("/settings/nope", data={"csrf_token": CSRF}).status_code == 404
 
 
-def test_email_test_unconfigured(client):
-    r = client.post("/settings/email/test", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/settings?msg=email_unconfigured#digest"
-
-
 @pytest.fixture
 def email_settings(settings, monkeypatch):
     from app.config import Settings
@@ -121,25 +116,6 @@ def _email_app(email_settings, tmp_path, provider):
     return create_app(email_settings, docker_client=object(), http=httpx.AsyncClient(),
                       store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
                       start_scheduler=False, providers=providers_for(provider))
-
-
-def test_email_test_sent(email_settings, tmp_path):
-    fake = FakeProvider()
-    with logged_in_client(_email_app(email_settings, tmp_path, fake),
-                          follow_redirects=False) as c:
-        r = c.post("/settings/email/test", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/settings?msg=email_sent#digest"
-    assert fake.sent and fake.sent[0][1].recipients == ("b@x.com",)
-    assert "test notification" in fake.sent[0][1].subject
-
-
-def test_email_test_failure_hides_error_text(email_settings, tmp_path, caplog):
-    fake = FakeProvider(fail=RuntimeError("accesskey=TOPSECRET"))
-    with logged_in_client(_email_app(email_settings, tmp_path, fake),
-                          follow_redirects=True) as c:
-        r = c.post("/settings/email/test", data={"csrf_token": CSRF})
-    assert "TOPSECRET" not in r.text and "The test email could not be sent" in r.text
-    assert "TOPSECRET" not in caplog.text and "RuntimeError" in caplog.text
 
 
 def test_digest_send_failure_does_not_log_secret(email_settings, tmp_path, caplog):

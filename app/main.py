@@ -3,6 +3,7 @@ import asyncio
 import functools
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -22,9 +23,13 @@ from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
-from app.notify.channels import ChannelStore
-from app.notify.notifier import Notifier
-from app.notify.providers import PROVIDERS
+from app.notify.channels import (
+    DEFAULT_EVENTS, EVENTS, Channel, ChannelError, ChannelStore,
+)
+from app.notify.notifier import NO_SUCH_CHANNEL, UNKNOWN_PROVIDER, Notifier
+from app.notify.providers import (
+    LOGIN_REFUSED, NO_ANSWER, NOT_PRIVATE, PROVIDERS, REJECTED, SMTP_PRESETS, UNREACHABLE,
+)
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
@@ -81,9 +86,9 @@ FLASH = {
 # Same idea for the Settings page.
 SETTINGS_FLASH = {
     "saved": ("Settings saved", "ok"),
-    "email_sent": ("Test email sent", "ok"),
-    "email_failed": ("The test email could not be sent – check the server logs", "error"),
-    "email_unconfigured": ("Add a notification channel that gets the weekly digest before sending a test", "error"),
+    "channel_saved": ("Notification channel saved", "ok"),
+    "channel_removed": ("Notification channel removed", "ok"),
+    "channel_unavailable": ("The notification channels can't be changed right now – see the server logs", "error"),
     "registry_saved": ("Registry login saved", "ok"),
     "registry_removed": ("Registry login removed", "ok"),
     "entra_ok": ("Microsoft sign-in settings look right", "ok"),
@@ -91,6 +96,18 @@ SETTINGS_FLASH = {
     "group_saved": ("Group role saved", "ok"),
     "group_removed": ("Group role removed", "ok"),
 }
+
+# Every reason a send can fail with, by position: the test result travels in the redirect as
+# a number, never as text, so the flash can only ever show one of these.
+CHANNEL_REASONS = (LOGIN_REFUSED, UNREACHABLE, REJECTED, NO_ANSWER, NOT_PRIVATE,
+                   UNKNOWN_PROVIDER, NO_SUCH_CHANNEL)
+CHANNEL_ID = re.compile(r"^(?:[0-9a-f]{16}|env)$")
+RECIPIENT_SPLIT = re.compile(r"[,;\s]+")
+
+
+def known_reason(reason: str | None) -> str:
+    return reason if reason in CHANNEL_REASONS else REJECTED
+
 
 STATUS_LABELS = {
     Status.UP_TO_DATE: "Up to date",
@@ -636,6 +653,7 @@ def create_app(
         request: Request, user: User, status_code: int = 200, *, msg: str = "",
         section: str | None = None, submitted=None, errors=None,
         registry_form=None, registry_error=None, group_form=None, group_error=None,
+        flash=None,
     ):
         service = app.state.settings_service
         fields = {key: settings_fields(
@@ -655,22 +673,173 @@ def create_app(
             group_roles=MAPPABLE_ROLES,
             group_form=group_form or {"group_id": "", "role": "viewer"},
             group_error=group_error,
-            flash=SETTINGS_FLASH.get(msg),
+            channels=channel_rows(),
+            channels_unreadable=app.state.channels.unreadable,
+            providers=PROVIDERS,
+            flash=flash or SETTINGS_FLASH.get(msg),
         )
 
+    def channel_rows() -> list[dict]:
+        rows = []
+        for c in app.state.channels.list():
+            provider = PROVIDERS.get(c.provider)
+            last = app.state.notifier.last_result(c.id)
+            status, at = "Not used yet", None
+            if last is not None:
+                if last.get("ok"):
+                    status = "sent"
+                    try:
+                        at = datetime.fromisoformat(str(last.get("at")))
+                    except ValueError:
+                        status, at = "Not used yet", None
+                else:
+                    status = f"Last attempt failed – {known_reason(last.get('reason'))}"
+            rows.append({
+                "id": c.id, "name": c.name, "enabled": c.enabled, "readonly": c.readonly,
+                "provider": provider.label if provider else c.provider,
+                "recipients": ", ".join(c.recipients),
+                "events": [label for key, label in EVENTS.items() if key in c.events],
+                "status": status, "at": at,
+                "failed": status.startswith("Last attempt failed"),
+            })
+        return rows
+
+    def channel_flash(msg: str, channel: str, reason: str):
+        """Test results: the name comes from the store (escaped by the template) and the
+        reason from CHANNEL_REASONS by number – nothing from the query is shown."""
+        if msg not in ("channel_test_ok", "channel_test_failed") or not CHANNEL_ID.match(channel):
+            return None
+        found = app.state.channels.get(channel)
+        if found is None:
+            return None
+        if msg == "channel_test_ok":
+            return (f"Test sent to {found.name}", "ok")
+        if not (reason.isascii() and reason.isdecimal() and int(reason) < len(CHANNEL_REASONS)):
+            return None
+        return (f"The test couldn't be sent to {found.name} – {CHANNEL_REASONS[int(reason)]}",
+                "error")
+
     @app.get("/settings", response_class=HTMLResponse)
-    async def settings_page(request: Request, msg: str = "", user: User = Depends(require_role(Role.ADMIN))):
-        return render_settings(request, user, msg=msg)
+    async def settings_page(
+        request: Request, msg: str = "", channel: str = "", reason: str = "",
+        user: User = Depends(require_role(Role.ADMIN)),
+    ):
+        return render_settings(request, user, msg=msg, flash=channel_flash(msg, channel, reason))
 
     # The fixed paths below are declared before /settings/{section} so they win.
-    @app.post("/settings/email/test", dependencies=[Depends(verify_csrf)])
-    async def settings_email_test(user: User = Depends(require_role(Role.ADMIN))):
-        # Until the channel pages arrive: test the first channel that gets the digest.
-        channels = app.state.channels.subscribed("digest")
-        if not channels:
-            return _redirect("/settings?msg=email_unconfigured#digest")
-        reason = await app.state.notifier.test(channels[0].id)
-        return _redirect(f"/settings?msg={'email_sent' if reason is None else 'email_failed'}#digest")
+    # -- notification channels ---------------------------------------------------------------
+    def sync_digest() -> None:
+        if app.state.scheduler is not None:
+            from app.scheduler import sync_digest_job  # deferred: scheduler imports this module
+
+            sync_digest_job(app)
+
+    def channel_or_404(channel_id: str, *, editable: bool = True) -> Channel:
+        found = app.state.channels.get(channel_id) if CHANNEL_ID.match(channel_id) else None
+        if found is None or (editable and found.readonly):
+            raise HTTPException(status_code=404)
+        return found
+
+    def render_channel_form(
+        request: Request, user: User, provider_key: str, status_code: int = 200, *,
+        channel: Channel | None = None, submitted=None, errors=None,
+    ):
+        provider = PROVIDERS[provider_key]
+        if submitted is not None:
+            values = {"name": submitted.get("name", ""), "recipients": submitted.get("recipients", ""),
+                      "events": set(submitted.getlist("events")),
+                      "enabled": submitted.get("enabled") == "on"}
+        elif channel is not None:
+            values = {"name": channel.name, "recipients": ", ".join(channel.recipients),
+                      "events": set(channel.events), "enabled": channel.enabled}
+        else:
+            values = {"name": "", "recipients": "", "events": set(DEFAULT_EVENTS), "enabled": True}
+        fields = []
+        for f in provider.fields:
+            if f.kind == "secret":
+                value = ""
+            elif submitted is not None:
+                value = submitted.get(f.name, "")
+            elif channel is not None and channel.provider == provider_key:
+                value = channel.config.get(f.name, "")
+            else:
+                value = f.default
+            fields.append({
+                "name": f.name, "label": f.label, "kind": f.kind, "help": f.help,
+                "choices": f.choices, "value": value, "error": (errors or {}).get(f.name),
+                "has_secret": f.kind == "secret" and channel is not None
+                and channel.provider == provider_key
+                and app.state.channels.has_secret(channel.id, f.name),
+            })
+        return render(
+            request, "channel_form.html", user, status_code,
+            provider=provider, channel=channel, values=values, fields=fields,
+            events=EVENTS, errors=errors or {},
+            presets=SMTP_PRESETS if provider_key == "smtp" else {},
+        )
+
+    @app.get("/settings/channels/new", response_class=HTMLResponse)
+    async def channel_new(request: Request, provider: str = "",
+                          user: User = Depends(require_role(Role.ADMIN))):
+        if provider not in PROVIDERS:
+            raise HTTPException(status_code=404)
+        return render_channel_form(request, user, provider)
+
+    @app.get("/settings/channels/{channel_id}", response_class=HTMLResponse)
+    async def channel_edit(channel_id: str, request: Request,
+                           user: User = Depends(require_role(Role.ADMIN))):
+        found = channel_or_404(channel_id)
+        if found.provider not in PROVIDERS:
+            raise HTTPException(status_code=404)
+        return render_channel_form(request, user, found.provider, channel=found)
+
+    async def save_channel(request: Request, user: User, existing: Channel | None):
+        form = await request.form()
+        provider_key = existing.provider if existing else str(form.get("provider") or "")
+        if provider_key not in PROVIDERS:
+            raise HTTPException(status_code=404)
+        candidate = Channel(
+            existing.id if existing else "", str(form.get("name") or ""), provider_key, {},
+            [r for r in RECIPIENT_SPLIT.split(str(form.get("recipients") or "")) if r],
+            {str(e) for e in form.getlist("events")}, form.get("enabled") == "on",
+        )
+        config = {f.name: str(form.get(f.name) or "") for f in PROVIDERS[provider_key].fields}
+        try:
+            app.state.channels.save(candidate, config, user.email)
+        except ChannelError as err:
+            return render_channel_form(request, user, provider_key, 400, channel=existing,
+                                       submitted=form, errors=err.errors)
+        sync_digest()
+        return _redirect("/settings?msg=channel_saved#notifications")
+
+    @app.post("/settings/channels", dependencies=[Depends(verify_csrf)])
+    async def channel_create(request: Request, user: User = Depends(require_role(Role.ADMIN))):
+        return await save_channel(request, user, None)
+
+    @app.post("/settings/channels/{channel_id}", dependencies=[Depends(verify_csrf)])
+    async def channel_update(channel_id: str, request: Request,
+                             user: User = Depends(require_role(Role.ADMIN))):
+        return await save_channel(request, user, channel_or_404(channel_id))
+
+    @app.post("/settings/channels/{channel_id}/delete", dependencies=[Depends(verify_csrf)])
+    async def channel_delete(channel_id: str, user: User = Depends(require_role(Role.ADMIN))):
+        channel_or_404(channel_id)
+        try:
+            app.state.channels.delete(channel_id, user.email)
+        except ChannelError:
+            return _redirect("/settings?msg=channel_unavailable#notifications")
+        sync_digest()
+        return _redirect("/settings?msg=channel_removed#notifications")
+
+    @app.post("/settings/channels/{channel_id}/test", dependencies=[Depends(verify_csrf)])
+    async def channel_test(channel_id: str, user: User = Depends(require_role(Role.ADMIN))):
+        channel_or_404(channel_id, editable=False)  # the environment channel can be tested
+        reason = await app.state.notifier.test(channel_id)
+        if reason is None:
+            return _redirect(f"/settings?msg=channel_test_ok&channel={channel_id}#notifications")
+        code = CHANNEL_REASONS.index(known_reason(reason))
+        return _redirect(
+            f"/settings?msg=channel_test_failed&channel={channel_id}&reason={code}#notifications")
 
     @app.post("/settings/registries", dependencies=[Depends(verify_csrf)])
     async def settings_registry_add(

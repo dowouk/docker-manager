@@ -162,7 +162,26 @@
     }
   }
 
+  // SMTP presets on the channel form: fill host, port and security. Hidden without JS.
+  function initPresets() {
+    var box = document.querySelector("[data-presets]");
+    if (!box) return;
+    function set(name, value) {
+      var field = document.getElementById("f-" + name);
+      if (field) field.value = value;
+    }
+    box.addEventListener("click", function (event) {
+      var button = event.target.closest ? event.target.closest("button[data-preset]") : null;
+      if (!button) return;
+      set("host", button.getAttribute("data-host"));
+      set("port", button.getAttribute("data-port"));
+      set("security", button.getAttribute("data-security"));
+    });
+    box.hidden = false;
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    initPresets();
     initCopy();
     initTheme();
     initAccountMenu();
