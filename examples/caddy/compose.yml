@@ -29,8 +29,6 @@ services:
     # [Mailcow] privileged: true
     environment:
       # ---- Required -------------------------------------------------------
-      # Shown in the page header and the weekly email.
-      SERVER_NAME: "server1"
       # The address you open in the browser – must match the redirect URI in
       # the Entra app registration (https://<this host>/auth/callback).
       PUBLIC_URL: "https://updates.example.com"
@@ -39,7 +37,6 @@ services:
       AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
       AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
       AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
-      SESSION_SECRET: "${SESSION_SECRET}"
 
       # ---- Optional extra restrictions (on top of "Assignment required") --
       # Sign-in names (UPNs), comma-separated – not mail addresses, if they differ.
@@ -47,15 +44,18 @@ services:
       # Object ID of an Entra group; needs a groups claim (see README).
       # ALLOWED_GROUP_ID: "00000000-0000-0000-0000-000000000000"
 
-      # ---- Weekly email (optional – set in .env; leave ACS_CONNECTION_STRING
-      # empty there to turn it off)
-      ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"
-      DIGEST_FROM: "${DIGEST_FROM}"
-      DIGEST_TO: "${DIGEST_TO}"
+      # ---- Weekly email (optional – or set these on the Settings page) ----
+      # Anything set here wins over the Settings page and shows as locked there.
+      # ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"   # keep the value in .env
+      # DIGEST_FROM: "${DIGEST_FROM}"
+      # DIGEST_TO: "${DIGEST_TO}"
       # DIGEST_SCHEDULE: "0 8 * * MON"   # minute hour day month weekday (MON, MON-FRI, SAT,SUN)
       # DIGEST_WHEN_NONE: "true"         # also email when everything is up to date
 
       # ---- Other optional settings (defaults shown) -----------------------
+      # Most of these can also be set on the Settings page; anything set here
+      # wins and shows as locked there.
+      # SERVER_NAME: "server1"   # shown in the page header and the email
       # CHECK_INTERVAL_HOURS: "6"
       # COMPOSE_ROOT: "/docker"
       # TZ: "Europe/London"
