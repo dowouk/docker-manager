@@ -37,6 +37,28 @@ def row_state(cs: ContainerStatus) -> str:
     return "current"
 
 
+def filter_state(cs: ContainerStatus) -> str:
+    """Space-separated tokens the dashboard filters match on (`data-state`)."""
+    state = row_state(cs)
+    tokens = {"update": ["needs-update"], "error": ["error"], "current": ["up-to-date"],
+              "unchecked": ["not-checkable"], "not_watched": ["not-watched"]}[state]
+    if cs.major_update:
+        tokens = tokens + ["major"]
+    if cs.container.state != "running":
+        tokens = tokens + ["stopped"]
+    return " ".join(tokens)
+
+
+def has_layout_data(result: CheckResult | None) -> bool:
+    """Whether the check result carries file-layout findings (the Layout chip needs them)."""
+    return bool(result is not None and getattr(result, "layout", None))
+
+
+def layout_problems(result: CheckResult | None, cs: ContainerStatus) -> int:
+    """Layout findings for one container; 0 until the layout check fills them in."""
+    return 0
+
+
 def mailcow_state(mc: MailcowStatus) -> str:
     if mc.error:
         return "error"

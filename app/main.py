@@ -33,6 +33,7 @@ from app.notify.providers import (
 )
 from app.imageref import parse_image_ref
 from app.inventory import container_key, detect_self_id, list_containers
+from app.links import release_notes_url
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import KeyUnusable, load_secret_box
@@ -403,6 +404,8 @@ def create_app(
         skip_kind_labels=skips_mod.KIND_LABELS,
         mailcow_skip_items=lambda result: [i for i in [skips_mod.mailcow_item(result)] if i],
         row_state=view.row_state,
+        filter_state=view.filter_state,
+        layout_problems=view.layout_problems,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
@@ -479,10 +482,15 @@ def create_app(
                 log.exception("Check failed while loading the dashboard")
                 error = f"The check could not be completed: {str(exc) or type(exc).__name__}"
         shown, hidden = skips_mod.visible_result(result, app.state.skips) if result else (None, [])
+        rules_for = app.state.rules.snapshot()
+        notes = {cs.container.id: release_notes_url(cs.container, rules_for(cs.container))
+                 for cs in (shown.containers if shown else [])}
         return render(
             request, "dashboard.html", user,
             result=shown,
             skipped=app.state.skips.active(),
+            notes_by_id={k: v for k, v in notes.items() if v},
+            has_layout=view.has_layout_data(shown),
             hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
             rows=view.by_urgency(shown) if shown else [],
             overview=view.overview(shown) if shown else None,

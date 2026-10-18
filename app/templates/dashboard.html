@@ -68,6 +68,15 @@
 {% endif %}
 {% endmacro %}
 
+{# Filter data for a row or card; JS filters on these, so the page works unchanged without it. #}
+{% macro filter_attrs(name, image, project, state, skipped, layout) -%}
+data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{ project | lower }}" data-state="{{ state }}" data-skipped="{{ 1 if skipped else 0 }}" data-layout="{{ layout }}"
+{%- endmacro %}
+
+{% macro release_notes_link(cs) %}
+{% if notes_by_id.get(cs.container.id) and row_state(cs) == "update" %}<a class="notes-link" href="{{ notes_by_id[cs.container.id] }}" target="_blank" rel="noopener noreferrer">Release notes</a>{% endif %}
+{% endmacro %}
+
 {% macro skip_badge(skip) %}{% if skip.until %}Snoozed until {{ skip.until | uk_date }}{% else %}Skipped{% endif %}{% endmacro %}
 
 {# "Skip…" disclosure: one small form per update on offer. Operator and above. #}
@@ -150,7 +159,7 @@
   <h2 id="attention-heading">Needs attention</h2>
   <div class="attention">
     {% for card in attention %}
-    <article class="card attention-card">
+    <article class="card attention-card" {% if card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
       <div class="card-head">
         <span class="pill pill-{{ card.state }}">{{ card.badge }}</span>
         <span class="mono card-tag">{{ card.tag }}</span>
@@ -158,6 +167,7 @@
       <div>
         <h3 class="card-title">{{ card.name }}</h3>
         <p class="card-text">{{ card.text }}</p>
+        {% if card.cs %}{{ release_notes_link(card.cs) }}{% endif %}
       </div>
       <div class="card-actions">
         {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs)) }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result)) }}{% endif %}
@@ -173,16 +183,18 @@
   <div class="block-head">
     <h2 id="all-heading">All containers</h2>
     <div class="table-tools" id="table-tools" hidden>
-      <div class="segmented" role="group" aria-label="Filter">
-        <button type="button" data-filter="all" aria-pressed="true">All <span class="count">{{ overview.total }}</span></button>
-        <button type="button" data-filter="update" aria-pressed="false">Updates <span class="count">{{ overview.updates }}</span></button>
-        <button type="button" data-filter="error" aria-pressed="false">Errors <span class="count">{{ overview.errors }}</span></button>
-        <button type="button" data-filter="current" aria-pressed="false">Current <span class="count">{{ overview.current }}</span></button>
+      <div class="chips" role="group" aria-label="Filter containers">
+        <button type="button" class="chip" data-chip="needs-update" aria-pressed="false">Needs update <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="major" aria-pressed="false">Major only <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="stopped" aria-pressed="false">Stopped <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="not-checkable" aria-pressed="false">Not checkable <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="skipped" aria-pressed="false">Skipped <span class="count"></span></button>
+        {% if has_layout %}<button type="button" class="chip" data-chip="layout" aria-pressed="false">Layout problems <span class="count"></span></button>{% endif %}
       </div>
       <label class="search">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <span class="visually-hidden">Search containers</span>
-        <input type="search" id="container-search" placeholder="Search containers" autocomplete="off">
+        <input type="search" id="container-search" placeholder="Search name, image or project" autocomplete="off">
       </label>
     </div>
   </div>
@@ -195,7 +207,7 @@
       <tbody>
         {% if result and result.mailcow %}
         {% set mc = result.mailcow %}{% set mstate = mailcow_state(mc) %}
-        <tr data-state="{{ mstate }}" data-search="mailcow">
+        <tr {{ filter_attrs("mailcow", "", "", {"update": "needs-update", "current": "up-to-date", "error": "error"}[mstate], "mailcow" in hidden_by_id, 0) }}>
           <td data-label="Container">
             <div class="who"><span class="tile mono" aria-hidden="true">mc</span><div><div class="who-name">Mailcow</div><div class="meta">Installed {{ mc.current_version or "unknown" }}</div></div></div>
           </td>
@@ -213,7 +225,7 @@
         {% endif %}
         {% for cs in rows %}
         {% set c = cs.container %}{% set state = row_state(cs) %}
-        <tr data-state="{{ state }}" data-search="{{ (c.name ~ ' ' ~ c.image_ref ~ ' ' ~ (c.project or '')) | lower }}">
+        <tr {{ filter_attrs(c.name, c.image_ref, c.project or "", filter_state(cs), c.id in hidden_by_id, layout_problems(result, cs)) }}>
           <td data-label="Container">
             <div class="who">
               <span class="tile mono" aria-hidden="true">{{ initials(c.service or c.name) }}</span>
@@ -227,6 +239,7 @@
           </td>
           <td data-label="Image">
             <span class="mono image">{{ c.image_ref }}</span>
+            {{ release_notes_link(cs) }}
             {% if cs.minor_update %}<div class="meta">Newer version <span class="mono">{{ cs.minor_update }}</span></div>{% endif %}
             {% if cs.major_update %}<div class="meta">Major <span class="mono">{{ cs.major_update }}</span> <span class="pill pill-major">Major version – may need a data migration. Update by hand.</span></div>{% endif %}
           </td>
@@ -244,7 +257,7 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="empty-filter" id="no-matches" hidden>Nothing matches this filter.</p>
+    <p class="empty-filter" id="no-matches" hidden>No containers match.</p>
   </div>
   <p class="footnote">Sorted by urgency. Digests show the first 12 characters.</p>
 </section>

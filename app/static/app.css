@@ -344,3 +344,16 @@ dialog form[method="dialog"] { margin-top: 12px; }
 .skip-option { display: flex; align-items: center; gap: 8px; min-height: 32px; }
 .skip-reason .input { min-height: 40px; }
 .skipped-list td { vertical-align: top; }
+
+/* ---- Filter chips and release-notes links --------------------------------------- */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--link); font: inherit; font-size: 14px; cursor: pointer; }
+.chip:hover { color: var(--fg-strong); background: var(--surface-2); }
+.chip[aria-pressed="true"] { background: var(--surface-3); color: var(--fg-strong); font-weight: 500; border-color: var(--fg-strong); }
+.chip .count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.chip .count:empty { display: none; }
+.notes-link { display: inline-block; margin-top: 4px; font-size: 13px; }
+@media (max-width: 720px) {
+  .chips { width: 100%; }
+}
