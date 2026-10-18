@@ -1,0 +1,30 @@
+{% extends "base_public.html" %}
+{% block title %}Accept invite{% endblock %}
+{% block content %}
+{% if not usable %}
+<h1 class="auth-title">Invite not valid</h1>
+<p class="lede">This invite link has expired or has already been used. Ask an Admin for a new one.</p>
+<a class="button button-quiet button-block" href="/auth/login">Go to sign in</a>
+{% else %}
+<h1 class="auth-title">Welcome</h1>
+<p class="lede">Choose a password for {{ email }}.</p>
+<form method="post" action="/auth/invite/{{ token }}" class="auth-form" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="field">
+    <label for="name">Your name</label>
+    <input class="input" id="name" name="name" type="text" autocomplete="name" value="{{ name }}">
+  </div>
+  <div class="field{% if errors.new_password %} field-invalid{% endif %}">
+    <label for="new_password">Password</label>
+    <input class="input" id="new_password" name="new_password" type="password" autocomplete="new-password" required>
+    {% if errors.new_password %}<p class="field-error" role="alert">{{ errors.new_password }}</p>{% else %}<p class="field-help">At least 12 characters.</p>{% endif %}
+  </div>
+  <div class="field{% if errors.confirm_password %} field-invalid{% endif %}">
+    <label for="confirm_password">Confirm password</label>
+    <input class="input" id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" required>
+    {% if errors.confirm_password %}<p class="field-error" role="alert">{{ errors.confirm_password }}</p>{% endif %}
+  </div>
+  <button type="submit" class="button button-accent button-block">Set password and sign in</button>
+</form>
+{% endif %}
+{% endblock %}

@@ -311,3 +311,10 @@ dialog form[method="dialog"] { margin-top: 12px; }
 .secret-key { display: block; word-break: break-all; letter-spacing: 0.05em; }
 .recovery-codes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .recovery-codes li { background: var(--surface-2); border-radius: 8px; padding: 8px 12px; }
+
+/* ---- Users and Account ----------------------------------------------------------- */
+.details { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
+.details dt { color: var(--subtle); }
+.details dd { margin: 0; color: var(--fg-strong); word-break: break-word; }
+.row-actions details { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.row-actions summary { cursor: pointer; list-style: none; }

@@ -38,6 +38,7 @@ from app.registry_logins import (
 from app.roles import Role
 from app.sessions import SessionStore
 from app.setup import Setup, setup_routes
+from app.admin_pages import setup_admin_pages
 from app.signin import setup_signin
 from app.users import UserStore
 from app.settings_service import (
@@ -326,6 +327,7 @@ def create_app(
     templates = Jinja2Templates(env=env)
     app.state.templates = templates
     setup_signin(app)
+    setup_admin_pages(app)
     setup_routes(app)
 
     def render(request: Request, name: str, user: User, status_code: int = 200, **ctx):

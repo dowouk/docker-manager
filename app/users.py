@@ -310,6 +310,16 @@ class UserStore:
                        (_hash(token), user_id, _to_iso(self._clock() + INVITE_TTL)))
         return token
 
+    def peek_invite(self, token: str) -> UserRecord | None:
+        """The user an unexpired invite is for, without using it up (for the form page)."""
+        with self._store._lock:
+            row = self._store._db.execute(
+                "SELECT user_id, expires_at FROM invites WHERE token_hash = ?",
+                (_hash(token),)).fetchone()
+        if row is None or _from_iso(row[1]) <= self._clock():
+            return None
+        return self.get(row[0])
+
     def use_invite(self, token: str) -> UserRecord | None:
         with self._store.write_tx() as db:
             row = db.execute("SELECT user_id, expires_at FROM invites WHERE token_hash = ?",

@@ -69,6 +69,8 @@ EXPECTED_AUTH_ROUTES = {
     ("/auth/callback", "GET"),
     ("/auth/logout", "POST"),
     ("/auth/signed-out", "GET"),
+    ("/auth/invite/{token}", "GET"),
+    ("/auth/invite/{token}", "POST"),
 }
 
 
@@ -76,6 +78,7 @@ EXPECTED_AUTH_ROUTES = {
 BARE_AUTH_ROUTES = EXPECTED_AUTH_ROUTES - {
     ("/auth/entra", "GET"), ("/auth/callback", "GET"),
     ("/auth/login", "GET"), ("/auth/login", "POST"), ("/auth/totp", "GET"), ("/auth/totp", "POST"),
+    ("/auth/invite/{token}", "GET"), ("/auth/invite/{token}", "POST"),
 }
 
 
