@@ -70,7 +70,7 @@ def test_sign_in_sets_cookie_and_stores_only_hash(env):
     assert header.startswith(f"session={token};")
     for attr in ("HttpOnly", "Secure", "SameSite=lax", "Path=/"):
         assert attr.lower() in header.lower()
-    assert "max-age" not in header.lower()
+    assert "max-age=604800" in header.lower()  # the 7 day absolute lifetime
     assert all(token not in "".join(map(str, row)) for row in _rows(store))
     assert client.get("/read").json() == {"user": {"email": "a@example.com"}}
 
@@ -158,3 +158,30 @@ def test_session_revoked_mid_request_is_not_resurrected(env):
     assert "max-age=0" in r.headers["set-cookie"].lower()
     assert sessions.load(token) is None
     assert _rows(store) == []
+
+
+def test_create_purges_expired_rows_at_most_every_ten_minutes(env):
+    _, store, clock, sessions = env
+    sessions.create({"a": 1})
+    clock.advance(hours=9)  # row a is now expired
+    sessions.create({"b": 1})  # over 10 minutes since the last purge: a is purged
+    assert len(_rows(store)) == 1
+    clock.advance(hours=9)  # b is now expired, but the last purge was only just before
+    sessions._last_purge = clock.now  # noqa: SLF001
+    sessions.create({"c": 1})
+    assert len(_rows(store)) == 2  # b kept: no purge due yet
+    clock.advance(minutes=11)
+    sessions.create({"d": 1})
+    assert len(_rows(store)) == 2  # b purged; c is still live
+
+
+def test_startup_purges_sessions(settings, tmp_path, monkeypatch):
+    import httpx
+
+    from app.main import create_app
+
+    calls = []
+    monkeypatch.setattr(SessionStore, "purge_expired", lambda self: calls.append(1) or 0)
+    create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
+               store=Store(str(tmp_path / "x" / "dashboard.db")), start_scheduler=False)
+    assert calls == [1]

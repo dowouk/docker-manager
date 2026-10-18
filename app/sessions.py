@@ -2,7 +2,8 @@
 
 Only the SHA-256 of the token is stored, so a copy of the database cannot be
 used to sign in. Lifetime is enforced here (8 hours idle, 7 days absolute), not
-by the cookie, which is why it carries no Max-Age.
+by the cookie. The cookie's Max-Age is the absolute lifetime, so it survives the
+browser closing (0.1 kept 8 hours).
 """
 import copy
 import hashlib
@@ -18,7 +19,9 @@ from app.store import Store
 SESSION_IDLE = timedelta(hours=8)
 SESSION_MAX = timedelta(days=7)
 COOKIE = "session"
+PURGE_EVERY = timedelta(minutes=10)
 _COOKIE_ATTRS = "Path=/; HttpOnly; Secure; SameSite=Lax"
+_COOKIE_MAX_AGE = int(SESSION_MAX.total_seconds())
 
 
 def _hash(token: str) -> str:
@@ -33,10 +36,14 @@ class SessionStore:
     def __init__(self, store: Store, clock: Callable[[], datetime] = _utcnow):
         self._store = store
         self._clock = clock
+        self._last_purge = clock()
 
     def create(self, data: dict) -> str:
         token = secrets.token_urlsafe(32)
         now = self._clock()
+        if now - self._last_purge >= PURGE_EVERY:
+            # Anonymous /auth/login creates rows; don't wait for the hourly job.
+            self.purge_expired()
         self._store.session_put(_hash(token), data, now, now)
         return token
 
@@ -63,6 +70,7 @@ class SessionStore:
 
     def purge_expired(self) -> int:
         now = self._clock()
+        self._last_purge = now
         return self._store.session_purge(now - SESSION_IDLE, now - SESSION_MAX)
 
 
@@ -99,6 +107,10 @@ class ServerSessionMiddleware:
 
         await self.app(scope, receive, send_wrapper)
 
+    def _new_cookie(self, session: dict) -> str:
+        return (f"{COOKIE}={self.sessions.create(session)}; "
+                f"Max-Age={_COOKIE_MAX_AGE}; {_COOKIE_ATTRS}")
+
     def _persist(self, token: str | None, original: dict, session: dict) -> str | None:
         """Write the session back; return a Set-Cookie value if the cookie changes."""
         if session == original:
@@ -109,7 +121,7 @@ class ServerSessionMiddleware:
                 self.sessions.delete(token)
             if not session:
                 return f"{COOKIE}=; Max-Age=0; {_COOKIE_ATTRS}" if token else None
-            return f"{COOKIE}={self.sessions.create(session)}; {_COOKIE_ATTRS}"
+            return self._new_cookie(session)
         if not session:
             if token:
                 self.sessions.delete(token)
@@ -120,4 +132,4 @@ class ServerSessionMiddleware:
                 return None
             # Revoked mid-request: do not resurrect it.
             return f"{COOKIE}=; Max-Age=0; {_COOKIE_ATTRS}"
-        return f"{COOKIE}={self.sessions.create(session)}; {_COOKIE_ATTRS}"
+        return self._new_cookie(session)

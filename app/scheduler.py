@@ -82,6 +82,13 @@ async def scheduled_digest(app: FastAPI) -> None:
         log.error("Scheduled digest failed (%s)", type(exc).__name__)
 
 
+def purge_sessions(app: FastAPI) -> None:
+    try:
+        app.state.sessions.purge_expired()
+    except Exception:  # noqa: BLE001 – keep the scheduler alive
+        log.exception("Session purge failed")
+
+
 def _add_digest_job(scheduler: AsyncIOScheduler, app: FastAPI, settings: Settings, tz) -> None:
     scheduler.add_job(
         scheduled_digest,
@@ -105,6 +112,14 @@ def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        purge_sessions,
+        IntervalTrigger(hours=1, timezone=tz),
+        args=[app],
+        id="sessions-purge",
+        max_instances=1,
+        coalesce=True,
+    )
     if settings.digest_enabled:
         _add_digest_job(scheduler, app, settings, tz)
     return scheduler
@@ -115,9 +130,11 @@ def reschedule(app: FastAPI) -> None:
     scheduler = app.state.scheduler
     settings = app.state.settings
     tz = ZoneInfo(settings.tz)
-    scheduler.reschedule_job(
-        "check", trigger=IntervalTrigger(hours=settings.check_interval_hours, timezone=tz)
-    )
+    trigger = IntervalTrigger(hours=settings.check_interval_hours, timezone=tz)
+    current = scheduler.get_job("check").trigger
+    # Rescheduling restarts the interval, so only do it when the interval or zone changed.
+    if current.interval != trigger.interval or str(current.timezone) != str(tz):
+        scheduler.reschedule_job("check", trigger=trigger)
     if scheduler.get_job("digest"):
         scheduler.remove_job("digest")
     if settings.digest_enabled:

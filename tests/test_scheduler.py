@@ -137,3 +137,57 @@ async def test_reschedule_changes_interval_and_adds_digest(settings):
     sched_mod.reschedule(app)
     assert sch.get_job("digest") is None
     sch.shutdown(wait=False)
+
+
+def test_sessions_purge_job_registered(settings):
+    app = fake_app()
+    s = build_scheduler(app, settings)
+    job = s.get_job("sessions-purge")
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.interval.total_seconds() == 3600
+    job.func(*job.args)
+    app.state.sessions.purge_expired.assert_called_once_with()
+
+
+async def test_reschedule_keeps_check_timing_unless_interval_or_tz_changed(settings):
+    app = fake_app()
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 6})
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+    before = sch.get_job("check").next_run_time
+
+    # A save that changes something else (e.g. the server name) must not push the check out
+    app.state.settings = app.state.settings.model_copy(update={"server_name": "renamed"})
+    sched_mod.reschedule(app)
+    assert sch.get_job("check").next_run_time == before
+
+    app.state.settings = app.state.settings.model_copy(update={"check_interval_hours": 2})
+    sched_mod.reschedule(app)
+    changed = sch.get_job("check")
+    assert changed.trigger.interval.total_seconds() == 2 * 3600
+    assert changed.next_run_time != before
+
+    app.state.settings = app.state.settings.model_copy(update={"tz": "Asia/Tokyo"})
+    sched_mod.reschedule(app)
+    assert str(sch.get_job("check").trigger.timezone) == "Asia/Tokyo"
+    sch.shutdown(wait=False)
+
+
+async def test_reschedule_digest_trigger_carries_new_schedule_and_tz(settings):
+    app = fake_app()
+    email = {"acs_connection_string": "endpoint=x", "digest_from": "d@x.com",
+             "digest_to": ["a@b.c"]}
+    app.state.settings = settings.model_copy(update=email)
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+
+    app.state.settings = settings.model_copy(update={
+        **email, "digest_schedule": "30 9 * * FRI", "tz": "Asia/Tokyo"})
+    sched_mod.reschedule(app)
+    trigger = sch.get_job("digest").trigger
+    assert str(trigger.timezone) == "Asia/Tokyo"
+    fields = {f.name: str(f) for f in trigger.fields}
+    assert (fields["minute"], fields["hour"], fields["day_of_week"]) == ("30", "9", "fri")
+    sch.shutdown(wait=False)
