@@ -1,0 +1,5 @@
+{% extends "notify/_base.html" %}
+{% block headline %}update check failing{% endblock %}
+{% block body %}
+<p style="margin:12px 0 0;font-size:14px;">The last {{ failures }} update check{{ 's' if failures != 1 else '' }} failed. Check the registry logins and network access.</p>
+{% endblock %}

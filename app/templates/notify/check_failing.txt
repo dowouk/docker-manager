@@ -1,0 +1,5 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}update check failing{% endblock %}
+{% block body %}
+The last {{ failures }} update check{{ 's' if failures != 1 else '' }} failed. Check the registry logins and network access.
+{% endblock %}

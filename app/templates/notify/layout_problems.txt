@@ -1,0 +1,7 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}layout problems{% endblock %}
+{% block body %}
+{% for p in problems %}
+- {{ p }}
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,7 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}{{ headline }}{% endblock %}
+{% block body %}
+{% for u in updates %}
+- {{ u.name }}{% if u.image %} ({{ u.image }}){% endif %}: {{ u.change }}
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,5 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}user waiting for approval{% endblock %}
+{% block body %}
+{{ name }} ({{ upn }}) has signed in and is waiting for a role.
+{% endblock %}

@@ -13,9 +13,12 @@ def test_templates_and_static_are_package_data():
     globs = pyproject["tool"]["setuptools"]["package-data"]["app"]
     assert "templates/*" in globs
     assert "static/*" in globs
+    assert "templates/notify/*" in globs
     # the globs are one level deep – fail if anyone adds a sub-folder they would miss
     for folder in ("templates", "static"):
-        assert not [p for p in (ROOT / "app" / folder).iterdir() if p.is_dir() and p.name != "__pycache__"]
+        subdirs = {p.name for p in (ROOT / "app" / folder).iterdir()
+                   if p.is_dir() and p.name != "__pycache__"}
+        assert subdirs <= ({"notify"} if folder == "templates" else set())
 
 
 REQUIRED = [name.upper() for name, field in Settings.model_fields.items() if field.is_required()]
