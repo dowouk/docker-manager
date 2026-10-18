@@ -1,5 +1,4 @@
 """Periodic update check and weekly digest email."""
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,7 +9,6 @@ from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 
 from app.config import Settings
-from app.digest import send_digest
 from app.main import run_check
 
 log = logging.getLogger(__name__)
@@ -73,12 +71,8 @@ async def scheduled_digest(app: FastAPI) -> None:
         log.exception("Scheduled digest: the check failed")
         return
     try:
-        outcome = await asyncio.to_thread(
-            send_digest, app.state.settings, result, app.state.email_client_factory
-        )
-        log.info("Scheduled digest: %s", outcome)
+        log.info("Scheduled digest: %s", await app.state.notifier.digest(result))
     except Exception as exc:  # noqa: BLE001 – keep the scheduler alive
-        # Type only: the message can contain the email connection string.
         log.error("Scheduled digest failed (%s)", type(exc).__name__)
 
 
@@ -124,7 +118,7 @@ def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
-    if settings.digest_enabled:
+    if app.state.channels.subscribed("digest"):
         _add_digest_job(scheduler, app, settings, tz)
     return scheduler
 
@@ -139,7 +133,14 @@ def reschedule(app: FastAPI) -> None:
     # Rescheduling restarts the interval, so only do it when the interval or zone changed.
     if current.interval != trigger.interval or str(current.timezone) != str(tz):
         scheduler.reschedule_job("check", trigger=trigger)
+    sync_digest_job(app)
+
+
+def sync_digest_job(app: FastAPI) -> None:
+    """Schedule the digest when any channel gets it. Call after channels or settings change."""
+    scheduler = app.state.scheduler
+    settings = app.state.settings
     if scheduler.get_job("digest"):
         scheduler.remove_job("digest")
-    if settings.digest_enabled:
-        _add_digest_job(scheduler, app, settings, tz)
+    if app.state.channels.subscribed("digest"):
+        _add_digest_job(scheduler, app, settings, ZoneInfo(settings.tz))

@@ -39,6 +39,11 @@ def _env(autoescape: bool) -> jinja2.Environment:
     )
 
 
+def _one_line(text: str) -> str:
+    """Subjects are one line: a server name with a newline must not split the header."""
+    return " ".join(text.split())
+
+
 def _link(settings: Settings, path: str = "") -> str | None:
     if not settings.public_url:
         return None
@@ -50,7 +55,7 @@ def _render(template: str, subject: str, settings: Settings, link: str | None = 
     ctx = {"server_name": settings.server_name, "link": link, "link_text": link_text, **ctx}
     html = _env(True).get_template(f"notify/{template}.html").render(**ctx)
     plain = _env(False).get_template(f"notify/{template}.txt").render(**ctx)
-    return Rendered(subject, plain, html)
+    return Rendered(_one_line(subject), plain, html)
 
 
 def digest_message(result: CheckResult, settings: Settings) -> Rendered | None:
@@ -58,7 +63,7 @@ def digest_message(result: CheckResult, settings: Settings) -> Rendered | None:
     if rendered is None:
         return None
     subject, html, plain = rendered
-    return Rendered(subject, plain, html)
+    return Rendered(_one_line(subject), plain, html)
 
 
 def updates_found_message(updates: list[UpdateItem], settings: Settings) -> Rendered:

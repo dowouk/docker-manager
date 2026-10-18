@@ -5,6 +5,7 @@ import pytest
 from app.main import create_app
 from app.roles import Role
 from app.store import Store
+from notify_fakes import FakeProvider, providers_for
 from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client
 
 SECRET_STRING = "endpoint=https://x;accesskey=TOPSECRET"
@@ -116,63 +117,34 @@ def email_settings(settings, monkeypatch):
     return Settings(_env_file=None)
 
 
+def _email_app(email_settings, tmp_path, provider):
+    return create_app(email_settings, docker_client=object(), http=httpx.AsyncClient(),
+                      store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
+                      start_scheduler=False, providers=providers_for(provider))
+
+
 def test_email_test_sent(email_settings, tmp_path):
-    settings = email_settings
-    sent = []
-
-    class Poller:
-        def result(self):
-            return None
-
-    class Client:
-        def begin_send(self, message):
-            sent.append(message)
-            return Poller()
-
-    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
-                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
-                     start_scheduler=False, email_client_factory=lambda conn: Client())
-    with logged_in_client(app, follow_redirects=False) as c:
+    fake = FakeProvider()
+    with logged_in_client(_email_app(email_settings, tmp_path, fake),
+                          follow_redirects=False) as c:
         r = c.post("/settings/email/test", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/settings?msg=email_sent#digest"
-    assert sent and sent[0]["recipients"]["to"] == [{"address": "b@x.com"}]
+    assert fake.sent and fake.sent[0][1].recipients == ("b@x.com",)
+    assert "test notification" in fake.sent[0][1].subject
 
 
 def test_email_test_failure_hides_error_text(email_settings, tmp_path, caplog):
-    settings = email_settings
-    def factory(conn):
-        raise RuntimeError("accesskey=TOPSECRET")
-
-    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
-                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
-                     start_scheduler=False, email_client_factory=factory)
-    with logged_in_client(app, follow_redirects=True) as c:
+    fake = FakeProvider(fail=RuntimeError("accesskey=TOPSECRET"))
+    with logged_in_client(_email_app(email_settings, tmp_path, fake),
+                          follow_redirects=True) as c:
         r = c.post("/settings/email/test", data={"csrf_token": CSRF})
     assert "TOPSECRET" not in r.text and "The test email could not be sent" in r.text
     assert "TOPSECRET" not in caplog.text and "RuntimeError" in caplog.text
 
 
-def test_malformed_connection_string_is_failure_not_unconfigured(email_settings, tmp_path):
-    settings = email_settings
-    def factory(conn):
-        raise ValueError("Invalid connection string")
-
-    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
-                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
-                     start_scheduler=False, email_client_factory=factory)
-    with logged_in_client(app, follow_redirects=False) as c:
-        r = c.post("/settings/email/test", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/settings?msg=email_failed#digest"
-
-
 def test_digest_send_failure_does_not_log_secret(email_settings, tmp_path, caplog):
-    settings = email_settings
-    def factory(conn):
-        raise RuntimeError("accesskey=TOPSECRET")
-
-    app = create_app(settings, docker_client=object(), http=httpx.AsyncClient(),
-                     store=Store(str(tmp_path / "d.db")), runner=FakeRunner(),
-                     start_scheduler=False, email_client_factory=factory)
+    app = _email_app(email_settings, tmp_path,
+                     FakeProvider(fail=RuntimeError("accesskey=TOPSECRET")))
     from datetime import datetime, timezone
     from app.checker import CheckResult
     now = datetime(2026, 10, 17, tzinfo=timezone.utc)

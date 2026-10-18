@@ -7,7 +7,6 @@ def test_defaults(settings):
     assert settings.mailcow_dir == "/opt/mailcow-dockerized"
     assert settings.digest_schedule == "0 8 * * MON"
     assert settings.tz == "Europe/London"
-    assert settings.digest_enabled is False
 
 
 def test_comma_lists(monkeypatch, settings):
@@ -32,14 +31,6 @@ def test_session_secret_optional(monkeypatch, settings):
 def test_server_name_default(monkeypatch, settings):
     monkeypatch.delenv("SERVER_NAME")
     assert Settings(_env_file=None).server_name == "Docker Manager"
-
-
-def test_digest_enabled_needs_all_three(monkeypatch, settings):
-    monkeypatch.setenv("ACS_CONNECTION_STRING", "endpoint=x")
-    monkeypatch.setenv("DIGEST_FROM", "d@x.com")
-    assert Settings(_env_file=None).digest_enabled is False
-    monkeypatch.setenv("DIGEST_TO", "a@x.com")
-    assert Settings(_env_file=None).digest_enabled is True
 
 
 def test_registry_auth_file_not_docker_config(monkeypatch, settings):

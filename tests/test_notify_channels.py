@@ -195,7 +195,7 @@ class FakeRunner:
         raise AssertionError("not used")
 
 
-def test_create_app_migrates_and_old_digest_still_sees_values(settings, tmp_path):
+def test_create_app_migrates_and_keeps_digest_schedule(settings, tmp_path):
     store = Store(str(tmp_path / "d.db"))
     seed_0_2(store, SecretBox(b"k" * 32))
     (tmp_path / "secret.key").write_bytes(b"k" * 32)
@@ -203,7 +203,6 @@ def test_create_app_migrates_and_old_digest_still_sees_values(settings, tmp_path
                      runner=FakeRunner(), start_scheduler=False)
     assert [c.name for c in app.state.channels.list()] == ["Email"]
     eff = app.state.settings
-    assert eff.digest_enabled and eff.digest_to == ["x@x.com", "y@x.com"]
     assert eff.digest_schedule == "0 9 * * MON"
 
 

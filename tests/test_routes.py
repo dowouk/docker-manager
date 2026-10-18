@@ -16,6 +16,7 @@ from app.jobs import BUSY_MESSAGE, BusyError
 from app.config import Settings
 from app.main import apply_settings, create_app
 from app.store import Store
+from notify_fakes import FakeProvider, providers_for
 from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, sign_in
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
@@ -559,21 +560,7 @@ def test_background_check_failure_is_logged(settings, tmp_path, seeded, caplog, 
     assert "daemon down" in caplog.text
 
 
-class DigestClient:
-    def __init__(self):
-        self.messages = []
-
-    def begin_send(self, message):
-        self.messages.append(message)
-
-        class Poller:
-            def result(self_inner):
-                return {}
-
-        return Poller()
-
-
-def digest_app(settings, tmp_path, factory, result=None, **overrides):
+def digest_app(settings, tmp_path, provider, result=None, **overrides):
     s = settings.model_copy(update={
         "acs_connection_string": "endpoint=https://x;accesskey=k",
         "digest_from": "dash@example.com",
@@ -587,7 +574,7 @@ def digest_app(settings, tmp_path, factory, result=None, **overrides):
         s, docker_client=StubDocker(),
         http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))),
         store=store, runner=FakeRunner(), start_scheduler=False,
-        email_client_factory=factory,
+        providers=providers_for(provider),
     )
     c = logged_in_client(app, follow_redirects=False)
     c.__enter__()
@@ -595,30 +582,31 @@ def digest_app(settings, tmp_path, factory, result=None, **overrides):
 
 
 def test_digest_send_sends_latest_check(settings, tmp_path, seeded):
-    fake = DigestClient()
-    c = digest_app(settings, tmp_path, lambda conn: fake, seeded)
+    fake = FakeProvider()
+    c = digest_app(settings, tmp_path, fake, seeded)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.status_code == 303 and r.headers["location"] == "/?msg=digest_sent"
-    assert fake.messages[0]["content"]["subject"] == "test-server: 5 updates available"
+    assert fake.sent[0][1].subject == "test-server: 5 updates available"
+    assert fake.sent[0][1].recipients == ("ops@example.com",)
     assert "Digest sent" in c.get("/?msg=digest_sent").text
     c.__exit__(None, None, None)
 
 
 def test_digest_send_runs_check_when_none_stored(settings, tmp_path):
-    fake = DigestClient()
-    c = digest_app(settings, tmp_path, lambda conn: fake)
+    fake = FakeProvider()
+    c = digest_app(settings, tmp_path, fake)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_sent"
-    assert fake.messages[0]["content"]["subject"] == "test-server: all up to date"
+    assert fake.sent[0][1].subject == "test-server: all up to date"
     c.__exit__(None, None, None)
 
 
 def test_digest_send_nothing_to_report(settings, tmp_path):
-    fake = DigestClient()
-    c = digest_app(settings, tmp_path, lambda conn: fake, digest_when_none=False)
+    fake = FakeProvider()
+    c = digest_app(settings, tmp_path, fake, digest_when_none=False)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_nothing"
-    assert fake.messages == []
+    assert fake.sent == []
     assert "nothing to report" in c.get("/?msg=digest_nothing").text
     c.__exit__(None, None, None)
 
@@ -627,34 +615,33 @@ def test_digest_send_not_configured(client_for, seeded):
     c, _ = client_for(result=seeded)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_unconfigured"
-    assert "email not configured" in c.get("/?msg=digest_unconfigured").text
+    assert "no channel gets the digest" in c.get("/?msg=digest_unconfigured").text
 
 
 def test_digest_send_failure_logged(settings, tmp_path, seeded, caplog):
-    def factory(conn):
-        raise RuntimeError("acs down")
-
-    c = digest_app(settings, tmp_path, factory, seeded)
-    with caplog.at_level(logging.ERROR, logger="app.main"):
+    c = digest_app(settings, tmp_path, FakeProvider(fail=RuntimeError("acs down accesskey=TOPSECRET")),
+                   seeded)
+    with caplog.at_level(logging.WARNING):
         r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_failed"
-    assert "Sending the digest failed (RuntimeError)" in caplog.text and "acs down" not in caplog.text
+    assert "Notification to Email (from environment) failed (RuntimeError)" in caplog.text
+    assert "acs down" not in caplog.text and "TOPSECRET" not in caplog.text
     assert "could not be sent" in c.get("/?msg=digest_failed").text
     c.__exit__(None, None, None)
 
 
 def test_digest_send_requires_csrf(settings, tmp_path, seeded):
-    fake = DigestClient()
-    c = digest_app(settings, tmp_path, lambda conn: fake, seeded)
+    fake = FakeProvider()
+    c = digest_app(settings, tmp_path, fake, seeded)
     assert c.post("/digest/send", data={"csrf_token": "wrong"}).status_code == 403
-    assert fake.messages == []
+    assert fake.sent == []
     c.__exit__(None, None, None)
 
 
 def test_digest_button_only_when_enabled(client_for, settings, tmp_path, seeded):
     c, _ = client_for(result=seeded)
     assert "/digest/send" not in c.get("/").text
-    c2 = digest_app(settings, tmp_path, None, seeded)
+    c2 = digest_app(settings, tmp_path, FakeProvider(), seeded)
     assert 'action="/digest/send"' in c2.get("/").text
     c2.__exit__(None, None, None)
 
@@ -806,3 +793,99 @@ def test_startup_picks_up_saved_logins(settings, tmp_path):
     second = make_app(settings, tmp_path)
     assert second.state.registry._credentials(parse_image_ref("ghcr.io/o/app:1"))
     assert (tmp_path / "docker-config" / "config.json").exists()
+
+
+# ---- notifications wired to jobs and checks ----
+
+def _notifying_app(settings, tmp_path, provider, events):
+    from app.jobs import JobRunner
+    from app.notify.channels import Channel
+
+    store = Store(str(tmp_path / "data" / "dashboard.db"))
+    app = create_app(
+        settings, docker_client=StubDocker(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))),
+        store=store, runner=JobRunner(store), start_scheduler=False,
+        providers=providers_for(provider))
+    seed = CheckResult(CHECKED_AT, [], MailcowStatus(
+        update_available=True, current_version="a", latest_release="b"))
+    store.save_check(seed.to_dict(), CHECKED_AT)
+    app.state.channels.save(
+        Channel("", "Ops", "acs", {}, ["a@x.com"], set(events)),
+        {"connection_string": "endpoint=https://x;accesskey=k", "sender": "d@x.com"}, "admin")
+    return app
+
+
+async def _run_job(app, fail):
+    async def update(ctx, mailcow_dir):
+        if fail:
+            raise RuntimeError("boom")
+
+    import app.main as main_mod
+    main_mod.update_mailcow, original = update, main_mod.update_mailcow
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="https://testserver") as c:
+            sign_in(c, app)
+            r = await c.post("/mailcow/update", data={"csrf_token": CSRF})
+        assert r.status_code == 303
+        await asyncio.wait_for(app.state.runner._task, 5)
+    finally:
+        main_mod.update_mailcow = original
+
+
+async def test_failed_job_notifies_subscribed_channel(settings, tmp_path):
+    fake = FakeProvider()
+    app = _notifying_app(settings, tmp_path, fake, {"job_failed"})
+    await _run_job(app, fail=True)
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+    (_, msg), = fake.sent
+    assert "update failed" in msg.subject and "/jobs/1" in msg.plain
+
+
+async def test_succeeded_job_is_quiet_unless_subscribed(settings, tmp_path):
+    fake = FakeProvider()
+    app = _notifying_app(settings, tmp_path, fake, {"job_failed"})
+    await _run_job(app, fail=False)
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+    assert fake.sent == []
+
+
+async def test_hanging_provider_does_not_hold_up_the_job(settings, tmp_path):
+    app = _notifying_app(settings, tmp_path, FakeProvider(hang=True), {"job_failed"})
+    await _run_job(app, fail=True)  # returns once the job itself is done
+    assert app.state.store.get_job(1).status == "failed"
+    assert app.state.runner.busy is False
+    for task in list(app.state.background):
+        task.cancel()
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+
+
+async def test_check_now_notifies_new_updates_once(settings, tmp_path, monkeypatch):
+    fake = FakeProvider()
+    app = _notifying_app(settings, tmp_path, fake, {"updates_found"})
+    web = info(tmp_path, "web", image="nginx:1.25")
+    app.state.docker = StubDocker([StubContainer("c1", "web", "nginx:1.25", "sha256:img")])
+
+    async def fake_check_all(containers, *a, **kw):
+        return CheckResult(CHECKED_AT, [status(web, minor_update="1.26")])
+
+    monkeypatch.setattr("app.main.check_all", fake_check_all)
+    monkeypatch.setattr("app.main.list_containers", lambda docker, self_id: [web])
+    from app.main import run_check
+    await run_check(app)
+    await run_check(app)
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+    assert len(fake.sent) == 1 and "1 new update" in fake.sent[0][1].subject
+
+
+async def test_failing_checks_alert_on_second(settings, tmp_path):
+    fake = FakeProvider()
+    app = _notifying_app(settings, tmp_path, fake, {"check_failing"})
+    app.state.docker = BrokenDocker("daemon down")
+    from app.main import run_check
+    for _ in range(3):
+        with pytest.raises(Exception):
+            await run_check(app)
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+    assert len(fake.sent) == 1 and "failing" in fake.sent[0][1].subject

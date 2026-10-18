@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Callable, Literal, Mapping
+from typing import Literal, Mapping
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -239,8 +239,6 @@ class SettingsService:
         self._store = store
         self._box = box
         self.unreadable: set[str] = set()
-        # Until channels replace the 0.3 digest: email values from a saved channel.
-        self.email_fallback: Callable[[], dict] | None = None
         self._warned: set[str] = set()
 
     def _decrypt(self, name: str, stored) -> str | None:
@@ -269,9 +267,6 @@ class SettingsService:
                     overlay[name] = plain
             else:
                 overlay[name] = stored
-        if self.email_fallback is not None:
-            overlay.update({n: v for n, v in self.email_fallback().items()
-                            if not env_set(base, n)})
         defaults = {n: type(base).model_fields[n].default for n in UI_ONLY}
         settings = type(base).model_validate({**base.model_dump(), **defaults, **overlay})
         if not settings.local_sign_in and not settings.entra_enabled:

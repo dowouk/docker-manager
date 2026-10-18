@@ -23,7 +23,8 @@ from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
 from app.notify.channels import ChannelStore
-from app.digest import EmailNotConfigured, send_digest, send_test_email
+from app.notify.notifier import Notifier
+from app.notify.providers import PROVIDERS
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
@@ -73,7 +74,7 @@ FLASH = {
     "changed": ("The compose file changed since the preview – review the change again", "error"),
     "digest_sent": ("Digest sent", "ok"),
     "digest_nothing": ("Digest skipped – nothing to report", "ok"),
-    "digest_unconfigured": ("Digest skipped – email not configured", "ok"),
+    "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
     "digest_failed": ("The digest could not be sent – check the server logs", "error"),
 }
 
@@ -82,7 +83,7 @@ SETTINGS_FLASH = {
     "saved": ("Settings saved", "ok"),
     "email_sent": ("Test email sent", "ok"),
     "email_failed": ("The test email could not be sent – check the server logs", "error"),
-    "email_unconfigured": ("Save a connection string, sender and recipient before sending a test", "error"),
+    "email_unconfigured": ("Add a notification channel that gets the weekly digest before sending a test", "error"),
     "registry_saved": ("Registry login saved", "ok"),
     "registry_removed": ("Registry login removed", "ok"),
     "entra_ok": ("Microsoft sign-in settings look right", "ok"),
@@ -120,19 +121,24 @@ def _short_digest(cs: ContainerStatus) -> str:
 async def run_check(app: FastAPI) -> CheckResult:
     """Inventory → registry check → store. Concurrent calls are serialised."""
     state = app.state
-    async with state.check_lock:
-        await asyncio.to_thread(remove_finished_helpers, state.docker)
-        containers = await asyncio.to_thread(list_containers, state.docker, detect_self_id())
-        result = await check_all(
-            containers,
-            state.registry,
-            state.settings,
-            mailcow_check=functools.partial(
-                check_mailcow, state.settings.mailcow_dir, run_capture, state.http
-            ),
-        )
-        state.store.save_check(result.to_dict(), result.checked_at)
-        return result
+    try:
+        async with state.check_lock:
+            await asyncio.to_thread(remove_finished_helpers, state.docker)
+            containers = await asyncio.to_thread(list_containers, state.docker, detect_self_id())
+            result = await check_all(
+                containers,
+                state.registry,
+                state.settings,
+                mailcow_check=functools.partial(
+                    check_mailcow, state.settings.mailcow_dir, run_capture, state.http
+                ),
+            )
+            state.store.save_check(result.to_dict(), result.checked_at)
+    except Exception:
+        state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
+        raise
+    state.notifier.after_check(result, False)
+    return result
 
 
 def _latest(app: FastAPI) -> CheckResult | None:
@@ -231,7 +237,7 @@ def create_app(
     store: Store | None = None,
     runner: JobRunner | None = None,
     start_scheduler: bool = True,
-    email_client_factory=None,
+    providers=None,
     settings_service: SettingsService | None = None,
 ) -> FastAPI:
     owns_http = http is None
@@ -281,7 +287,6 @@ def create_app(
     app.state.runner = runner
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()
-    app.state.email_client_factory = email_client_factory
     backup_dir = os.path.join(settings.data_dir, "backups")
 
     app.state.users = UserStore(store, settings_service._box)
@@ -291,8 +296,11 @@ def create_app(
     app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
     app.state.setup.prepare(settings)
     app.state.channels = ChannelStore(store, settings_service._box, lambda: settings)
-    settings_service.email_fallback = app.state.channels.legacy_email
     app.state.channels.migrate_0_2_email()
+    app.state.notifier = Notifier(
+        store, app.state.channels, lambda: app.state.settings, http,
+        providers if providers is not None else PROVIDERS,
+        background=app.state.background, kind_labels=JOB_KIND_LABELS)
     app.state.settings = settings_service.effective()  # the migrations may have changed it
     app.state.entra_setup_hook = app.state.setup.complete_with_entra
     app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
@@ -347,16 +355,36 @@ def create_app(
         kind: str, target: str, user: User, work: Callable[[JobContext], Awaitable[None]]
     ) -> int:
         """Submit a job that refreshes the dashboard afterwards. Raises BusyError."""
+        job_ids: list[int] = []  # filled once the runner has accepted the job
+
+        async def after_job() -> None:
+            # The runner records the final status just after `work` returns: wait for it,
+            # tell the channels, then refresh the dashboard.
+            try:
+                if job_ids:
+                    for _ in range(200):
+                        found = app.state.store.get_job(job_ids[0])
+                        if found is None or found.status != "running":
+                            break
+                        await asyncio.sleep(0.05)
+                    if found is not None and found.status != "running":
+                        app.state.notifier.job_finished(
+                            kind, target, found.status, user.email, found.id)
+            finally:
+                await run_check(app)
+
         async def job(ctx: JobContext) -> None:
             try:
                 await work(ctx)
             finally:
-                task = asyncio.create_task(run_check(app))
+                task = asyncio.create_task(after_job())
                 app.state.background.add(task)
                 task.add_done_callback(app.state.background.discard)
                 task.add_done_callback(_log_task_failure)
 
-        return runner.submit(kind, target, user.email, job)
+        job_id = runner.submit(kind, target, user.email, job)
+        job_ids.append(job_id)
+        return job_id
 
     def submit(
         kind: str, target: str, user: User, work: Callable[[JobContext], Awaitable[None]]
@@ -387,7 +415,7 @@ def create_app(
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
             offers_project=functools.partial(_offers_project, result),
-            digest_enabled=app.state.settings.digest_enabled,
+            digest_enabled=bool(app.state.channels.subscribed("digest")),
             error=error,
         )
 
@@ -407,18 +435,12 @@ def create_app(
         except Exception:  # noqa: BLE001
             log.exception("The check before sending the digest failed")
             return _redirect("/?msg=digest_failed")
-        try:
-            outcome = await asyncio.to_thread(
-                send_digest, app.state.settings, result, app.state.email_client_factory
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Type only: the message can contain the email connection string.
-            log.error("Sending the digest failed (%s)", type(exc).__name__)
-            return _redirect("/?msg=digest_failed")
+        outcome = await app.state.notifier.digest(result)  # never raises
         code = {
             "sent": "digest_sent",
             "skipped – nothing to report": "digest_nothing",
-            "skipped – email not configured": "digest_unconfigured",
+            "skipped – no channel gets the digest": "digest_unconfigured",
+            "failed": "digest_failed",
         }[outcome]
         return _redirect(f"/?msg={code}")
 
@@ -643,16 +665,12 @@ def create_app(
     # The fixed paths below are declared before /settings/{section} so they win.
     @app.post("/settings/email/test", dependencies=[Depends(verify_csrf)])
     async def settings_email_test(user: User = Depends(require_role(Role.ADMIN))):
-        try:
-            await asyncio.to_thread(
-                send_test_email, app.state.settings, app.state.email_client_factory
-            )
-        except EmailNotConfigured:
+        # Until the channel pages arrive: test the first channel that gets the digest.
+        channels = app.state.channels.subscribed("digest")
+        if not channels:
             return _redirect("/settings?msg=email_unconfigured#digest")
-        except Exception as exc:  # noqa: BLE001 – the text can hold the connection string: log the type only
-            log.error("Sending the test email failed (%s)", type(exc).__name__)
-            return _redirect("/settings?msg=email_failed#digest")
-        return _redirect("/settings?msg=email_sent#digest")
+        reason = await app.state.notifier.test(channels[0].id)
+        return _redirect(f"/settings?msg={'email_sent' if reason is None else 'email_failed'}#digest")
 
     @app.post("/settings/registries", dependencies=[Depends(verify_csrf)])
     async def settings_registry_add(

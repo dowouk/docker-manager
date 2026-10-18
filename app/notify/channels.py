@@ -169,15 +169,6 @@ class ChannelStore:
         is_secret = any(f.name == field_name and f.kind == "secret" for f in provider.fields)
         return is_secret and bool(channel.config.get(field_name))
 
-    def legacy_email(self) -> dict:
-        """The 0.3 digest's three values from the first saved ACS channel that carries the
-        digest, so the old digest keeps working until channels replace it."""
-        for c in self._saved():
-            if c.provider == "acs" and c.enabled and "digest" in c.events:
-                return {"acs_connection_string": c.config.get("connection_string"),
-                        "digest_from": c.config.get("sender"), "digest_to": list(c.recipients)}
-        return {}
-
     # -- writing ---------------------------------------------------------------------------
     def save(self, channel: Channel, form_config: dict, user: str) -> Channel:
         if channel.readonly or channel.id == ENV_ID:

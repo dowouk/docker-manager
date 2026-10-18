@@ -127,3 +127,10 @@ def test_html_looks_like_digest(settings):
     m = job_message("Update", "web", "failed", "Ann", 7, settings)
     assert 'lang="en-GB"' in m.html and "max-width:640px" in m.html
     assert "test-server:" in m.html
+
+
+def test_subject_is_collapsed_to_one_line(settings):
+    s = settings.model_copy(update={"server_name": "my\r\n  server\tname"})
+    assert "\n" not in check_recovered_message(s).subject
+    assert check_recovered_message(s).subject == "my server name: update check recovered"
+    assert digest_message(_result(), s).subject.startswith("my server name: ")
