@@ -45,6 +45,8 @@ from app.registry_logins import (
 )
 from app.roles import Role
 from app.rules import RulesError, RulesStore
+from app import skips as skips_mod
+from app.skips import SkipStore
 from app.sessions import COOKIE, SessionStore
 from app.setup import Setup, setup_routes
 from app.admin_pages import setup_admin_pages
@@ -83,6 +85,8 @@ FLASH = {
     "digest_nothing": ("Digest skipped – nothing to report", "ok"),
     "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
     "digest_failed": ("The digest could not be sent – check the server logs", "error"),
+    "skipped": ("Update hidden – it's listed under Skipped below", "ok"),
+    "skip_removed": ("Skip removed – the update shows again", "ok"),
     "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
 }
 
@@ -359,6 +363,7 @@ def create_app(
     app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
     app.state.setup.prepare(settings)
     app.state.rules = RulesStore(store)
+    app.state.skips = SkipStore(store)
     app.state.channels = ChannelStore(store, settings_service._box, lambda: settings)
     app.state.channels.migrate_0_2_email()
     app.state.notifier = Notifier(
@@ -394,6 +399,9 @@ def create_app(
         BUILD_UPDATE=view.BUILD_UPDATE,
         short_digest=_short_digest,
         container_key=container_key,
+        skip_items=skips_mod.container_items,
+        skip_kind_labels=skips_mod.KIND_LABELS,
+        mailcow_skip_items=lambda result: [i for i in [skips_mod.mailcow_item(result)] if i],
         row_state=view.row_state,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
@@ -470,12 +478,14 @@ def create_app(
             except Exception as exc:  # noqa: BLE001 – show the page even if docker is down
                 log.exception("Check failed while loading the dashboard")
                 error = f"The check could not be completed: {str(exc) or type(exc).__name__}"
+        shown, hidden = skips_mod.visible_result(result, app.state.skips) if result else (None, [])
         return render(
             request, "dashboard.html", user,
-            result=result,
-            rows=view.by_urgency(result) if result else [],
-            overview=view.overview(result) if result else None,
-            attention=view.attention(result) if result else [],
+            result=shown,
+            skipped=app.state.skips.active(),
+            rows=view.by_urgency(shown) if shown else [],
+            overview=view.overview(shown) if shown else None,
+            attention=view.attention(shown) if shown else [],
             greeting=view.greeting(datetime.now(ZoneInfo(app.state.settings.tz))),
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
@@ -523,6 +533,50 @@ def create_app(
         whole = mode == "project"
         target = info.project if whole else info.name
         return submit(mode, target, user, lambda ctx: update_build(ctx, info, whole_project=whole))
+
+    @app.post("/containers/{container_id}/skip", dependencies=[Depends(verify_csrf)])
+    async def skip_update(
+        container_id: str, kind: str = Form(...), mode: str = Form(...),
+        value: str = Form(""), reason: str = Form(""),
+        user: User = Depends(require_role(Role.OPERATOR)),
+    ):
+        result = _latest(app)
+        if container_id == "mailcow":
+            offered = [i for i in [skips_mod.mailcow_item(result)] if i] if result else []
+            if not offered:
+                raise HTTPException(status_code=404, detail="Mailcow not found")
+        else:
+            offered = skips_mod.container_items(_find(app, container_id))
+        if kind not in skips_mod.KINDS or mode not in ("skip", "snooze7", "snooze30"):
+            raise HTTPException(status_code=400, detail="Unknown skip option")
+        item = next((i for i in offered if i.kind == kind), None)
+        if item is None:
+            raise HTTPException(status_code=400, detail="That update is not offered")
+        if value and value != item.value:
+            raise HTTPException(status_code=400, detail="That update is not offered")
+        reason = skips_mod.clean_reason(reason)
+        note = f" – reason: {reason}" if reason else ""
+        label = skips_mod.KIND_LABELS[kind].lower()
+        if mode == "skip":
+            app.state.skips.skip(item.container_key, kind, item.value, user.email, reason)
+            summary = f"Skipped {label} {item.value} for {item.container_key}{note}"
+        else:
+            days = 7 if mode == "snooze7" else 30
+            app.state.skips.snooze(item.container_key, kind, days, user.email, reason)
+            summary = f"Snoozed {label} updates for {item.container_key} for {days} days{note}"
+        app.state.store.add_audit(user.email, "updates", summary)
+        return _redirect("/?msg=skipped")
+
+    @app.post("/skips/{skip_id}/remove", dependencies=[Depends(verify_csrf)])
+    async def remove_skip(skip_id: int, user: User = Depends(require_role(Role.OPERATOR))):
+        skip = app.state.skips.remove(skip_id, user.email)
+        if skip is None:
+            raise HTTPException(status_code=404, detail="Unknown skip")
+        what = "snooze" if skip.snoozed else "skip"
+        app.state.store.add_audit(
+            user.email, "updates",
+            f"Removed {what} of {skips_mod.KIND_LABELS[skip.kind].lower()} for {skip.key}")
+        return _redirect("/?msg=skip_removed")
 
     def _rules_page(request: Request, user: User, key: str, form=None, errors=None, status_code=200):
         cs = _find_key(app, key)

@@ -68,6 +68,33 @@
 {% endif %}
 {% endmacro %}
 
+{# "Skip…" disclosure: one small form per update on offer. Operator and above. #}
+{% macro skip_menu(items) %}
+{% if items and can(user, Role.OPERATOR) %}
+<details class="skip-menu">
+  <summary class="button button-quiet button-small">Skip…</summary>
+  <div class="skip-panel">
+    {% for item in items %}
+    <form method="post" action="/containers/{{ item.container_id or 'mailcow' }}/skip">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="kind" value="{{ item.kind }}">
+      <input type="hidden" name="value" value="{{ item.value }}">
+      <fieldset>
+        <legend>{{ skip_kind_labels[item.kind] }}{% if item.kind != "build" %} <span class="mono">{{ item.value }}</span>{% endif %}</legend>
+        <label class="skip-option"><input type="radio" name="mode" value="skip" checked> Skip this version</label>
+        <label class="skip-option"><input type="radio" name="mode" value="snooze7"> Snooze 1 week</label>
+        <label class="skip-option"><input type="radio" name="mode" value="snooze30"> Snooze 1 month</label>
+        <label class="skip-reason"><span class="visually-hidden">Reason (optional)</span>
+          <input class="input" type="text" name="reason" maxlength="200" placeholder="Reason (optional)" autocomplete="off"></label>
+        <button type="submit" class="button button-quiet button-small">Hide it</button>
+      </fieldset>
+    </form>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endmacro %}
+
 {% macro status_badge(state, label) %}
 <span class="badge badge-{{ state }}"><span class="dot dot-{{ state }}" aria-hidden="true"></span>{{ label }}</span>
 {% endmacro %}
@@ -131,7 +158,7 @@
         <p class="card-text">{{ card.text }}</p>
       </div>
       <div class="card-actions">
-        {% if card.cs %}{{ actions(card.cs) }}{% elif card.state == "update" %}{{ mailcow_action() }}{% endif %}
+        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs)) }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result)) }}{% endif %}
       </div>
     </article>
     {% endfor %}
@@ -178,7 +205,7 @@
             {% elif mc.update_available is sameas false %}{{ status_badge("current", "Up to date") }}
             {% else %}{{ status_badge("muted", "Unknown") }}{% endif %}
           </td>
-          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.ADMIN)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}{{ mailcow_action("button-small") }}{% else %}<span class="faint">–</span>{% endif %}</td>
+          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.OPERATOR)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}<div class="row-actions">{{ mailcow_action("button-small") }}{{ skip_menu(mailcow_skip_items(result)) }}</div>{% elif mc.update_available and can(user, Role.OPERATOR) %}<div class="row-actions">{{ skip_menu(mailcow_skip_items(result)) }}</div>{% else %}<span class="faint">–</span>{% endif %}</td>
         </tr>
         {% endif %}
         {% for cs in rows %}
@@ -205,9 +232,9 @@
             {{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
-          {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update)) %}
+          {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}
           <td data-label="Action" class="col-action{% if not has_action %} no-action{% endif %}">
-            {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}</div>{% else %}<span class="faint">–</span>{% endif %}
+            {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}{{ skip_menu(skip_items(cs)) }}</div>{% else %}<span class="faint">–</span>{% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -219,6 +246,38 @@
 </section>
 {% elif result %}
 <p class="empty">No containers found.</p>
+{% endif %}
+
+{% if skipped %}
+<section class="block" id="skipped" aria-labelledby="skipped-heading">
+  <h2 id="skipped-heading">Skipped <span class="count">{{ skipped | length }}</span></h2>
+  <div class="table-wrap">
+    <table class="data skipped-list">
+      <thead>
+        <tr><th scope="col">Container</th><th scope="col">What</th><th scope="col">By</th><th scope="col">Until</th><th scope="col">Reason</th>{% if can(user, Role.OPERATOR) %}<th scope="col" class="col-action">Action</th>{% endif %}</tr>
+      </thead>
+      <tbody>
+        {% for s in skipped %}
+        <tr>
+          <td data-label="Container"><span class="who-name">{{ s.key }}</span></td>
+          <td data-label="What">{{ skip_kind_labels[s.kind] }}{% if s.value %} <span class="mono">{{ s.value | truncate(19, True, "") if s.kind == "build" else s.value }}</span>{% endif %}</td>
+          <td data-label="By">{{ s.user }}<div class="meta">{{ s.created_at | uk_date }}</div></td>
+          <td data-label="Until">{% if s.until %}Snoozed until {{ s.until | uk_date }}{% else %}A newer version shows again{% endif %}</td>
+          <td data-label="Reason">{{ s.reason or "–" }}</td>
+          {% if can(user, Role.OPERATOR) %}
+          <td data-label="Action" class="col-action">
+            <form method="post" action="/skips/{{ s.id }}/remove">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="button button-quiet button-small">Remove</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endif %}
 
 <dialog id="preview-dialog">
