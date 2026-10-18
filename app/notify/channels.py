@@ -93,6 +93,8 @@ class ChannelStore:
     def __init__(self, store: Store, box: SecretBox, settings_getter: Callable[[], Settings]):
         self._store = store
         self._box = box
+        # Must stay the static startup Settings: effective() reads the store, which would
+        # deadlock when called inside write_tx.
         self._settings = settings_getter
         self.unreadable = False
 
@@ -236,6 +238,18 @@ class ChannelStore:
                 self._audit(db, user, f"Notification channel removed: {target.name}")
         except KeyUnusable:
             raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE}) from None
+
+    def reset_unreadable(self, user: str) -> bool:
+        """Remove the saved channels row, but only while it can't be read. True if removed."""
+        with self._store.write_tx() as db:
+            row = db.execute("SELECT value FROM settings WHERE name = ?",
+                             (CHANNELS_KEY,)).fetchone()
+            if row is None or self._parse(json.loads(row[0])) is not None:
+                return False
+            db.execute("DELETE FROM settings WHERE name = ?", (CHANNELS_KEY,))
+            self._audit(db, user, "Unreadable notification channels removed")
+        self.unreadable = False
+        return True
 
     # -- 0.2 migration ---------------------------------------------------------------------
     def migrate_0_2_email(self) -> None:

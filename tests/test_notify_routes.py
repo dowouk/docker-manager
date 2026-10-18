@@ -336,6 +336,84 @@ def test_digest_sync_failure_still_redirects(app, client, caplog, monkeypatch):
     assert "RuntimeError" in caplog.text and "secret detail" not in caplog.text
 
 
-def test_microsoft_365_preset_carries_a_warning(client):
+def test_microsoft_365_warning_shows_without_javascript(client):
     page = client.get("/settings/channels/new?provider=smtp").text
-    assert "Microsoft 365 is ending username-and-password SMTP sign-in" in page
+    warning = page.index("Microsoft 365 is ending username-and-password SMTP sign-in")
+    start = page.index("data-presets")
+    assert "</div>\n    <p" in page[start:warning]  # the hidden presets box has closed by then
+    assert warning < page.index('name="host"')  # still next to the SMTP fields
+
+
+def test_long_names_wrap_in_css():
+    css = open("app/static/app.css").read()
+    for selector in (".channel-head", ".who-name", ".channel-title"):
+        rule = css[css.index(selector + " {"):].split("}")[0]
+        assert "overflow-wrap: anywhere" in rule and "min-width: 0" in rule
+
+
+def test_huge_reason_number_does_not_500(client, app):
+    ch = app.state.channels.save(
+        Channel("", "Ops", "smtp2go", {}, ["a@x.com"], {"digest"}),
+        {"api_key": SECRET, "sender": "a@x.com"}, "me")
+    r = client.get(f"/settings?msg=channel_test_failed&channel={ch.id}&reason={'9' * 5000}")
+    assert r.status_code == 200 and "couldn't be sent" not in r.text
+
+
+# -- unreadable channels ----------------------------------------------------------------------
+def make_unreadable(app):
+    add_ok = app.state.channels.save(
+        Channel("", "Ops", "smtp2go", {}, ["a@x.com"], {"digest"}),
+        {"api_key": SECRET, "sender": "a@x.com"}, "me")
+    with app.state.store.write_tx() as db:
+        db.execute("UPDATE settings SET value = ? WHERE name = 'notification_channels'",
+                   ('{"enc": "not-a-valid-token"}',))
+    return add_ok
+
+
+def reset(client, **over):
+    return client.post("/settings/channels/reset-unreadable",
+                       data={"csrf_token": CSRF, "confirm": "1", **over})
+
+
+def test_unreadable_banner_explains_and_offers_the_reset(client, app):
+    make_unreadable(app)
+    page = client.get("/settings").text
+    assert ("The saved notification channels can't be read with the current key. Restore the "
+            "original key file, or remove them and add them again.") in page
+    assert 'action="/settings/channels/reset-unreadable"' in page and 'name="confirm"' in page
+
+
+def test_reset_removes_only_an_unreadable_row_and_is_audited(client, app):
+    make_unreadable(app)
+    r = reset(client)
+    assert r.status_code == 303 and "msg=channel_reset" in r.headers["location"]
+    assert app.state.channels.list() == [] and not app.state.channels.unreadable
+    assert any("Unreadable notification channels removed" in e.summary
+               for e in app.state.store.list_audit())
+    assert add(client).status_code == 303 and len(app.state.channels.list()) == 1
+
+
+def test_reset_needs_confirmation(client, app):
+    make_unreadable(app)
+    r = client.post("/settings/channels/reset-unreadable", data={"csrf_token": CSRF})
+    assert "channel_reset_refused" in r.headers["location"]
+    assert client.get("/settings").text.count("reset-unreadable") >= 1
+
+
+def test_reset_never_deletes_readable_channels(client, app):
+    add(client)
+    r = reset(client)
+    assert "channel_reset_refused" in r.headers["location"]
+    assert len(app.state.channels.list()) == 1
+
+
+def test_reset_needs_csrf_and_admin(app):
+    make_unreadable(app)
+    with logged_in_client(app, follow_redirects=False) as c:
+        assert c.post("/settings/channels/reset-unreadable",
+                      data={"confirm": "1", "csrf_token": "wrong"}).status_code in (400, 403)
+    with logged_in_client(app, Role.OPERATOR, follow_redirects=False) as c:
+        assert reset(c).status_code == 403
+    assert app.state.channels.unreadable or app.state.channels.list() == []
+    with app.state.store.write_tx() as db:
+        assert db.execute("SELECT 1 FROM settings WHERE name='notification_channels'").fetchone()

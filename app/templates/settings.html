@@ -118,7 +118,16 @@
   <section class="card settings-card" id="notifications" aria-labelledby="notifications-title">
     <h2 id="notifications-title">Notifications</h2>
     <p class="card-text">Channels are where messages go. Each one chooses which events it carries, including the weekly digest above.</p>
-    {% if channels_unreadable %}<p class="notice notice-error" role="alert">The saved notification channels can't be read – add them again.</p>{% endif %}
+    {% if channels_unreadable %}
+    <div class="notice notice-error" role="alert">
+      <p>The saved notification channels can't be read with the current key. Restore the original key file, or remove them and add them again.</p>
+      <form method="post" action="/settings/channels/reset-unreadable">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <label class="check" for="reset-confirm"><input type="checkbox" id="reset-confirm" name="confirm" value="1" required><span>Yes, remove the unreadable channels</span></label>
+        <button type="submit" class="button button-quiet button-small">Remove them</button>
+      </form>
+    </div>
+    {% endif %}
     {% if channels %}
     <ul class="channel-list">
     {% for c in channels %}

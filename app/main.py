@@ -29,6 +29,7 @@ from app.notify.channels import (
 from app.notify.notifier import NO_SUCH_CHANNEL, UNKNOWN_PROVIDER, Notifier
 from app.notify.providers import (
     LOGIN_REFUSED, NO_ANSWER, NOT_PRIVATE, PROVIDERS, REJECTED, SMTP_PRESETS, UNREACHABLE,
+    shutdown_notify_executor,
 )
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
@@ -88,6 +89,8 @@ SETTINGS_FLASH = {
     "saved": ("Settings saved", "ok"),
     "channel_saved": ("Notification channel saved", "ok"),
     "channel_removed": ("Notification channel removed", "ok"),
+    "channel_reset": ("The unreadable notification channels were removed – you can add channels again", "ok"),
+    "channel_reset_refused": ("Nothing was removed – tick the box to confirm, and the channels must still be unreadable", "error"),
     "channel_unavailable": ("The notification channels can't be changed right now – see the server logs", "error"),
     "registry_saved": ("Registry login saved", "ok"),
     "registry_removed": ("Registry login removed", "ok"),
@@ -288,6 +291,7 @@ def create_app(
                 if scheduler is not None:
                     scheduler.shutdown(wait=False)
             finally:
+                shutdown_notify_executor()
                 if owns_http:
                     await http.aclose()
 
@@ -714,7 +718,8 @@ def create_app(
             return None
         if msg == "channel_test_ok":
             return (f"Test sent to {found.name}", "ok")
-        if not (reason.isascii() and reason.isdecimal() and int(reason) < len(CHANNEL_REASONS)):
+        if not (reason.isascii() and reason.isdecimal() and len(reason) <= 2
+                and int(reason) < len(CHANNEL_REASONS)):
             return None
         return (f"The test couldn't be sent to {found.name} – {CHANNEL_REASONS[int(reason)]}",
                 "error")
@@ -818,6 +823,15 @@ def create_app(
     @app.post("/settings/channels", dependencies=[Depends(verify_csrf)])
     async def channel_create(request: Request, user: User = Depends(require_role(Role.ADMIN))):
         return await save_channel(request, user, None)
+
+    @app.post("/settings/channels/reset-unreadable", dependencies=[Depends(verify_csrf)])
+    async def channel_reset_unreadable(
+        confirm: str = Form(""), user: User = Depends(require_role(Role.ADMIN)),
+    ):
+        if not confirm or not app.state.channels.reset_unreadable(user.email):
+            return _redirect("/settings?msg=channel_reset_refused#notifications")
+        sync_digest()
+        return _redirect("/settings?msg=channel_reset#notifications")
 
     @app.post("/settings/channels/{channel_id}", dependencies=[Depends(verify_csrf)])
     async def channel_update(channel_id: str, request: Request,

@@ -28,6 +28,7 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("GET", "/settings/channels/new", Role.ADMIN),
     ("GET", "/settings/channels/1", Role.ADMIN),
     ("POST", "/settings/channels", Role.ADMIN),
+    ("POST", "/settings/channels/reset-unreadable", Role.ADMIN),
     ("POST", "/settings/channels/1", Role.ADMIN),
     ("POST", "/settings/channels/1/delete", Role.ADMIN),
     ("POST", "/settings/channels/1/test", Role.ADMIN),
