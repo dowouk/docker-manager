@@ -1,6 +1,7 @@
 """Registry logins: host normalisation, the generated Docker config that names the
 credential helper, and a live login test. No password is ever written to a file."""
 import base64
+import contextlib
 import json
 import os
 import tempfile
@@ -20,7 +21,8 @@ def normalise_host(host: str) -> str:
     for scheme in ("https://", "http://"):
         value = value.removeprefix(scheme)
     value = value.rstrip("/")
-    value = value.removesuffix("/v1").rstrip("/")  # Docker Hub's legacy URL
+    if value.removesuffix("/v1") in _HUB_ALIASES:  # Docker Hub's legacy URL
+        value = value.removesuffix("/v1")
     if not value or "/" in value:
         raise ValueError(f"Not a registry host: {host!r}")
     return "docker.io" if value in _HUB_ALIASES else value
@@ -56,9 +58,14 @@ def auth_file_logins(path: str | None) -> dict[str, tuple[str, str]]:
         found: dict[str, tuple[str, str]] = {}
         for key, entry in auths.items():
             try:
-                user, _, password = base64.b64decode(entry["auth"], validate=True).decode().partition(":")
-                found.setdefault(normalise_host(key), (user, password))
-            except (KeyError, TypeError, ValueError):
+                if entry.get("identitytoken"):
+                    # Docker's credential-helper convention for refresh tokens
+                    login = ("<token>", entry["identitytoken"])
+                else:
+                    user, _, password = base64.b64decode(entry["auth"], validate=True).decode().partition(":")
+                    login = (user, password)
+                found.setdefault(normalise_host(key), login)
+            except (KeyError, TypeError, ValueError, AttributeError):
                 continue
         return found
     except (OSError, ValueError, AttributeError):
@@ -72,31 +79,76 @@ def _write_private(path: str, data: dict) -> None:
             json.dump(data, fh)
         os.replace(tmp, path)
     except BaseException:
-        os.unlink(tmp)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
         raise
+
+
+def _base_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def write_docker_config(
     config_dir: str, hosts: list[str], db_path: str, key_path: str, base_file: str | None
 ) -> str | None:
-    """Write a Docker config that routes these hosts (and those in `base_file`) to the
-    credential helper, plus the helper's own paths-only config. None if no hosts."""
-    names: dict[str, None] = {}
-    for host in (*hosts, *auth_file_logins(base_file)):
+    """Write a Docker config that routes the saved-login hosts to the credential helper,
+    plus the helper's own paths-only config. None (and no files) if there are no saved
+    logins: Docker then keeps behaving exactly as in 0.1.
+
+    The base file's credHelpers and credsStore are kept as they are (they hold no
+    secrets); its `auths` hosts with a login are routed to the helper, which reads the
+    base file live. A base credHelpers entry is only replaced for a host with a saved login.
+    """
+    files = [os.path.join(config_dir, "config.json"), os.path.join(config_dir, HELPER_CONFIG)]
+    ui: dict[str, None] = {}
+    for host in hosts:
         try:
-            names[normalise_host(host)] = None
+            ui[normalise_host(host)] = None
         except ValueError:
             continue
-    files = [os.path.join(config_dir, "config.json"), os.path.join(config_dir, HELPER_CONFIG)]
-    if not names:
+    if not ui:
         for path in files:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 os.unlink(path)
-            except FileNotFoundError:
-                pass
         return None
+    base = _base_config(base_file)
+    base_helpers = base.get("credHelpers")
+    helpers: dict[str, str] = {}
+    for key, value in (base_helpers if isinstance(base_helpers, dict) else {}).items():
+        try:
+            if normalise_host(key) in ui:
+                continue  # a saved login wins
+        except ValueError:
+            pass
+        helpers[key] = value
+    taken = set()
+    for key in helpers:
+        with contextlib.suppress(ValueError):
+            taken.add(normalise_host(key))
+    for host in ui:
+        helpers[docker_host(host)] = HELPER_NAME
+    auths = base.get("auths")
+    for key, entry in (auths.items() if isinstance(auths, dict) else ()):
+        try:
+            host = normalise_host(key)
+        except ValueError:
+            continue
+        if host in ui or host in taken or not isinstance(entry, dict):
+            continue
+        if entry.get("auth") or entry.get("identitytoken"):
+            helpers[docker_host(host)] = HELPER_NAME
+    config: dict = {"credHelpers": helpers}
+    if "credsStore" in base:
+        config["credsStore"] = base["credsStore"]
     os.makedirs(config_dir, mode=0o700, exist_ok=True)
-    _write_private(files[0], {"credHelpers": {docker_host(h): HELPER_NAME for h in names}})
+    _write_private(files[0], config)
     _write_private(files[1], {"db": db_path, "key": key_path, "auth_file": base_file})
     return config_dir
 

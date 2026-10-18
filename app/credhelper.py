@@ -6,36 +6,50 @@ from the database on demand. A missing or unreadable key means "not found" – i
 never create a key, which would make every saved secret unreadable."""
 import json
 import os
+import pathlib
+import sqlite3
 import sys
 
 from app.keys import SecretBox, read_key
 from app.registry_logins import HELPER_CONFIG, auth_file_logins, normalise_host
-from app.settings_service import load_registry_logins
-from app.store import Store
+from app.settings_service import REGISTRY_LOGINS, logins_from_stored
 
 NOT_FOUND = "credentials not found in native keychain"
 
 
+def _saved_logins(db: str, key: str) -> list[dict]:
+    secret = read_key(key)
+    if secret is None or not os.path.exists(db):
+        return []
+    # Read-only: the helper must never run migrations or write the live database.
+    conn = sqlite3.connect(f"{pathlib.Path(db).absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE name = ?", (REGISTRY_LOGINS,)).fetchone()
+    finally:
+        conn.close()
+    return logins_from_stored(json.loads(row[0]) if row else None, SecretBox(secret))
+
+
 def _logins(config_dir: str | None) -> dict[str, tuple[str, str]]:
     """Normalised host -> (username, password): saved logins first, then the auth file."""
+    if not config_dir:
+        return {}
     try:
-        with open(os.path.join(config_dir or "", HELPER_CONFIG), encoding="utf-8") as fh:
+        with open(os.path.join(config_dir, HELPER_CONFIG), encoding="utf-8") as fh:
             cfg = json.load(fh)
         db, key, auth_file = cfg["db"], cfg["key"], cfg.get("auth_file")
     except (OSError, ValueError, KeyError, TypeError):
         return {}
     found = auth_file_logins(auth_file)
-    secret = read_key(key)
-    if secret is not None and os.path.exists(db):
-        store = Store(db)
+    try:
+        saved = _saved_logins(db, key)
+    except (sqlite3.Error, ValueError):  # locked, corrupt or not our schema: just "not found"
+        saved = []
+    for item in saved:
         try:
-            for item in load_registry_logins(store, SecretBox(secret)):
-                try:
-                    found[normalise_host(item["host"])] = (item["username"], item["password"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-        except Exception:  # noqa: BLE001 – a broken database is just "not found"
-            pass
+            found[normalise_host(item["host"])] = (item["username"], item["password"])
+        except (KeyError, TypeError, ValueError):
+            continue
     return found
 
 

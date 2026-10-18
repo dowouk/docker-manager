@@ -158,7 +158,11 @@ def _logins_from_plain(plain: str | None) -> list[dict]:
 def load_registry_logins(store: Store, box: SecretBox) -> list[dict]:
     """Decrypted registry logins, or [] if none are saved or they can't be read.
     Lets the credential helper read them without building a SettingsService."""
-    stored = store.load_settings().get(REGISTRY_LOGINS)
+    return logins_from_stored(store.load_settings().get(REGISTRY_LOGINS), box)
+
+
+def logins_from_stored(stored, box: SecretBox) -> list[dict]:
+    """Decrypt the stored `registry_logins` value (None if never saved)."""
     token = stored.get("enc") if isinstance(stored, dict) else None
     plain = box.decrypt(token) if isinstance(token, str) else None
     return _logins_from_plain(plain)

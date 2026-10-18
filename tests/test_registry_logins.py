@@ -94,3 +94,31 @@ async def test_login_unreachable(respx_mock, http):
     respx_mock.get("https://ghcr.io/v2/").mock(side_effect=httpx.ConnectError("boom"))
     with pytest.raises(RegistryError, match="ghcr.io could not be reached"):
         await test_login(http, "ghcr.io", "me", "tok")
+
+
+def test_hub_legacy_suffix_only_for_docker_hub():
+    assert normalise_host("https://index.docker.io/v1/") == "docker.io"
+    with pytest.raises(ValueError):
+        normalise_host("ghcr.io/v1")
+
+
+def test_base_file_without_saved_logins_gives_no_config(tmp_path):
+    base = tmp_path / "config.json"
+    base.write_text(json.dumps({"auths": {"quay.io": {"auth": "cTpwYXNzd29yZA=="}}}))
+    assert write_docker_config(str(tmp_path / "dc"), [], "db", "key", str(base)) is None
+    assert not (tmp_path / "dc" / "config.json").exists()
+
+
+def test_base_file_kept_alongside_saved_login(tmp_path):
+    base = tmp_path / "config.json"
+    base.write_text(json.dumps({
+        "auths": {"quay.io": {"auth": "cTpwYXNzd29yZA=="},
+                  "myreg.example.com": {"identitytoken": "tok"},
+                  "empty.example.com": {}},
+        "credHelpers": {"123.dkr.ecr.eu-west-2.amazonaws.com": "ecr-login", "ghcr.io": "other"},
+        "credsStore": "desktop"}))
+    out = write_docker_config(str(tmp_path / "dc"), ["ghcr.io"], "db", "key", str(base))
+    assert json.loads((Path(out) / "config.json").read_text()) == {
+        "credHelpers": {"123.dkr.ecr.eu-west-2.amazonaws.com": "ecr-login", "ghcr.io": "docker-manager",
+                        "quay.io": "docker-manager", "myreg.example.com": "docker-manager"},
+        "credsStore": "desktop"}

@@ -255,6 +255,11 @@ class RegistryClient:
             raise RegistryError(f"{ref.registry} token response contained no token")
         return token
 
+    def set_logins(self, logins: dict[str, str]) -> None:
+        """Replace the in-memory logins; cached tokens may belong to the old ones."""
+        self._logins = logins
+        self._tokens.clear()
+
     def _credentials(self, ref: ImageRef) -> str | None:
         login = self._logins.get("docker.io" if ref.is_docker_hub else ref.registry.lower())
         if login:

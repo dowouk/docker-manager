@@ -96,3 +96,31 @@ def test_list_has_no_secrets(env):
     assert code == 0
     assert json.loads(out) == {"ghcr.io": "me", "docker.io": "hubuser", "quay.io": "q"}
     assert "tok" not in out and "hubpw" not in out
+
+
+def test_get_identity_token_from_auth_file(env):
+    auth = env / "auth.json"
+    auth.write_text(json.dumps({"auths": {"myreg.example.com": {"identitytoken": "refresh-tok"}}}))
+    code, out = run("get", stdin="myreg.example.com")
+    assert code == 0
+    assert (json.loads(out)["Username"], json.loads(out)["Secret"]) == ("<token>", "refresh-tok")
+
+
+def test_unset_docker_config_is_not_found(env, monkeypatch):
+    monkeypatch.delenv("DOCKER_CONFIG")
+    monkeypatch.chdir(env / "dc")  # holds docker-manager.json, which must not be read
+    assert run("get", stdin="ghcr.io")[0] == 1
+
+
+def test_corrupt_db_is_not_found(env, capsys):
+    for f in env.glob("dashboard.db-*"):  # WAL files would still hold the rows
+        f.unlink()
+    (env / "dashboard.db").write_bytes(b"not a database" * 100)
+    assert run("get", stdin="ghcr.io") == (1, "credentials not found in native keychain")
+    assert capsys.readouterr().err == ""
+
+
+def test_helper_does_not_touch_the_database(env):
+    before = (env / "dashboard.db").stat().st_mtime_ns
+    run("get", stdin="ghcr.io")
+    assert (env / "dashboard.db").stat().st_mtime_ns == before

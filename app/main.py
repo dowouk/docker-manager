@@ -165,9 +165,7 @@ def apply_registry_logins(app: FastAPI) -> None:
     the credential helper named in a generated config (paths only, no secrets)."""
     state = app.state
     logins = state.settings_service.registry_logins()
-    state.registry = RegistryClient(
-        state.http, state.settings.registry_auth_file, logins=logins_by_host(logins)
-    )
+    state.registry.set_logins(logins_by_host(logins))
     db_path = getattr(state.store, "path", None)
     if db_path is None:  # a store without a known file: nothing for the helper to open
         set_docker_config_dir(None)
@@ -246,6 +244,7 @@ def create_app(
     app.state.http = http
     app.state.startup_settings = settings
     app.state.store = store
+    app.state.registry = RegistryClient(http, app.state.settings.registry_auth_file)
     apply_registry_logins(app)
     app.state.runner = runner
     app.state.check_lock = asyncio.Lock()
