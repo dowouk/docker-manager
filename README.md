@@ -12,6 +12,7 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Set up the Azure app registration](#set-up-the-azure-app-registration)
 - [Set up Azure Communication Services email](#set-up-azure-communication-services-email)
 - [Install on a server](#install-on-a-server)
+- [Settings](#settings)
 - [Configuration reference](#configuration-reference)
 - [Private images](#private-images)
 - [Updating the dashboard itself](#updating-the-dashboard-itself)
@@ -27,6 +28,7 @@ You install one copy of the dashboard on **each** server. It only sees the conta
 - Checks automatically every 6 hours, and whenever you press **Check now**.
 - Updates a container with one click and shows the live output while it runs. Every update is kept in **History** (who, when, what, result and the full log).
 - Updates Mailcow using Mailcow's own `update.sh`, exactly as you would by hand.
+- Has a **Settings** page for most options, so you don't need to edit files and restart. Changes are kept in **History**.
 - Sends a weekly email (Monday 08:00 by default) listing what needs updating. If everything is up to date it still emails, so silence never means "broken".
 - Sign-in is with your Microsoft 365 / Entra ID account. There are no passwords to manage in the dashboard itself.
 
@@ -62,6 +64,7 @@ Please read this before installing.
 - **On a server that runs Mailcow** the dashboard also runs with `pid: host` and `privileged: true`, so it can run Mailcow's `update.sh` directly on the server, exactly as you would by hand as root. Because the Docker socket already gives root-level control, these options remove friction rather than adding a new kind of risk. Don't think of the other servers as much safer – on all of them, the sign-in is what protects you.
 - The dashboard is only reachable through your reverse proxy (Caddy or Traefik). The examples have no `ports:` section on purpose – please keep it that way.
 - Keep your `.env` file (secrets) private.
+- Secrets you save on the Settings page are encrypted – see [Settings](#settings) for what that does and doesn't protect.
 
 ## Set up the Azure app registration
 
@@ -112,7 +115,7 @@ Sign-in fails closed: if a restriction is set and the person doesn't meet it, th
 
 ## Set up Azure Communication Services email
 
-This is only needed for the weekly email. Skip it if you don't want emails.
+This is only needed for the weekly email. Skip it if you don't want emails. You can enter the values below either in your `.env` file or on the dashboard's [Settings page](#settings).
 
 1. In the [Azure portal](https://portal.azure.com), create an **Email Communication Services** resource (search for "Email Communication Services" → **Create**). Choose a resource group and a data location (for example **UK** or **Europe**).
 2. Open it and go to **Provision domains**. Either:
@@ -120,11 +123,11 @@ This is only needed for the weekly email. Skip it if you don't want emails.
    - **Add a custom domain** (for example `example.com`), then add the TXT, SPF and DKIM records it shows you at your DNS provider, and wait until every record shows **Verified**.
 3. Create a **Communication Services** resource (search for "Communication Services" → **Create**), in the same data location.
 4. Open the Communication Services resource and go to **Email → Domains → Connect domain**, and pick the domain from step 2.
-5. Check the sender address: in the Email Communication Services resource, open the domain → **MailFrom addresses**. The default is `DoNotReply@<your domain>`. This goes in `DIGEST_FROM`.
-6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string** → `ACS_CONNECTION_STRING` (in your `.env` file).
-7. Put the people who should get the email in `DIGEST_TO` (comma-separated).
+5. Check the sender address: in the Email Communication Services resource, open the domain → **MailFrom addresses**. The default is `DoNotReply@<your domain>`. This is the sender (`DIGEST_FROM`).
+6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string** → `ACS_CONNECTION_STRING`. Enter it on the Settings page (it is encrypted when saved), or put it in your `.env` file.
+7. Put the people who should get the email in the recipients (`DIGEST_TO`, comma-separated).
 
-Use **Send digest now** on the dashboard to test it.
+Use **Send test email** on the Settings page to check it works, or **Send digest now** on the dashboard.
 
 ## Install on a server
 
@@ -160,15 +163,9 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
    Everything for the dashboard then lives in this folder: `compose.yml`, `.env`, and a `data` folder that is created on first start and holds the database and compose-file backups. Back up this one folder.
 
-4. Edit `compose.yml`: set `SERVER_NAME` and `PUBLIC_URL`. For Traefik, also set the host name, entry point and certificate resolver in the labels. If the server runs Mailcow, uncomment the lines marked `[Mailcow]`.
+4. Edit `compose.yml`: set `PUBLIC_URL`. For Traefik, also set the host name, entry point and certificate resolver in the labels. If the server runs Mailcow, uncomment the lines marked `[Mailcow]`.
 
-5. Edit `.env`: fill in `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and the client secret, and (for the email) the ACS connection string, `DIGEST_FROM` and `DIGEST_TO`. Then make a session secret:
-
-   ```sh
-   openssl rand -hex 32
-   ```
-
-   Paste the result after `SESSION_SECRET=`. Then make the file private:
+5. Edit `.env`: fill in `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and the client secret. The email settings can wait: you can set them on the [Settings page](#settings) after signing in. Then make the file private:
 
    ```sh
    chmod 600 .env
@@ -185,44 +182,84 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
    Press Ctrl+C to stop watching the logs (the dashboard keeps running).
 
-8. Open `PUBLIC_URL` in your browser and sign in.
+8. Open `PUBLIC_URL` in your browser and sign in. Then open **Settings** to set the server name, email and anything else.
 
 > **Note:** `PUBLIC_URL` must match the redirect URI in Azure exactly (same host, `https`), or sign-in fails.
 
+## Settings
+
+Open **Settings** from the top of the dashboard. Most options can be changed there, with no file editing or restart:
+
+- **General** – server name and time zone.
+- **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, and the Mailcow folder.
+- **Email** – the Azure Communication Services connection string, sender, recipients, the schedule, and whether to email when everything is up to date. **Send test email** sends a message straight away so you can check it works.
+- **Registry logins** – logins for private images (see [Private images](#private-images)). Each one is checked against the registry before it is saved.
+
+Each section is saved on its own. If one value in a section is invalid (for example a schedule that isn't valid, or an unknown time zone) nothing in that section is saved, and the form shows the problem with your other entries still in place. Changes appear in **History → Changes** – the old and new values, but never secrets.
+
+**Environment variables still win.** Every setting that could be set with an environment variable in 0.1 still can, and an environment variable always beats the Settings page. A field set that way is shown read-only as "Set by the server's environment (`NAME`)". To manage it on the page instead, remove the variable from your compose file or `.env` and run `docker compose up -d`.
+
+**Secrets are encrypted.** The connection string and registry passwords or tokens that you save on the page are encrypted in the database, and are never shown again or sent back to your browser. To keep one as it is, leave its field blank when you save. The key is created automatically the first time the dashboard starts, as `/data/secret.key` (in your `data` folder).
+
+What this does and doesn't do:
+
+- It protects a copy of the database file on its own – for example one that ends up in a backup or is sent to someone for help.
+- It does **not** protect against someone who has all of the `data` folder, because the key is in it.
+- For stronger protection, keep the key somewhere else: put `secret.key` in a separate folder, mount that folder in the container, and point `SECRET_KEY_FILE` at it (for example `SECRET_KEY_FILE: "/run/dm-key/secret.key"`). Then back up the database and the key separately.
+- Back the key up. If the key file is missing, a new one is created when the dashboard starts, so anything saved with the old key can't be read: the dashboard still starts, the fields say "The saved value can't be read – enter it again", and you enter them again. If the file is there but can't be used (it is not 32 bytes long, or can't be read), the dashboard still starts and logs one error, but it never overwrites the file; saved secrets can't be read and new ones can't be saved until you restore the original key or fix the file.
+- The folder for `SECRET_KEY_FILE` must be writable by the dashboard. When moving the key there from the default place, **move the existing `secret.key` into that folder first** – if you only set the variable, a new key is created and the secrets you saved can no longer be read.
+
+**Upgrading from 0.1.** If you copy the new example compose file over your old one, the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or enter the email settings on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=` to switch email off) no longer locks the Email section; only a variable with a value does.
+
+Everything the dashboard needs to start – `PUBLIC_URL`, the `AZURE_*` values, `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` – is still set with environment variables. The Entra values move to the Settings page in a later release.
+
 ## Configuration reference
 
-All settings are environment variables in the compose file. The Entra app registration, the secrets and the email addresses go in `.env` next to it; the examples read them from there.
+Settings can be environment variables in the compose file, and many can also be changed on the [Settings page](#settings) – the **Settings page** column shows which. The Entra app registration and its secret go in `.env` next to the compose file; the examples read them from there. If a variable is set, it wins over the Settings page and the field shows as locked there.
 
-| Variable | Required | Default | What it's for |
-| --- | --- | --- | --- |
-| `SERVER_NAME` | Yes | – | Name shown on the page and in the email |
-| `PUBLIC_URL` | Yes | – | The dashboard's address, for example `https://updates.server1.example.com` |
-| `AZURE_TENANT_ID` | Yes | – | Directory (tenant) ID – the long code, not your domain name |
-| `AZURE_CLIENT_ID` | Yes | – | Application (client) ID |
-| `AZURE_CLIENT_SECRET` | Yes | – | Client secret **Value** (keep in `.env`) |
-| `SESSION_SECRET` | Yes | – | Long random string for signing the sign-in cookie (keep in `.env`). Changing it signs everyone out |
-| `ALLOWED_EMAILS` | No | – | Comma-separated **sign-in names** (UPNs) allowed in |
-| `ALLOWED_GROUP_ID` | No | – | Object ID of an Entra group allowed in; needs a groups claim |
-| `CHECK_INTERVAL_HOURS` | No | `6` | How often to check for updates |
-| `COMPOSE_ROOT` | No | `/docker` | Where your compose projects live. Must be mounted at the same path |
-| `MAILCOW_DIR` | No | `/opt/mailcow-dockerized` | Mailcow's folder, mounted at the same path. If Mailcow runs on the server but the folder isn't mounted, the Mailcow row says so |
-| `ACS_CONNECTION_STRING` | No | – | Azure Communication Services connection string (keep in `.env`). Email is off without it |
-| `DIGEST_FROM` | No | – | Sender address set up in Azure Communication Services |
-| `DIGEST_TO` | No | – | Comma-separated recipients |
-| `DIGEST_SCHEDULE` | No | `0 8 * * MON` | When the email is sent: minute, hour, day of month, month, day of week. Use day names for the weekday (`MON`, `MON-FRI`, `SAT,SUN`); numbers work as in cron (`0` or `7` = Sunday, `1` = Monday) |
-| `DIGEST_WHEN_NONE` | No | `true` | Still email when everything is up to date. When `false`, the email is still sent if something couldn't be checked |
-| `TZ` | No | `Europe/London` | Time zone for the schedule and the times shown |
-| `HEALTH_TIMEOUT_SECONDS` | No | `300` | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
-| `REGISTRY_AUTH_FILE` | No | – | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
-| `DATA_DIR` | No | `/data` | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
+| Variable | Required | Default | Settings page | What it's for |
+| --- | --- | --- | --- | --- |
+| `SERVER_NAME` | No | `Docker Manager` | Yes | Name shown on the page and in the email |
+| `PUBLIC_URL` | Yes | – | No | The dashboard's address, for example `https://updates.server1.example.com` |
+| `AZURE_TENANT_ID` | Yes | – | No | Directory (tenant) ID – the long code, not your domain name |
+| `AZURE_CLIENT_ID` | Yes | – | No | Application (client) ID |
+| `AZURE_CLIENT_SECRET` | Yes | – | No | Client secret **Value** (keep in `.env`) |
+| `SESSION_SECRET` | No | – | – | No longer needed – ignored if set, so 0.1 `.env` files still work |
+| `ALLOWED_EMAILS` | No | – | No | Comma-separated **sign-in names** (UPNs) allowed in |
+| `ALLOWED_GROUP_ID` | No | – | No | Object ID of an Entra group allowed in; needs a groups claim |
+| `CHECK_INTERVAL_HOURS` | No | `6` | Yes | How often to check for updates |
+| `COMPOSE_ROOT` | No | `/docker` | No | Where your compose projects live. Must be mounted at the same path |
+| `MAILCOW_DIR` | No | `/opt/mailcow-dockerized` | Yes | Mailcow's folder, mounted at the same path. If Mailcow runs on the server but the folder isn't mounted, the Mailcow row says so |
+| `ACS_CONNECTION_STRING` | No | – | Yes | Azure Communication Services connection string (keep in `.env`). Email is off without it |
+| `DIGEST_FROM` | No | – | Yes | Sender address set up in Azure Communication Services |
+| `DIGEST_TO` | No | – | Yes | Comma-separated recipients |
+| `DIGEST_SCHEDULE` | No | `0 8 * * MON` | Yes | When the email is sent: minute, hour, day of month, month, day of week. Use day names for the weekday (`MON`, `MON-FRI`, `SAT,SUN`); numbers work as in cron (`0` or `7` = Sunday, `1` = Monday) |
+| `DIGEST_WHEN_NONE` | No | `true` | Yes | Still email when everything is up to date. When `false`, the email is still sent if something couldn't be checked |
+| `TZ` | No | `Europe/London` | Yes | Time zone for the schedule and the times shown |
+| `HEALTH_TIMEOUT_SECONDS` | No | `300` | Yes | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
+| `REGISTRY_AUTH_FILE` | No | – | Logins can be added there instead | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
+| `DATA_DIR` | No | `/data` | No | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
+| `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | No | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 
-The email is only sent when `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are all set.
+The email is only sent when the connection string, sender and recipients are all set – by `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO`, or on the Settings page.
+
+`SECRET_KEY_FILE`, `DATA_DIR`, `COMPOSE_ROOT`, `PUBLIC_URL` and the `AZURE_*` values are only ever set with environment variables.
 
 ## Private images
 
-For images in a private registry (for example a private package on `ghcr.io`), log in on the server as usual, then let the dashboard use that login – both to check the image and to pull it when you update.
+For images in a private registry (for example a private package on `ghcr.io`), add a login for it on the dashboard's **Settings** page, under **Registry logins**.
 
-1. Log in on the server as root. For GitHub, use a personal access token with only the `read:packages` permission:
+1. Create a **read-only token** at the registry rather than using an account password. For GitHub, use a personal access token with only the `read:packages` permission. Docker Hub has read-only access tokens too.
+2. On **Settings → Registry logins**, enter the registry host (for example `ghcr.io`), the username and the token, and save. The dashboard checks the login against the registry first, and doesn't save it if it is refused.
+3. Press **Check now**.
+
+Logins saved this way are encrypted (see [Settings](#settings)) and handed to Docker by a small credential helper when it needs them. They are never written to a file in plain text. They are used both to check the image and to pull it when you update. A Docker Hub login also raises Docker Hub's limits (see [Docker Hub limits](#docker-hub-limits)).
+
+### Using `REGISTRY_AUTH_FILE` instead
+
+This still works exactly as before, and the logins in the file keep working alongside any you add on the Settings page. But the file is your own plain-text `config.json`, so moving those logins to the Settings page is recommended.
+
+1. Log in on the server as root (with a read-only token):
 
    ```sh
    docker login ghcr.io
@@ -242,8 +279,6 @@ For images in a private registry (for example a private package on `ghcr.io`), l
 3. Run `docker compose up -d`, then press **Check now**.
 
 The login must be stored in `config.json` itself. If `docker login` says it used a credential helper (`credsStore`), the dashboard can't read it.
-
-A Docker Hub login in the same file is used too, which raises Docker Hub's limits (see [Docker Hub limits](#docker-hub-limits)).
 
 ## Updating the dashboard itself
 
@@ -280,7 +315,8 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 - [ ] Your compose projects appear grouped by project, not under "Other".
 - [ ] None of your `/docker` projects say **Project files not mounted**.
 - [ ] Servers that run Mailcow: there is a **Mailcow** row with a version and no error.
-- [ ] **Send digest now** delivers an email (if you set up email).
+- [ ] **Send test email** on the Settings page (or **Send digest now**) delivers an email, if you set up email.
+- [ ] Upgrading from 0.1: everyone is asked to sign in again once. That is expected.
 - [ ] On your phone: try the version preview dialog, the live log while an update runs, and the **Show only updates** filter.
 - [ ] **hPanel check** – after the first minor/patch update the dashboard does, open that project in hPanel's Docker Manager and confirm it shows the new tag. If hPanel puts the old tag back, stop using the dashboard's version-update button for that project and update it in hPanel instead.
 
@@ -308,4 +344,10 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 
 **The page shows "502 Bad Gateway"** – the proxy can't reach the dashboard. Check `docker compose logs` for errors (a missing required setting is reported there by name), and that the dashboard and the proxy share the network named in the compose file.
 
-**No email arrives** – press **Send digest now** and read the message at the top of the page. Check the logs, that the domain is connected to the Communication Services resource, and that `DIGEST_FROM` is one of its MailFrom addresses. Look in junk mail.
+**No email arrives** – press **Send test email** on the Settings page and read the message. This is the way to check email: for safety, a failed send is logged with the type of error only, never its text (which could contain your connection string), so the logs say little. Check that the domain is connected to the Communication Services resource, and that the sender (`DIGEST_FROM`) is one of its MailFrom addresses. Look in junk mail.
+
+**Everyone was signed out after upgrading to 0.2** – expected, and it happens once. Sessions are now kept on the server instead of in a signed cookie, so old cookies are no longer recognised. Just sign in again. `SESSION_SECRET` is no longer needed and is ignored if it is still set.
+
+**A field on the Settings page is read-only and says "Set by the server's environment"** – that setting is also set as an environment variable (in your compose file or `.env`), and the variable always wins. Remove it there and run `docker compose up -d` to manage it on the page.
+
+**"The saved value can't be read – enter it again"** – the key that encrypts saved secrets (`/data/secret.key`, or `SECRET_KEY_FILE`) is missing or has been replaced. The dashboard still runs; enter the secret again and save. Restore the original key file if you have it.

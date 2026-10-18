@@ -8,12 +8,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    server_name: str
+    server_name: str = "Docker Manager"
     public_url: str
     azure_tenant_id: str
     azure_client_id: str
     azure_client_secret: str
-    session_secret: str
+    session_secret: str | None = None  # accepted so 0.1 .env files validate; unused
     allowed_group_id: str | None = None
     allowed_emails: Annotated[list[str], NoDecode] = []
     check_interval_hours: float = 6
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     registry_auth_file: str | None = None
     health_timeout_seconds: float = 300
     data_dir: str = "/data"
+    secret_key_file: str | None = None
 
     @field_validator("allowed_emails", "digest_to", mode="before")
     @classmethod

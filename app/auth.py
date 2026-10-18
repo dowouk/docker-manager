@@ -1,6 +1,6 @@
 """Microsoft Entra ID sign-in (OIDC code flow + PKCE), auth guard and CSRF.
 
-The guard is a pure ASGI middleware that sits *inside* SessionMiddleware, so
+The guard is a pure ASGI middleware that sits *inside* ServerSessionMiddleware, so
 ``scope["session"]`` is available. Everything except ``/auth/*`` and
 ``/static/*`` requires a signed-in session. There is no fallback mode.
 """
@@ -12,12 +12,11 @@ from authlib.integrations.starlette_client import OAuth, OAuthError
 from authlib.common.errors import AuthlibBaseError
 from joserfc.errors import JoseError
 from fastapi import Depends, FastAPI, HTTPException, Request
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.config import Settings
+from app.sessions import ServerSessionMiddleware, SessionStore
 
-SESSION_MAX_AGE = 8 * 3600
 _PUBLIC_PREFIXES = ("/auth/", "/static/")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -158,7 +157,7 @@ def _page(title: str, body: str, status: int) -> HTMLResponse:
     return HTMLResponse(_PAGE.format(title=title, body=body), status_code=status)
 
 
-def setup_auth(app: FastAPI, settings: Settings) -> None:
+def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None:
     oauth = OAuth()
     oauth.register(
         name="entra",
@@ -214,12 +213,6 @@ def setup_auth(app: FastAPI, settings: Settings) -> None:
             200,
         )
 
-    # Added first = innermost: SessionMiddleware (added next) wraps the guard.
+    # Added first = innermost: ServerSessionMiddleware (added next) wraps the guard.
     app.add_middleware(AuthGuardMiddleware)
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=settings.session_secret,
-        max_age=SESSION_MAX_AGE,
-        https_only=True,
-        same_site="lax",
-    )
+    app.add_middleware(ServerSessionMiddleware, sessions=sessions)

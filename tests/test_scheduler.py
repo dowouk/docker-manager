@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -63,12 +63,26 @@ async def test_digest_job_runs_check_then_sends(monkeypatch, settings):
     sent.assert_called_once_with(settings, result, app.state.email_client_factory)
 
 
-async def test_digest_job_swallows_errors(monkeypatch, settings, caplog):
+async def test_digest_job_swallows_send_errors_without_secret(monkeypatch, settings, caplog):
+    monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+
+    def factory(conn):
+        raise RuntimeError("accesskey=TOPSECRET")
+
+    monkeypatch.setattr(sched_mod, "send_digest", MagicMock(side_effect=lambda s, r, f: f("x")))
+    app = fake_app()
+    app.state.settings = settings
+    app.state.email_client_factory = factory
+    await sched_mod.scheduled_digest(app)
+    assert "RuntimeError" in caplog.text and "TOPSECRET" not in caplog.text
+
+
+async def test_digest_job_logs_check_failure_traceback(monkeypatch, settings, caplog):
     monkeypatch.setattr(sched_mod, "run_check", AsyncMock(side_effect=RuntimeError("down")))
     app = fake_app()
     app.state.settings = settings
     await sched_mod.scheduled_digest(app)
-    assert "down" in caplog.text
+    assert "down" in caplog.text and "Traceback" in caplog.text
 
 
 SATURDAY_NOON = datetime(2026, 10, 17, 12, 0, tzinfo=LONDON)
@@ -99,3 +113,81 @@ def test_weekday_translation():
     assert t("*/2") == "sun,tue,thu,sat"
     assert t("mon-fri") == "mon-fri"
     assert t("*") == "*"
+
+
+async def test_reschedule_changes_interval_and_adds_digest(settings):
+    app = fake_app()
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 6})
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+    assert sch.get_job("digest") is None
+
+    app.state.settings = settings.model_copy(update={
+        "check_interval_hours": 2,
+        "acs_connection_string": "endpoint=x", "digest_from": "d@x.com", "digest_to": ["a@b.c"],
+    })
+    sched_mod.reschedule(app)
+    job = sch.get_job("check")
+    assert job.trigger.interval.total_seconds() == 2 * 3600
+    assert job.next_run_time > datetime.now(job.next_run_time.tzinfo) + timedelta(hours=1)
+    assert sch.get_job("digest") is not None
+
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 2})
+    sched_mod.reschedule(app)
+    assert sch.get_job("digest") is None
+    sch.shutdown(wait=False)
+
+
+def test_sessions_purge_job_registered(settings):
+    app = fake_app()
+    s = build_scheduler(app, settings)
+    job = s.get_job("sessions-purge")
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.interval.total_seconds() == 3600
+    job.func(*job.args)
+    app.state.sessions.purge_expired.assert_called_once_with()
+
+
+async def test_reschedule_keeps_check_timing_unless_interval_or_tz_changed(settings):
+    app = fake_app()
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 6})
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+    before = sch.get_job("check").next_run_time
+
+    # A save that changes something else (e.g. the server name) must not push the check out
+    app.state.settings = app.state.settings.model_copy(update={"server_name": "renamed"})
+    sched_mod.reschedule(app)
+    assert sch.get_job("check").next_run_time == before
+
+    app.state.settings = app.state.settings.model_copy(update={"check_interval_hours": 2})
+    sched_mod.reschedule(app)
+    changed = sch.get_job("check")
+    assert changed.trigger.interval.total_seconds() == 2 * 3600
+    assert changed.next_run_time != before
+
+    app.state.settings = app.state.settings.model_copy(update={"tz": "Asia/Tokyo"})
+    sched_mod.reschedule(app)
+    assert str(sch.get_job("check").trigger.timezone) == "Asia/Tokyo"
+    sch.shutdown(wait=False)
+
+
+async def test_reschedule_digest_trigger_carries_new_schedule_and_tz(settings):
+    app = fake_app()
+    email = {"acs_connection_string": "endpoint=x", "digest_from": "d@x.com",
+             "digest_to": ["a@b.c"]}
+    app.state.settings = settings.model_copy(update=email)
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+
+    app.state.settings = settings.model_copy(update={
+        **email, "digest_schedule": "30 9 * * FRI", "tz": "Asia/Tokyo"})
+    sched_mod.reschedule(app)
+    trigger = sch.get_job("digest").trigger
+    assert str(trigger.timezone) == "Asia/Tokyo"
+    fields = {f.name: str(f) for f in trigger.fields}
+    assert (fields["minute"], fields["hour"], fields["day_of_week"]) == ("30", "9", "fri")
+    sch.shutdown(wait=False)

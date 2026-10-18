@@ -1,5 +1,6 @@
 """Weekly digest email: render the latest check and send it via Azure Communication Services."""
 import os
+from html import escape as html_escape
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -118,6 +119,16 @@ def _default_factory(connection_string: str):
     return EmailClient.from_connection_string(connection_string)
 
 
+def _send(settings: Settings, subject: str, html: str, plain: str, factory) -> None:
+    client = (factory or _default_factory)(settings.acs_connection_string)
+    message = {
+        "senderAddress": settings.digest_from,
+        "recipients": {"to": [{"address": a} for a in settings.digest_to]},
+        "content": {"subject": subject, "html": html, "plainText": plain},
+    }
+    client.begin_send(message).result()
+
+
 def send_digest(settings: Settings, result: CheckResult, email_client_factory=None) -> str:
     """Send the digest. Blocking – call via asyncio.to_thread from async code."""
     if not settings.digest_enabled:
@@ -125,12 +136,21 @@ def send_digest(settings: Settings, result: CheckResult, email_client_factory=No
     rendered = render_digest(result, settings)
     if rendered is None:
         return "skipped – nothing to report"
-    subject, html, plain = rendered
-    client = (email_client_factory or _default_factory)(settings.acs_connection_string)
-    message = {
-        "senderAddress": settings.digest_from,
-        "recipients": {"to": [{"address": a} for a in settings.digest_to]},
-        "content": {"subject": subject, "html": html, "plainText": plain},
-    }
-    client.begin_send(message).result()
+    _send(settings, *rendered, email_client_factory)
     return "sent"
+
+
+class EmailNotConfigured(ValueError):
+    """Email settings are incomplete."""
+
+
+def send_test_email(settings: Settings, email_client_factory=None) -> None:
+    """Send a short message to the digest recipients. Blocking, like send_digest."""
+    if not settings.digest_enabled:
+        raise EmailNotConfigured("Email is not configured")
+    name = settings.server_name
+    plain = (f"This is a test email from Docker Manager on {name}. "
+             "If you can read this, email is working.")
+    html = f"<p>This is a test email from Docker Manager on {html_escape(name)}. " \
+           "If you can read this, email is working.</p>"
+    _send(settings, f"{name}: test email", html, plain, email_client_factory)

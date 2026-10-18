@@ -27,6 +27,16 @@ def test_missing_required_fails(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_session_secret_optional(monkeypatch, settings):
+    monkeypatch.delenv("SESSION_SECRET")
+    assert Settings(_env_file=None).session_secret is None
+
+
+def test_server_name_default(monkeypatch, settings):
+    monkeypatch.delenv("SERVER_NAME")
+    assert Settings(_env_file=None).server_name == "Docker Manager"
+
+
 def test_digest_enabled_needs_all_three(monkeypatch, settings):
     monkeypatch.setenv("ACS_CONNECTION_STRING", "endpoint=x")
     monkeypatch.setenv("DIGEST_FROM", "d@x.com")

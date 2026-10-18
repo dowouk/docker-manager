@@ -1,9 +1,6 @@
 """Reusable auth test helpers (also used against the full app in Task 13)."""
-import json
 import re
-from base64 import b64encode
 
-import itsdangerous
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -15,20 +12,15 @@ CSRF = "test-csrf-token"
 USER = {"name": "Test User", "email": "test@example.com"}
 
 
-def session_cookie(secret: str, data: dict) -> str:
-    """Sign a session exactly as Starlette's SessionMiddleware does."""
-    payload = b64encode(json.dumps(data).encode("utf-8"))
-    return itsdangerous.TimestampSigner(secret).sign(payload).decode("utf-8")
-
-
-def set_session_cookie(client: TestClient, secret: str, data: dict) -> None:
+def set_session(client: TestClient, app: FastAPI, data: dict) -> None:
+    token = app.state.sessions.create(data)
     # domain/path must match what the app's Set-Cookie uses, or the jar keeps two cookies
-    client.cookies.set("session", session_cookie(secret, data), domain="testserver.local", path="/")
+    client.cookies.set("session", token, domain="testserver.local", path="/")
 
 
-def logged_in_client(app: FastAPI, settings, **kwargs) -> TestClient:
+def logged_in_client(app: FastAPI, settings=None, **kwargs) -> TestClient:
     client = TestClient(app, base_url="https://testserver", **kwargs)
-    set_session_cookie(client, settings.session_secret, {"user": USER, "csrf": CSRF})
+    set_session(client, app, {"user": USER, "csrf": CSRF})
     return client
 
 

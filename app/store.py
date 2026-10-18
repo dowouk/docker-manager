@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Callable, Literal
 
 INTERRUPTED_LINE = "Interrupted – the dashboard restarted"
 SELF_UPDATED_LINE = "Dashboard restarted – self-update applied"
@@ -21,6 +21,46 @@ class Job:
     started_at: datetime | None
     finished_at: datetime | None
     log: str
+
+
+@dataclass
+class AuditEntry:
+    id: int
+    at: datetime
+    user: str
+    kind: str
+    summary: str
+
+
+def _migration_1(db: sqlite3.Connection) -> None:
+    # The 0.1 schema; IF NOT EXISTS so an existing 0.1 database is adopted as is.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS check_results ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "checked_at TEXT NOT NULL, payload TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS jobs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+        "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
+        "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')"
+    )
+
+
+def _migration_2(db: sqlite3.Connection) -> None:
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute(
+        "CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, data TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, last_seen TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, "
+        "user TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL)"
+    )
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migration_1, _migration_2]
 
 
 def _now() -> str:
@@ -44,24 +84,143 @@ def _from_iso(value: str | None) -> datetime | None:
 
 class Store:
     def __init__(self, path: str) -> None:
+        self.path = path
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         self._lock = threading.Lock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
+        with self._lock:
+            self._migrate()
+
+    def _table_exists(self, name: str) -> bool:
+        return self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone() is not None
+
+    def _migrate(self) -> None:
+        # Judged before migration 1, which would create the 0.1 tables on a fresh database.
+        upgraded = not self._table_exists("schema_version") and self._table_exists("jobs")
+        # One transaction for creating schema_version and every pending migration, so a
+        # failure part-way leaves nothing behind and the next start judges "upgraded" again.
+        self._db.execute("BEGIN")
+        try:
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+            row = self._db.execute("SELECT version FROM schema_version").fetchone()
+            current = row[0] if row else 0
+            for number, migration in enumerate(MIGRATIONS, start=1):
+                if number <= current:
+                    continue
+                migration(self._db)
+                if number == len(MIGRATIONS) and upgraded:
+                    self._db.execute(
+                        "INSERT OR REPLACE INTO meta (key, value) VALUES ('upgraded_from_0_1', '1')"
+                    )
+                self._db.execute("DELETE FROM schema_version")
+                self._db.execute("INSERT INTO schema_version (version) VALUES (?)", (number,))
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
         with self._lock, self._db:
             self._db.execute(
-                "CREATE TABLE IF NOT EXISTS check_results ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "checked_at TEXT NOT NULL, payload TEXT NOT NULL)"
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
             )
+
+    def load_settings(self) -> dict[str, object]:
+        with self._lock:
+            rows = self._db.execute("SELECT name, value FROM settings").fetchall()
+        return {name: json.loads(value) for name, value in rows}
+
+    def save_settings(self, values: dict[str, object]) -> None:
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT INTO settings (name, value) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                [(name, json.dumps(value)) for name, value in values.items()],
+            )
+
+    def delete_setting(self, name: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM settings WHERE name = ?", (name,))
+
+    def add_audit(self, user: str, kind: str, summary: str) -> None:
+        with self._lock, self._db:
             self._db.execute(
-                "CREATE TABLE IF NOT EXISTS jobs ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
-                "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
-                "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')"
+                "INSERT INTO audit (at, user, kind, summary) VALUES (?, ?, ?, ?)",
+                (_now(), user, kind, summary),
             )
+
+    def list_audit(self, limit: int = 100) -> list[AuditEntry]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, at, user, kind, summary FROM audit ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [AuditEntry(r[0], _from_iso(r[1]), r[2], r[3], r[4]) for r in rows]
+
+    def session_get(self, token_hash: str) -> tuple[dict, datetime, datetime] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT data, created_at, last_seen FROM sessions WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0]), _from_iso(row[1]), _from_iso(row[2])
+
+    def session_put(self, token_hash: str, data: dict,
+                    created_at: datetime, last_seen: datetime) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sessions (token_hash, data, created_at, last_seen) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET "
+                "data = excluded.data, created_at = excluded.created_at, "
+                "last_seen = excluded.last_seen",
+                (token_hash, json.dumps(data), _to_iso(created_at), _to_iso(last_seen)),
+            )
+
+    def session_touch(self, token_hash: str, last_seen: datetime) -> bool:
+        """Update last_seen only; never creates a row. False if the row is gone."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE sessions SET last_seen = ? WHERE token_hash = ?",
+                (_to_iso(last_seen), token_hash),
+            )
+            return cur.rowcount > 0
+
+    def session_update(self, token_hash: str, data: dict, last_seen: datetime) -> bool:
+        """Rewrite data and last_seen of an existing row; False if the row is gone."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE sessions SET data = ?, last_seen = ? WHERE token_hash = ?",
+                (json.dumps(data), _to_iso(last_seen), token_hash),
+            )
+            return cur.rowcount > 0
+
+    def session_delete(self, token_hash: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def session_purge(self, idle_before: datetime, created_before: datetime) -> int:
+        # ISO strings in UTC compare correctly as text.
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "DELETE FROM sessions WHERE last_seen < ? OR created_at < ?",
+                (_to_iso(idle_before), _to_iso(created_before)),
+            )
+            return cur.rowcount
 
     def save_check(self, payload: dict, checked_at: datetime) -> None:
         with self._lock, self._db:

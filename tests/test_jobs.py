@@ -307,3 +307,14 @@ async def test_cancel_leaves_job_running_for_startup_classification(store, kind,
     assert "Cancelled" not in job.log
     store.mark_interrupted_jobs()
     assert store.get_job(job_id).status == final
+
+
+def test_subprocess_env_uses_generated_config(monkeypatch):
+    from app.jobs import set_docker_config_dir
+
+    monkeypatch.setenv("REGISTRY_AUTH_FILE", "/run/docker-auth/config.json")
+    monkeypatch.setenv("DOCKER_CONFIG", "/elsewhere")
+    set_docker_config_dir("/data/docker-config")
+    assert subprocess_env()["DOCKER_CONFIG"] == "/data/docker-config"
+    set_docker_config_dir(None)
+    assert subprocess_env()["DOCKER_CONFIG"] == "/elsewhere"

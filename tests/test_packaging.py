@@ -62,18 +62,26 @@ def test_examples_carry_the_mailcow_lines_commented_out():
         assert "/opt/mailcow-dockerized:/opt/mailcow-dockerized" in service["volumes"]
 
 
-ENV_FILE_VARS = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "SESSION_SECRET",
-                 "ACS_CONNECTION_STRING", "DIGEST_FROM", "DIGEST_TO")
+ENV_FILE_VARS = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+# Can be set on the Settings page instead, so the examples carry them commented out
+SETTINGS_PAGE_VARS = ("ACS_CONNECTION_STRING", "DIGEST_FROM", "DIGEST_TO")
 
 
 def test_env_example_covers_every_value_the_examples_read_from_it():
     env = (ROOT / "examples" / ".env.example").read_text(encoding="utf-8")
     for var in ENV_FILE_VARS:
         assert f"\n{var}=" in env, f".env.example is missing {var}"
+    assert "SESSION_SECRET" not in env, "SESSION_SECRET is no longer needed"
+    for var in SETTINGS_PAGE_VARS:
+        assert f"\n# {var}=" in env, f".env.example should carry {var} commented out"
+        assert f"\n{var}=" not in env
     for name in EXAMPLES:
         text = (ROOT / "examples" / name / "compose.yml").read_text(encoding="utf-8")
+        assert "SESSION_SECRET" not in text
         for var in ENV_FILE_VARS:
             assert f'{var}: "${{{var}}}"' in text, f"{name} example should read {var} from .env"
+        for var in SETTINGS_PAGE_VARS:
+            assert f'# {var}: "${{{var}}}"' in text, f"{name} example should carry {var} commented out"
 
 
 def test_readme_documents_every_setting():
@@ -91,3 +99,10 @@ def test_dockerfile_bounds_graceful_shutdown():
     cmd = json.loads(cmd_line[4:])
     i = cmd.index("--timeout-graceful-shutdown")
     assert cmd[i + 1] == "5"
+
+
+def test_credential_helper_entry_point():
+    from importlib.metadata import entry_points
+
+    found = {e.name: e.value for e in entry_points(group="console_scripts")}
+    assert found["docker-credential-docker-manager"] == "app.credhelper:main_cli"

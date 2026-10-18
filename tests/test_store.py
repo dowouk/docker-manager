@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from app.store import Store
@@ -96,3 +97,105 @@ def test_check_results_pruned_to_latest_100(tmp_path):
     assert store.latest_check()[1] == {"n": 104}
     (oldest,) = store._db.execute("SELECT MIN(checked_at) FROM check_results").fetchone()
     assert oldest == (start + timedelta(hours=5)).isoformat()
+
+
+def test_fresh_database_is_not_an_upgrade(tmp_path):
+    s = Store(str(tmp_path / "d.db"))
+    assert s.get_meta("upgraded_from_0_1") is None
+
+
+def test_0_1_database_is_upgraded_and_keeps_jobs(tmp_path):
+    path = str(tmp_path / "d.db")
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+               "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
+               "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')")
+    db.execute("CREATE TABLE check_results (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+               "checked_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    db.execute("INSERT INTO jobs (kind, target, user, status) VALUES ('build','web','me','succeeded')")
+    db.commit(); db.close()
+    s = Store(path)
+    assert s.get_meta("upgraded_from_0_1") == "1"
+    assert [j.target for j in s.list_jobs()] == ["web"]
+
+
+def test_migrations_idempotent_on_restart(tmp_path):
+    path = str(tmp_path / "d.db")
+    Store(path).save_settings({"server_name": "a"})
+    s = Store(path)
+    assert s.load_settings() == {"server_name": "a"}
+    assert s.get_meta("upgraded_from_0_1") is None
+
+
+def test_settings_upsert_and_delete(tmp_path):
+    s = Store(str(tmp_path / "d.db"))
+    s.save_settings({"check_interval_hours": 6.0, "digest_to": ["a@x.com"]})
+    s.save_settings({"check_interval_hours": 3.0})
+    assert s.load_settings() == {"check_interval_hours": 3.0, "digest_to": ["a@x.com"]}
+    s.delete_setting("digest_to")
+    assert "digest_to" not in s.load_settings()
+
+
+def test_audit_newest_first(tmp_path):
+    s = Store(str(tmp_path / "d.db"))
+    s.add_audit("a@x.com", "settings", "first"); s.add_audit("b@x.com", "settings", "second")
+    assert [e.summary for e in s.list_audit()] == ["second", "first"]
+
+
+def test_session_rows_and_purge(tmp_path):
+    s = Store(str(tmp_path / "d.db"))
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc); new = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    s.session_put("h1", {"user": {"email": "a"}}, old, old)
+    s.session_put("h2", {}, new, new)
+    assert s.session_get("h1")[0] == {"user": {"email": "a"}}
+    assert s.session_purge(idle_before=new, created_before=old) == 1
+    assert s.session_get("h1") is None and s.session_get("h2") is not None
+
+
+def test_session_touch_and_update_never_create_rows(tmp_path):
+    from datetime import datetime, timezone
+    s = Store(str(tmp_path / "d.db"))
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert s.session_touch("missing", now) is False
+    assert s.session_update("missing", {"a": 1}, now) is False
+    assert s.session_get("missing") is None
+    s.session_put("h", {"a": 1}, now, now)
+    later = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert s.session_update("h", {"a": 2}, later) is True
+    assert s.session_get("h") == ({"a": 2}, now, later)
+    assert s.session_touch("h", now) is True
+    assert s.session_get("h") == ({"a": 2}, now, now)
+
+
+def _make_0_1(path):
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+               "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
+               "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')")
+    db.commit(); db.close()
+
+
+def test_upgrade_flag_survives_a_failed_migration(tmp_path, monkeypatch):
+    import pytest
+
+    from app import store as store_mod
+
+    path = str(tmp_path / "d.db")
+    _make_0_1(path)
+
+    def boom(db):
+        raise RuntimeError("migration 2 failed")
+
+    monkeypatch.setattr(store_mod, "MIGRATIONS", [store_mod._migration_1, boom])
+    with pytest.raises(RuntimeError):
+        Store(path)
+    monkeypatch.undo()
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+
+
+def test_upgrade_flag_kept_across_restarts(tmp_path):
+    path = str(tmp_path / "d.db")
+    _make_0_1(path)
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"

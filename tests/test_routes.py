@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -8,11 +10,13 @@ import httpx
 import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
+from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.jobs import BUSY_MESSAGE, BusyError
-from app.main import create_app
+from app.config import Settings
+from app.main import apply_settings, create_app
 from app.store import Store
-from auth_helpers import CSRF, USER, assert_all_routes_guarded, logged_in_client, session_cookie
+from auth_helpers import CSRF, USER, assert_all_routes_guarded, logged_in_client, set_session
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
 
@@ -451,7 +455,7 @@ async def test_job_triggers_check_afterwards(settings, tmp_path, seeded, monkeyp
     app = make_app(settings, tmp_path, seeded, runner=runner)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as c:
-        c.cookies.set("session", session_cookie(settings.session_secret, {"user": USER, "csrf": CSRF}))
+        set_session(c, app, {"user": USER, "csrf": CSRF})
         r = await c.post("/mailcow/update", data={"csrf_token": CSRF})
     assert r.status_code == 303
     work = runner.submitted[0][3]
@@ -634,7 +638,7 @@ def test_digest_send_failure_logged(settings, tmp_path, seeded, caplog):
     with caplog.at_level(logging.ERROR, logger="app.main"):
         r = c.post("/digest/send", data={"csrf_token": CSRF})
     assert r.headers["location"] == "/?msg=digest_failed"
-    assert "Sending the digest failed" in caplog.text and "acs down" in caplog.text
+    assert "Sending the digest failed (RuntimeError)" in caplog.text and "acs down" not in caplog.text
     assert "could not be sent" in c.get("/?msg=digest_failed").text
     c.__exit__(None, None, None)
 
@@ -738,3 +742,67 @@ async def test_lifespan_closes_own_http_client_even_on_error(settings, tmp_path)
         async with app.router.lifespan_context(app):
             raise RuntimeError("shutdown went wrong")
     assert app.state.http.is_closed
+
+
+def test_server_name_change_shows_without_restart(settings, tmp_path, seeded, monkeypatch):
+    monkeypatch.delenv("SERVER_NAME")
+    s = Settings(_env_file=None)
+    app = make_app(s, tmp_path, seeded)
+    c = logged_in_client(app, s, follow_redirects=False)
+    c.__enter__()
+    assert "web-new" not in c.get("/").text
+    app.state.settings_service.save("general", {"server_name": "web-new", "tz": "Europe/London"}, "me")
+    apply_settings(app)
+    assert "web-new" in c.get("/").text
+    c.__exit__(None, None, None)
+
+
+def test_health_timeout_read_at_call_time(client_for, seeded, monkeypatch):
+    seen = {}
+
+    async def fake_update_version(ctx, info, change, backup_dir, wait, **kw):
+        seen.update(kw)
+
+    monkeypatch.setattr("app.main.update_version", fake_update_version)
+    monkeypatch.setattr("app.main.run_check", lambda app: asyncio.sleep(0))
+    runner = FakeRunner()
+    c, app = client_for(result=seeded, runner=runner)
+    app.state.settings_service.save(
+        "checking",
+        {"check_interval_hours": "6", "health_timeout_seconds": "77", "mailcow_dir": "/opt/mailcow"},
+        "me",
+    )
+    apply_settings(app)
+    db_id = seeded.containers[1].container.id
+    sha = preview_sha(c, db_id)
+    c.post(f"/containers/{db_id}/version", data={"tag": "16.3", "sha": sha, "csrf_token": CSRF})
+    ctx = type("Ctx", (), {"log": staticmethod(lambda t: None)})()
+    asyncio.run(runner.submitted[0][3](ctx))
+    assert seen["health_timeout"] == 77
+
+
+def test_apply_settings_writes_helper_config(settings, tmp_path):
+    from app.jobs import subprocess_env
+
+    app = make_app(settings, tmp_path)
+    app.state.settings_service.save_registry_logins(
+        [{"host": "ghcr.io", "username": "me", "password": "s3cret-pw-xyz"}], "me", "added ghcr.io")
+    apply_settings(app)
+    config_dir = tmp_path / "docker-config"
+    cfg = json.loads((config_dir / "config.json").read_text())
+    assert cfg == {"credHelpers": {"ghcr.io": "docker-manager"}}
+    assert subprocess_env()["DOCKER_CONFIG"] == str(config_dir)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert b"s3cret-pw-xyz" not in path.read_bytes(), path
+    creds = app.state.registry._credentials(parse_image_ref("ghcr.io/o/app:1"))
+    assert base64.b64decode(creds) == b"me:s3cret-pw-xyz"
+
+
+def test_startup_picks_up_saved_logins(settings, tmp_path):
+    first = make_app(settings, tmp_path)
+    first.state.settings_service.save_registry_logins(
+        [{"host": "ghcr.io", "username": "me", "password": "pw"}], "me", "x")
+    second = make_app(settings, tmp_path)
+    assert second.state.registry._credentials(parse_image_ref("ghcr.io/o/app:1"))
+    assert (tmp_path / "docker-config" / "config.json").exists()
