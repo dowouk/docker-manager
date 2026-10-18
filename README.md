@@ -11,12 +11,12 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Security](#security)
 - [Accounts and sign-in](#accounts-and-sign-in)
 - [Set up the Azure app registration](#set-up-the-azure-app-registration-for-microsoft-sign-in)
-- [Set up Azure Communication Services email](#set-up-azure-communication-services-email)
+- [Notifications](#notifications)
 - [Install on a server](#install-on-a-server)
 - [Settings](#settings)
 - [Configuration reference](#configuration-reference)
 - [Private images](#private-images)
-- [Upgrading from 0.1 or 0.2](#upgrading-from-01-or-02)
+- [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03)
 - [Monitoring](#monitoring)
 - [Updating the dashboard itself](#updating-the-dashboard-itself)
 - [Docker Hub limits](#docker-hub-limits)
@@ -32,7 +32,7 @@ You install one copy of the dashboard on **each** server. It only sees the conta
 - Updates a container with one click and shows the live output while it runs. Every update is kept in **History** (who, when, what, result and the full log).
 - Updates Mailcow using Mailcow's own `update.sh`, exactly as you would by hand.
 - Has a **Settings** page for most options, so you don't need to edit files and restart. Changes are kept in **History**.
-- Sends a weekly email (Monday 08:00 by default) listing what needs updating. If everything is up to date it still emails, so silence never means "broken".
+- Sends notifications by email through Azure Communication Services, SMTP2GO or any SMTP server: a weekly digest (Monday 08:00 by default) of what needs updating, and alerts for failed updates, failing checks, new updates and people waiting for approval. See [Notifications](#notifications).
 - Signs people in with a local account (email and password, with two-step sign-in) or with Microsoft 365 / Entra ID, and gives each person a role: Viewer, Operator or Admin. See [Accounts and sign-in](#accounts-and-sign-in).
 
 It never updates anything on its own – every update is a click by a signed-in Operator or Admin.
@@ -198,11 +198,37 @@ For each extra server, go to **Authentication → Web → Redirect URIs → Add 
 
 ### 6. Optional: app roles and groups
 
-See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from 0.1 or 0.2](#upgrading-from-01-or-02).
+See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03).
 
-## Set up Azure Communication Services email
+## Notifications
 
-This is only needed for the weekly email. Skip it if you don't want emails. Put the values below in your `.env` file; they appear on the dashboard as a read-only "Email (from environment)" channel. Email settings saved on the 0.2 Settings page are moved into a notification channel called "Email" the first time 0.4 starts.
+The dashboard can email you about what is happening on the server. Nothing is sent until you add a **channel**.
+
+A channel is one way of sending email. It has a name, a provider, up to 20 recipients on the form (email addresses, separated by commas), the events it carries, and an **Enabled** switch. Add as many as you like, for example one to the whole team for the weekly digest and one to yourself for failures. Open **Settings → Notifications** to add, edit, test and delete channels (Admins only).
+
+### Events
+
+Each channel ticks the events it should carry. A new channel starts with the ticked ones below; change them as you like.
+
+| Event | Ticked for a new channel | Sent when |
+| --- | --- | --- |
+| **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating and what couldn't be checked, and goes to every channel that has this ticked |
+| **Updates found** | No | A check finds updates that haven't been reported yet. It only lists updates you haven't already been told about |
+| **Update failed** | Yes | An update, rollback or Mailcow update ends in failure |
+| **Update finished** | No | An update finishes successfully |
+| **Check failing or recovered** | Yes | Every container check failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
+| **Layout problems** | Yes | The dashboard finds a problem with the server layout, such as a compose project folder that isn't mounted |
+| **User waiting for approval** | Yes | Someone signs in with Microsoft for the first time and is waiting for an Admin to approve them |
+
+The **Weekly digest** card on the Settings page holds the digest schedule and whether to send it when everything is up to date. If no channel has the digest ticked, nothing is sent and **Send digest now** is hidden.
+
+### Test and status
+
+Each channel has a **Test** button that sends a short test message to its recipients straight away and shows the result. Below each channel the Settings page shows when it last sent successfully, or why the last attempt failed. For safety, a failed send is logged with the type of error only, never its text (which could contain a password, API key or connection string).
+
+### Add an Azure Communication Services channel
+
+Choose **Azure Communication Services** when adding a channel, then:
 
 1. In the [Azure portal](https://portal.azure.com), create an **Email Communication Services** resource (search for "Email Communication Services" → **Create**). Choose a resource group and a data location (for example **UK** or **Europe**).
 2. Open it and go to **Provision domains**. Either:
@@ -210,11 +236,39 @@ This is only needed for the weekly email. Skip it if you don't want emails. Put 
    - **Add a custom domain** (for example `example.com`), then add the TXT, SPF and DKIM records it shows you at your DNS provider, and wait until every record shows **Verified**.
 3. Create a **Communication Services** resource (search for "Communication Services" → **Create**), in the same data location.
 4. Open the Communication Services resource and go to **Email → Domains → Connect domain**, and pick the domain from step 2.
-5. Check the sender address: in the Email Communication Services resource, open the domain → **MailFrom addresses**. The default is `DoNotReply@<your domain>`. This is the sender (`DIGEST_FROM`).
-6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string** → `ACS_CONNECTION_STRING`. Put it in your `.env` file.
-7. Put the people who should get the email in the recipients (`DIGEST_TO`, comma-separated).
+5. Check the sender address: in the Email Communication Services resource, open the domain → **MailFrom addresses**. The default is `DoNotReply@<your domain>`. Enter it as the **Sender address**.
+6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string**. Paste it into the **Connection string** field.
+7. Enter the recipients, choose the events, save, then press **Test**.
 
-Use **Send test email** on the Settings page to check it works, or **Send digest now** on the dashboard.
+### Add an SMTP2GO channel
+
+Choose **SMTP2GO**. This uses SMTP2GO's web API, so it works even where SMTP ports are blocked.
+
+1. In SMTP2GO, verify a **sender domain** (or a single sender address) under **Sending → Verified Senders**.
+2. Create an **API key** under **Sending → API Keys** with permission to send email.
+3. In the channel, paste the **API key** and enter a **Sender address** on the verified domain. The dashboard sends the key in the `X-Smtp2go-Api-Key` header.
+4. Enter the recipients, choose the events, save, then press **Test**.
+
+### Add an SMTP channel
+
+Choose **SMTP** for any mail server, including Microsoft 365. Enter the **Host**, **Port**, **Security**, optional **Username** and **Password**, and the **Sender address**. The form has buttons that fill in the connection for you:
+
+| Preset | Host | Port | Security |
+| --- | --- | --- | --- |
+| SMTP2GO | `mail.smtp2go.com` | 587 (2525 also works) | STARTTLS |
+| Microsoft 365 | `smtp.office365.com` | 587 | STARTTLS |
+
+- **Security** is **STARTTLS** (usually port 587), **TLS** (usually port 465) or **None**. **None** sends everything, including the password, unencrypted, so it is only allowed when the host is a private address (for example a mail relay on your own network). Anything else is refused.
+- For Microsoft 365, the username is the mailbox's address and the sender must be that mailbox (or one it is allowed to send as). SMTP sign-in must be enabled for the mailbox, and the account needs an app password or an exception if your tenant uses multi-factor authentication.
+
+### Keeping 0.2 and 0.3 email settings
+
+You don't need to do anything when you upgrade to 0.4, and you should **keep your existing compose file**.
+
+- If `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are in your environment, they show as a read-only **Email (from environment)** channel that carries the weekly digest only. To change it, change the environment; to manage it on the page instead, remove the variables and run `docker compose up -d`.
+- If you saved email settings on the 0.2 or 0.3 Settings page, they are moved into one **Email** channel the first time 0.4 starts. It carries the weekly digest only, and every recipient is carried over. If only part of it came from the environment (for example the connection string), the connection string is copied into the channel, where it is stored encrypted.
+- Nothing else is sent until an Admin ticks more events on a channel.
+- `DIGEST_SCHEDULE` and `DIGEST_WHEN_NONE` still work, and are now shown on the **Weekly digest** card.
 
 ## Install on a server
 
@@ -252,7 +306,7 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
 4. Edit `compose.yml`: set `PUBLIC_URL` (the address people will open). For Traefik, also set the host name, entry point and certificate resolver in the labels. If the server runs Mailcow, uncomment the lines marked `[Mailcow]`.
 
-5. `.env` is optional now. Microsoft sign-in and the email settings can be set up on the [Settings page](#settings) after signing in; fill in the `AZURE_*` lines only if you would rather keep Microsoft sign-in in the file. Make the file private:
+5. `.env` is optional now. Microsoft sign-in and [notifications](#notifications) can be set up on the [Settings page](#settings) after signing in; fill in the `AZURE_*` lines only if you would rather keep Microsoft sign-in in the file. Make the file private:
 
    ```sh
    chmod 600 .env
@@ -269,7 +323,7 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 
    Press Ctrl+C to stop watching the logs (the dashboard keeps running).
 
-8. Find the setup token (`cat data/setup-token`, or in the log), open `PUBLIC_URL/setup` in your browser, enter the token and create the first Admin – see [First start](#first-start). Then open **Settings** to set the server name, Microsoft sign-in, email and anything else.
+8. Find the setup token (`cat data/setup-token`, or in the log), open `PUBLIC_URL/setup` in your browser, enter the token and create the first Admin – see [First start](#first-start). Then open **Settings** to set the server name, Microsoft sign-in, notifications and anything else.
 
 > **Note:** if you use Microsoft sign-in, `PUBLIC_URL` plus `/auth/callback` must match the redirect URI in Azure exactly (same host, `https`), or sign-in fails.
 
@@ -280,7 +334,8 @@ Open **Settings** from the top of the dashboard. Most options can be changed the
 - **General** – server name, time zone and the dashboard's address.
 - **Sign-in** – Microsoft sign-in (tenant ID, client ID, client secret and the redirect URI to copy), roles from Microsoft groups, local sign-in, two-step sign-in for Admins and the default role. See [Accounts and sign-in](#accounts-and-sign-in).
 - **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, and the Mailcow folder.
-- **Weekly digest** – the schedule, and whether to email when everything is up to date. **Send test email** sends a message straight away so you can check it works.
+- **Weekly digest** – the schedule, and whether to send it when everything is up to date. The digest goes to every notification channel that has it ticked.
+- **Notifications** – channels (Azure Communication Services, SMTP2GO or SMTP), the events each one carries, and a **Test** button for each. See [Notifications](#notifications).
 - **Registry logins** – logins for private images (see [Private images](#private-images)). Each one is checked against the registry before it is saved.
 
 Each section is saved on its own. If one value in a section is invalid (for example a schedule that isn't valid, or an unknown time zone) nothing in that section is saved, and the form shows the problem with your other entries still in place. Changes appear in **History → Changes** – the old and new values, but never secrets.
@@ -297,7 +352,7 @@ What this does and doesn't do:
 - Back the key up. If the key file is missing, a new one is created when the dashboard starts, so anything saved with the old key can't be read: the dashboard still starts, the fields say "The saved value can't be read – enter it again", and you enter them again. If the file is there but can't be used (it is not 32 bytes long, or can't be read), the dashboard still starts and logs one error, but it never overwrites the file; saved secrets can't be read and new ones can't be saved until you restore the original key or fix the file.
 - The folder for `SECRET_KEY_FILE` must be writable by the dashboard. When moving the key there from the default place, **move the existing `secret.key` into that folder first** – if you only set the variable, a new key is created and the secrets you saved can no longer be read.
 
-**Upgrading from 0.1.** If you copy the new example compose file over your old one, your `AZURE_*` values (now commented out in the example) and the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or enter the email settings on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=` to switch email off) no longer locks the Email section; only a variable with a value does.
+**Upgrading from 0.1.** If you copy the new example compose file over your old one, your `AZURE_*` values (now commented out in the example) and the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or add an email channel on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=`) is ignored; only a variable with a value counts.
 
 Nothing is needed in the environment to start the dashboard any more: `PUBLIC_URL` and the `AZURE_*` values are optional because they can be set on the Settings page. Only `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` are set with environment variables alone. The four sign-in settings (local sign-in, hiding local sign-in, two-step sign-in for Admins and the default role) are on the Settings page only.
 
@@ -313,25 +368,25 @@ Settings can be environment variables in the compose file, and many can also be 
 | `AZURE_CLIENT_ID` | No | – | Yes | Application (client) ID. Optional: or set on the Settings page |
 | `AZURE_CLIENT_SECRET` | No | – | Yes | Client secret **Value** (keep in `.env`). Optional: or set on the Settings page |
 | `SESSION_SECRET` | No | – | – | No longer needed – ignored if set, so 0.1 `.env` files still work |
-| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-01-or-02) |
+| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-01-02-or-03) |
 | `ALLOWED_GROUP_ID` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: becomes a group mapping to Admin |
 | `INITIAL_ADMIN_EMAIL` | No | – | No | Creates the first Admin without the setup token. Needs `INITIAL_ADMIN_PASSWORD_FILE` and `PUBLIC_URL` |
 | `INITIAL_ADMIN_PASSWORD_FILE` | No | – | No | Path to a file (4 KiB or smaller) with that Admin's password; they must change it at first sign-in |
 | `CHECK_INTERVAL_HOURS` | No | `6` | Yes | How often to check for updates |
 | `COMPOSE_ROOT` | No | `/docker` | No | Where your compose projects live. Must be mounted at the same path |
 | `MAILCOW_DIR` | No | `/opt/mailcow-dockerized` | Yes | Mailcow's folder, mounted at the same path. If Mailcow runs on the server but the folder isn't mounted, the Mailcow row says so |
-| `ACS_CONNECTION_STRING` | No | – | Yes | Azure Communication Services connection string (keep in `.env`). Email is off without it |
-| `DIGEST_FROM` | No | – | Yes | Sender address set up in Azure Communication Services |
-| `DIGEST_TO` | No | – | Yes | Comma-separated recipients |
-| `DIGEST_SCHEDULE` | No | `0 8 * * MON` | Yes | When the email is sent: minute, hour, day of month, month, day of week. Use day names for the weekday (`MON`, `MON-FRI`, `SAT,SUN`); numbers work as in cron (`0` or `7` = Sunday, `1` = Monday) |
-| `DIGEST_WHEN_NONE` | No | `true` | Yes | Still email when everything is up to date. When `false`, the email is still sent if something couldn't be checked |
+| `ACS_CONNECTION_STRING` | No | – | No | Azure Communication Services connection string (keep in `.env`). With `DIGEST_FROM` and `DIGEST_TO` it makes a read-only "Email (from environment)" channel that carries the weekly digest. Add more channels on the Settings page |
+| `DIGEST_FROM` | No | – | No | Sender address set up in Azure Communication Services, for the environment channel |
+| `DIGEST_TO` | No | – | No | Comma-separated recipients of the environment channel |
+| `DIGEST_SCHEDULE` | No | `0 8 * * MON` | Yes | When the weekly digest is sent: minute, hour, day of month, month, day of week. Use day names for the weekday (`MON`, `MON-FRI`, `SAT,SUN`); numbers work as in cron (`0` or `7` = Sunday, `1` = Monday) |
+| `DIGEST_WHEN_NONE` | No | `true` | Yes | Still send the digest when everything is up to date. When `false`, it is still sent if something couldn't be checked |
 | `TZ` | No | `Europe/London` | Yes | Time zone for the schedule and the times shown |
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | Yes | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
 | `REGISTRY_AUTH_FILE` | No | – | Logins can be added there instead | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
 | `DATA_DIR` | No | `/data` | No | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 | `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | No | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 
-The email is only sent when the connection string, sender and recipients are all set – by `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO`, or by a notification channel.
+The environment channel only exists when the connection string, sender and recipients are all set. Notification channels you add on the Settings page are stored in the database (credentials encrypted) and are not environment variables; see [Notifications](#notifications).
 
 `SECRET_KEY_FILE`, `DATA_DIR`, `COMPOSE_ROOT`, `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD_FILE` are only ever set with environment variables.
 
@@ -370,7 +425,7 @@ This still works exactly as before, and the logins in the file keep working alon
 
 The login must be stored in `config.json` itself. If `docker login` says it used a credential helper (`credsStore`), the dashboard can't read it.
 
-## Upgrading from 0.1 or 0.2
+## Upgrading from 0.1, 0.2 or 0.3
 
 Pull the new image and run `docker compose up -d`. **Keep your existing compose file and `.env` for the upgrade** – don't replace them with the new examples. You don't need to change either. If you do switch to the new example files, carry your `AZURE_*` values over (or enter them on the Settings page) and keep `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` in place until the first 0.3 start has run, because that is when they are read.
 
@@ -383,6 +438,7 @@ Pull the new image and run `docker compose up -d`. **Keep your existing compose 
 - **With neither set**, 0.1 let everyone who could sign in do everything, so the default role starts as **Admin (as in 0.1)** and a banner says so on every page for Admins. Everyone who signs in stays an Admin until you change the default role on the Settings page and set roles on the Users page. Do this soon.
 - `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` are read **once**, at the upgrade, and ignored after that – removing them from your compose file changes nothing, and adding them later does nothing either. Manage access on the Users and Settings pages.
 - Your existing `AZURE_*` and `PUBLIC_URL` values keep working. They show as locked on the Settings page until you remove them from the compose file or `.env`.
+- **Email (0.4)** – your email settings become notification channels that carry the weekly digest only. See [Keeping 0.2 and 0.3 email settings](#keeping-02-and-03-email-settings).
 
 ## Monitoring
 
@@ -426,7 +482,7 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 - [ ] Your compose projects appear grouped by project, not under "Other".
 - [ ] None of your `/docker` projects say **Project files not mounted**.
 - [ ] Servers that run Mailcow: there is a **Mailcow** row with a version and no error.
-- [ ] **Send test email** on the Settings page (or **Send digest now**) delivers an email, if you set up email.
+- [ ] **Test** on each notification channel (Settings → Notifications) delivers an email, if you set up notifications.
 - [ ] Upgrading from 0.1 or 0.2: everyone is asked to sign in again once. That is expected. If a banner says everyone is an Admin, set the default role and roles on the Users page.
 - [ ] On your phone: try the version preview dialog, the live log while an update runs, and the **Show only updates** filter.
 - [ ] **hPanel check** – after the first minor/patch update the dashboard does, open that project in hPanel's Docker Manager and confirm it shows the new tag. If hPanel puts the old tag back, stop using the dashboard's version-update button for that project and update it in hPanel instead.
@@ -463,7 +519,7 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 
 **The page shows "502 Bad Gateway"** – the proxy can't reach the dashboard. Check `docker compose logs` for errors (a missing required setting is reported there by name), and that the dashboard and the proxy share the network named in the compose file.
 
-**No email arrives** – press **Send test email** on the Settings page and read the message. This is the way to check email: for safety, a failed send is logged with the type of error only, never its text (which could contain your connection string), so the logs say little. Check that the domain is connected to the Communication Services resource, and that the sender (`DIGEST_FROM`) is one of its MailFrom addresses. Look in junk mail.
+**No email arrives** – press **Test** on the channel (Settings → Notifications) and read the message; the channel also shows why its last send failed. This is the way to check email: for safety, a failed send is logged with the type of error only, never its text (which could contain a password or key), so the logs say little. Check that the channel carries the event you expect and is **Enabled**. For Azure Communication Services, check the domain is connected to the Communication Services resource and the sender is one of its MailFrom addresses. For SMTP2GO, check the sender domain is verified and the API key can send. Look in junk mail.
 
 **Everyone was signed out after upgrading to 0.2 or 0.3** – expected, and it happens once. Sessions are now kept on the server instead of in a signed cookie, so old cookies are no longer recognised. Just sign in again. `SESSION_SECRET` is no longer needed and is ignored if it is still set.
 

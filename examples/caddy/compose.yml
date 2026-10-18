@@ -42,13 +42,14 @@ services:
       # AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
       # AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
 
-      # ---- Weekly email (optional – or set these on the Settings page) ----
-      # Anything set here wins over the Settings page and shows as locked there.
+      # ---- Email notifications (optional – add channels on the Settings page) ----
+      # These three make a read-only "Email (from environment)" channel for the weekly
+      # digest. For other channels and events use Settings → Notifications.
       # ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"   # keep the value in .env
       # DIGEST_FROM: "${DIGEST_FROM}"
       # DIGEST_TO: "${DIGEST_TO}"
       # DIGEST_SCHEDULE: "0 8 * * MON"   # minute hour day month weekday (MON, MON-FRI, SAT,SUN)
-      # DIGEST_WHEN_NONE: "true"         # also email when everything is up to date
+      # DIGEST_WHEN_NONE: "true"         # also send when everything is up to date
 
       # ---- Other optional settings (defaults shown) -----------------------
       # Most of these can also be set on the Settings page; anything set here
