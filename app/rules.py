@@ -17,7 +17,7 @@ from app.versions import parse_version_tag
 SETTING = "container_rules"
 MAX_PATTERNS = 10
 MAX_PATTERN_LENGTH = 200
-MATCH_TIMEOUT = 0.5  # wall-clock backstop per match; CPU time decides (see MATCH_SWITCH_OFF)
+MATCH_TIMEOUT = 0.5  # per-match limit; the `regex` timeout runs on process CPU time, not wall clock (see MATCH_SWITCH_OFF)
 MAX_URL_LENGTH = 500
 MATCH_BUDGET = 0.5  # CPU seconds of matching per container once a match was slow or timed out
 MATCH_CEILING = 2.0  # CPU seconds of matching per container, always
@@ -298,7 +298,9 @@ class TagFilter:
                 self._off.add(pattern)
                 self._slow = self._slow or timed_out
             reason = "took too long" if timed_out else "is not valid"
-            self._warn(f"Tag pattern '{pattern}' {reason} and was treated as no match")
+            outcome = ("treated as matching, so those tags are left out" if on_fail
+                       else "treated as not matching, so those tags aren't offered")
+            self._warn(f"Tag pattern '{pattern}' {reason} and was {outcome}")
             return on_fail
         finally:
             if time.thread_time() - started > SLOW_MATCH:
@@ -331,7 +333,7 @@ class TagFilter:
 
 def tag_allowed(tag: str, rules: Rules, warnings: list[str] | None = None) -> bool:
     """Include (if any) must match the whole tag; exclude must not. A pattern that can't
-    be compiled or takes too long counts as no match and adds a warning."""
+    be compiled or takes too long counts as not matching (include) or matching (exclude) and adds a warning."""
     return TagFilter(rules, warnings).allowed(tag)
 
 

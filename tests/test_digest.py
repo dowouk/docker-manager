@@ -154,9 +154,9 @@ def test_layout_section_leaves_out_quiet_containers_and_absent_when_none(setting
     _, html, _ = render_digest(r, settings)
     assert "1 layout problem" in html and "db: mine" in html and "web:" not in html
     r.layout = []
-    assert "Layout problems" not in render_digest(r, settings)[1]
+    assert "/layout" not in render_digest(r, settings)[1]
     r.layout = None
-    assert "Layout problems" not in render_digest(r, settings)[1]
+    assert "/layout" not in render_digest(r, settings)[1]
 
 
 def test_release_notes_link_is_escaped_and_safe(settings):

@@ -121,7 +121,8 @@ def test_bad_pattern_is_no_match_with_warning():
     warnings: list[str] = []
     assert not tag_allowed("1", Rules(exclude_tags=("(",)), warnings)  # a broken exclude excludes
     assert not tag_allowed("1", Rules(include_tags=("(",)), warnings)
-    assert len(warnings) == 1  # the same warning is reported once
+    assert len(warnings) == 2  # include and exclude outcomes differ, so each is reported
+    assert not tag_allowed("1", Rules(include_tags=("(",)), warnings) and len(warnings) == 2  # once each
 
 
 async def test_not_watched_skips_registry(tmp_path, settings):
@@ -366,7 +367,8 @@ def test_exclude_that_times_out_excludes_the_tag(monkeypatch):
     _timing_out(monkeypatch, cpu=0.06)
     f = TagFilter(Rules(exclude_tags=("1.*",)))
     assert f.allowed("1.2") is False and f.allowed("1.3") is False  # switched off: still excluded
-    assert any("took too long" in w for w in f.warnings)
+    assert any("took too long" in w and "treated as matching, so those tags are left out" in w
+               for w in f.warnings)
 
 
 def test_include_that_times_out_does_not_allow_the_tag(monkeypatch):
@@ -374,7 +376,8 @@ def test_include_that_times_out_does_not_allow_the_tag(monkeypatch):
     _timing_out(monkeypatch, cpu=0.06)
     f = TagFilter(Rules(include_tags=("1.*",)))
     assert f.allowed("1.2") is False
-    assert any("took too long" in w for w in f.warnings)
+    assert any("took too long" in w and "treated as not matching, so those tags aren't offered" in w
+               for w in f.warnings)
 
 
 def test_exclude_that_raises_excludes_the_tag():

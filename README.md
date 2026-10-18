@@ -130,7 +130,7 @@ Only a safe subset of regular expressions is supported, so a pattern can never m
 
 These are refused: lookarounds, backreferences, named groups, inline flags (such as `(?i)`), `\p{…}`, repeats on top of repeats (`(a+)+`), a repeat of a group that already holds a `{n,m}`, and counts above 20. They are the ways a pattern can run for a very long time or use a lot of memory. On the dashboard a refused pattern shows the reason and nothing is saved; in a label it is ignored with a warning.
 
-Matching is also timed. A pattern that takes too long counts as "no match" for that check and a warning is shown on the container; a container whose patterns take too long overall stops being matched for that check. Other containers and the check itself are not affected.
+Matching is also timed. A pattern that takes too long (or fails) is treated as not matching if it is an include pattern, so those tags aren't offered, and as matching if it is an exclude pattern, so those tags are left out; a warning is shown on the container; a container whose patterns take too long overall stops being matched for that check. Other containers and the check itself are not affected.
 
 ## Skip and snooze
 
