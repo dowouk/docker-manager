@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.roles import Role
 from app.store import Store
 from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client
 
@@ -219,6 +220,29 @@ def test_history_changes_view(client):
     default = client.get("/history").text
     assert "Check every (hours)" not in default
     assert "Updates" in default and "Changes" in default
+
+
+def test_history_changes_lede_and_kind_filter(app, client):
+    store = app.state.store
+    store.add_audit("a@x.com", "settings", "Checking: changed A")
+    store.add_audit("b@x.com", "signin", "Sign-in failed: SIGNINROW")
+    store.add_audit("c@x.com", "account", "Password changed ACCOUNTROW")
+    store.add_audit("d@x.com", "users", "Added USERSROW")
+    page = client.get("/history?view=changes").text
+    assert "Every settings, sign-in and account change, newest first." in page
+    assert all(m in page for m in ("SIGNINROW", "ACCOUNTROW", "USERSROW", "changed A"))
+    only = client.get("/history?view=changes&kind=signin").text
+    assert "SIGNINROW" in only and "ACCOUNTROW" not in only and "USERSROW" not in only
+    assert "changed A" not in only
+    # an unknown kind is ignored, not an error (and not a SQL filter)
+    unknown = client.get("/history?view=changes&kind=setup").text
+    assert all(m in unknown for m in ("SIGNINROW", "ACCOUNTROW", "USERSROW"))
+
+
+def test_history_kind_filter_is_admin_only(app):
+    with logged_in_client(app, Role.OPERATOR, follow_redirects=False) as c:
+        r = c.get("/history?view=changes&kind=signin", headers={"accept": "text/html"})
+        assert r.status_code in (302, 403)
 
 
 def test_all_routes_still_guarded(app):

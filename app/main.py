@@ -59,6 +59,8 @@ from app.updaters import (
 log = logging.getLogger(__name__)
 _HERE = os.path.dirname(__file__)
 _END = "__END__:"
+CHANGE_KINDS = {"settings": "Settings", "signin": "Sign-in", "account": "Account",
+                "users": "Users"}
 STREAM_RECHECK = 5.0  # seconds between access re-checks on an idle job-log stream
 
 # Flash messages: only these fixed strings are ever shown (no reflected text).
@@ -749,12 +751,14 @@ def create_app(
         return _redirect(f"/settings?msg=saved#{section}")
 
     @app.get("/history", response_class=HTMLResponse)
-    async def history(request: Request, view: str = "", user: User = Depends(require_role(Role.VIEWER))):
+    async def history(request: Request, view: str = "", kind: str = "",
+                      user: User = Depends(require_role(Role.VIEWER))):
         if view == "changes":
             if user.role < Role.ADMIN:
                 raise RoleDenied()
-            return render(request, "history.html", user, view="changes",
-                          changes=store.list_audit())
+            kind = kind if kind in CHANGE_KINDS else ""  # unknown: show everything
+            return render(request, "history.html", user, view="changes", kind=kind,
+                          change_kinds=CHANGE_KINDS, changes=store.list_audit(kind=kind or None))
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)

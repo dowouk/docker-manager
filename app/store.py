@@ -230,11 +230,12 @@ class Store:
                 (_now(), user, kind, summary),
             )
 
-    def list_audit(self, limit: int = 100) -> list[AuditEntry]:
+    def list_audit(self, limit: int = 100, kind: str | None = None) -> list[AuditEntry]:
+        where, args = ("WHERE kind = ? ", (kind,)) if kind else ("", ())
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, at, user, kind, summary FROM audit ORDER BY id DESC LIMIT ?",
-                (limit,),
+                f"SELECT id, at, user, kind, summary FROM audit {where}ORDER BY id DESC LIMIT ?",
+                (*args, limit),
             ).fetchall()
         return [AuditEntry(r[0], _from_iso(r[1]), r[2], r[3], r[4]) for r in rows]
 

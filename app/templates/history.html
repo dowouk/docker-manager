@@ -4,7 +4,7 @@
 <section class="intro">
   <div>
     <h1>History</h1>
-    <p class="lede">{% if view == "changes" %}Every settings change made from this dashboard, newest first.{% else %}Every update run from this dashboard, newest first.{% endif %}</p>
+    <p class="lede">{% if view == "changes" %}Every settings, sign-in and account change, newest first.{% else %}Every update run from this dashboard, newest first.{% endif %}</p>
   </div>
   {% if can(user, Role.ADMIN) %}
   <nav class="segmented tabs" aria-label="History view">
@@ -14,6 +14,12 @@
   {% endif %}
 </section>
 {% if view == "changes" %}
+<nav class="segmented tabs" aria-label="Kind of change">
+  <a href="/history?view=changes"{% if not kind %} aria-current="page"{% endif %}>All</a>
+  {% for key, label in change_kinds.items() %}
+  <a href="/history?view=changes&amp;kind={{ key }}"{% if kind == key %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
 {% if changes %}
 <div class="table-wrap">
   <table class="data">
@@ -30,7 +36,7 @@
   </table>
 </div>
 {% else %}
-<p class="empty">No settings have been changed yet.</p>
+<p class="empty">No changes of this kind have been recorded yet.</p>
 {% endif %}
 {% elif jobs %}
 <div class="table-wrap">
