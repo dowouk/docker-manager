@@ -42,3 +42,21 @@ def test_list_is_packaged():
     lines = _list_path().read_text(encoding="utf-8").splitlines()
     assert len(lines) > 9000
     assert passwords._common()  # loaded lazily, lower-cased
+
+
+def test_verify_never_raises():
+    assert verify_password(None, "x") is False
+    assert verify_password(DUMMY_HASH, None) is False
+    assert verify_password("", "x") is False
+    assert verify_password(DUMMY_HASH, "\ud800") is False
+
+
+def test_hash_lone_surrogate_raises_value_error():
+    import pytest
+    with pytest.raises(ValueError):
+        hash_password("\ud800")
+
+
+def test_dummy_hash_is_current_argon2id():
+    assert DUMMY_HASH.startswith("$argon2id$")
+    assert needs_rehash(DUMMY_HASH) is False

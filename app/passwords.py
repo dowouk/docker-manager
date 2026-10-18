@@ -14,17 +14,23 @@ DUMMY_HASH = _hasher.hash("docker-manager-dummy-password")
 
 
 def hash_password(plain: str) -> str:
-    return _hasher.hash(plain)
+    try:
+        return _hasher.hash(plain)
+    except UnicodeEncodeError as exc:  # lone surrogate: not encodable as UTF-8
+        raise ValueError("Password contains invalid characters") from exc
 
 
 def verify_password(stored_hash: str, plain: str) -> bool:
+    if not isinstance(stored_hash, str) or not stored_hash or not isinstance(plain, str):
+        return False
     try:
         return _hasher.verify(stored_hash, plain)
-    except (VerificationError, InvalidHashError):
+    except (VerificationError, InvalidHashError, TypeError, ValueError):
         return False
 
 
 def needs_rehash(stored_hash: str) -> bool:
+    # An invalid hash counts as needing a rehash (returns True).
     try:
         return _hasher.check_needs_rehash(stored_hash)
     except InvalidHashError:
