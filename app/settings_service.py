@@ -139,6 +139,8 @@ def _parse(field: Field, raw: str, current=None):
                 raise ValueError("Start with https:// and give only the address, "
                                  "for example https://dash.example.com")
             return raw.rstrip("/")
+        if field.name == "azure_tenant_id" and not _GUID.fullmatch(raw):
+            raise ValueError("Use the Directory (tenant) ID – the long code, not your domain name")
         return raw
     if kind in ("int", "float"):
         try:

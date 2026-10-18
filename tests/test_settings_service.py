@@ -8,6 +8,9 @@ from app.settings_service import SettingsError, SettingsService, key_path
 from app.store import Store
 
 
+TENANT = "33333333-3333-3333-3333-333333333333"
+
+
 def svc(settings, tmp_path, key=b"k" * 32):
     return SettingsService(settings, Store(str(tmp_path / "d.db")), SecretBox(key))
 
@@ -219,7 +222,7 @@ def test_can_turn_off_local_with_entra_configured(settings, tmp_path):
 def test_can_turn_off_local_when_entra_saved_in_same_form(settings, tmp_path, monkeypatch):
     base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
     s = svc(base, tmp_path)
-    s.save("signin", {"default_role": "viewer", "azure_tenant_id": "t",
+    s.save("signin", {"default_role": "viewer", "azure_tenant_id": TENANT,
                       "azure_client_id": "c", "azure_client_secret": "s"}, "me")
     assert s.effective().entra_enabled and not s.effective().local_sign_in
 
@@ -292,3 +295,16 @@ def test_duplicate_group_ids_rejected(settings, tmp_path):
     with pytest.raises(ValueError):
         s.save_group_mappings([{"group_id": GUID, "role": "admin"},
                                {"group_id": GUID.upper(), "role": "viewer"}], "me", "x")
+
+
+def test_tenant_id_must_be_a_guid(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID")
+    s = svc(base, tmp_path)
+    with pytest.raises(SettingsError) as exc:
+        s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                          "azure_tenant_id": "contoso.onmicrosoft.com"}, "me")
+    assert exc.value.errors["azure_tenant_id"] == (
+        "Use the Directory (tenant) ID – the long code, not your domain name")
+    s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                      "azure_tenant_id": TENANT}, "me")
+    assert s.effective().azure_tenant_id == TENANT

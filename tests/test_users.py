@@ -60,8 +60,12 @@ def test_list_admins_first_then_name(users):
 
 def test_entra_binding(users):
     u = users.create("entra", "e@x.io", "E", "viewer")
-    users.bind_entra(u.id, "t", "o")
+    assert users.bind_entra(u.id, "t", "o") is True
     assert users.by_entra("t", "o").id == u.id
+    assert users.bind_entra(u.id, "t", "other") is False  # already bound: compare-and-set
+    assert users.by_entra("t", "o").id == u.id
+    c = users.create("entra", "g@x.io", "G", "viewer", entra_tid="t", entra_oid="p")
+    assert users.by_entra("t", "p").id == c.id
     v = users.create("entra", "f@x.io", "F", "viewer")
     with pytest.raises(DuplicateUserError):
         users.bind_entra(v.id, "t", "o")

@@ -36,6 +36,7 @@ class EntraIdentity:
     name: str
     roles: list[str]
     groups: list[str] | None  # None: the token carried no groups claim (e.g. overage)
+    matchable: bool = True  # upn is preferred_username; the email claim may be unverified
 
 
 def issuer(tenant_id: str | None) -> str:
@@ -87,8 +88,10 @@ def verified_identity(claims, settings: Settings) -> EntraIdentity | None:
         return value.strip() if isinstance(value, str) else ""
 
     oid = clean(claims.get("oid"))
-    # preferred_username first: the `email` claim may be unverified (guests)
-    upn = clean(claims.get("preferred_username")) or clean(claims.get("email"))
+    # Only preferred_username may match or bind an existing account; the `email` claim
+    # (possibly unverified, e.g. guests) is display-only.
+    username = clean(claims.get("preferred_username"))
+    upn = username or clean(claims.get("email"))
     if not oid or not upn:
         return None
     roles = claims.get("roles")
@@ -97,15 +100,35 @@ def verified_identity(claims, settings: Settings) -> EntraIdentity | None:
         tid=claims["tid"], oid=oid, upn=upn, name=clean(claims.get("name")) or upn,
         roles=[r for r in roles if isinstance(r, str)] if isinstance(roles, list) else [],
         groups=[g for g in groups if isinstance(g, str)] if isinstance(groups, list) else None,
+        matchable=bool(username),
     )
 
 
 def _bind(users: UserStore, rec: UserRecord, identity: EntraIdentity) -> UserRecord | None:
+    """Bind the identity to a pre-created account; None if someone else got there first."""
     try:
-        users.bind_entra(rec.id, identity.tid, identity.oid)
-    except DuplicateUserError:  # another request bound this identity first
-        return users.by_entra(identity.tid, identity.oid)
-    return users.get(rec.id)
+        if users.bind_entra(rec.id, identity.tid, identity.oid):
+            return users.get(rec.id)
+    except DuplicateUserError:  # this identity is already bound to another row
+        pass
+    rec = users.by_entra(identity.tid, identity.oid)
+    return rec
+
+
+def _pre_created(users: UserStore, identity: EntraIdentity) -> UserRecord | None:
+    """The unbound Entra account for this address, if the identity may claim it."""
+    pre = users.by_email("entra", identity.upn)
+    if pre is None:
+        return None
+    if pre.entra_oid is not None:  # same address, different person: never take over
+        log.warning("Refused Microsoft sign-in for %s: the address belongs to a different "
+                    "Microsoft account", identity.upn)
+        return None
+    if not identity.matchable:
+        log.warning("Refused Microsoft sign-in for %s: the token has no preferred_username, "
+                    "so it can't claim a pre-created account", identity.upn)
+        return None
+    return pre
 
 
 def sign_in_entra(users: UserStore, identity: EntraIdentity, settings: Settings,
@@ -115,40 +138,46 @@ def sign_in_entra(users: UserStore, identity: EntraIdentity, settings: Settings,
     audit = users._store.add_audit
     mapped = mapped_role({"roles": identity.roles, "groups": identity.groups}, group_mappings)
     default, default_pinned = default_role_for_new(settings.default_role)
+    role, pinned = (mapped, False) if mapped is not None else (default, default_pinned)
+    # Ruling 9: without a groups claim (overage) a group-derived role can't be recomputed.
+    groups_unknown = identity.groups is None and bool(group_mappings)
 
     rec = users.by_entra(identity.tid, identity.oid)
     if rec is None:
-        pre = users.by_email("entra", identity.upn)
-        if pre is not None:
-            if pre.entra_oid is not None:  # same address, different person: never take over
-                return None
-            rec = _bind(users, pre, identity)
+        if users.by_email("entra", identity.upn) is not None:
+            pre = _pre_created(users, identity)
+            rec = _bind(users, pre, identity) if pre is not None else None
         else:
-            role, pinned = (mapped, False) if mapped is not None else (default, default_pinned)
             try:
                 rec = users.create("entra", identity.upn, identity.name, role.value,
-                                   pinned=pinned)
+                                   pinned=pinned, entra_tid=identity.tid,
+                                   entra_oid=identity.oid)
             except DuplicateUserError:  # two first sign-ins at once: continue with the winner
                 rec = users.by_entra(identity.tid, identity.oid)
                 if rec is None:
-                    pre = users.by_email("entra", identity.upn)
-                    rec = _bind(users, pre, identity) if pre and pre.entra_oid is None else None
+                    pre = _pre_created(users, identity)
+                    rec = _bind(users, pre, identity) if pre is not None else None
             else:
                 audit(identity.upn, "users",
                       f"User created from Microsoft sign-in: {identity.upn} ({role.value})")
-                rec = _bind(users, rec, identity)
+                return rec
     if rec is None or rec.disabled:
         return None
 
     changes: dict = {}
     if rec.name != identity.name:
         changes["name"] = identity.name
-    if rec.email != identity.upn:
+    if identity.matchable and rec.email != identity.upn:
         changes["email"] = identity.upn
     if not rec.role_pinned:
-        wanted = mapped if mapped is not None else default
-        if wanted.value != rec.role:
-            changes["role"] = wanted.value
+        if groups_unknown:
+            log.warning("No groups in the token for %s; keeping their current role",
+                        identity.upn)
+        else:
+            if role.value != rec.role:
+                changes["role"] = role.value
+            if pinned and not rec.role_pinned:
+                changes["role_pinned"] = True
     return _apply(users, rec, changes, audit)
 
 
@@ -163,8 +192,11 @@ def _apply(users: UserStore, rec: UserRecord, changes: dict, audit) -> UserRecor
     except LastAdminError:
         log.warning("Keeping the last active Admin %s as Admin despite their Microsoft role",
                     rec.email)
-        return _apply(users, rec, {k: v for k, v in changes.items() if k != "role"}, audit)
+        return _apply(users, rec, {k: v for k, v in changes.items()
+                                   if k not in ("role", "role_pinned")}, audit)
     except DuplicateUserError:
+        log.warning("Couldn't update the address of %s to %s: another account uses it",
+                    rec.email, changes.get("email"))
         return _apply(users, rec, {k: v for k, v in changes.items() if k != "email"}, audit)
     if "role" in changes:
         audit(updated.email, "users",
@@ -185,7 +217,16 @@ def setup_entra(app: FastAPI) -> None:
         oauth = app.state.oauth
         if oauth is None:
             return not_set_up(app.state.settings)
-        return await oauth.entra.authorize_redirect(request, redirect_uri(app.state.settings))
+        try:
+            return await oauth.entra.authorize_redirect(
+                request, redirect_uri(app.state.settings))
+        except (OAuthError, AuthlibBaseError, JoseError, httpx.HTTPError, ValueError) as exc:
+            log.warning("Starting Microsoft sign-in failed (%s)", type(exc).__name__)
+            return _page(
+                "Sign-in failed",
+                "Sign-in could not be completed. <a href=\"/auth/login\">Try again</a>.",
+                502,
+            )
 
     @app.get("/auth/callback", include_in_schema=False)
     async def callback(request: Request):

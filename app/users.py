@@ -128,14 +128,15 @@ class UserStore:
     # --- create ------------------------------------------------------------
 
     def _insert(self, db, kind, email, name, role, pinned, password_hash,
-                must_change_password) -> int:
+                must_change_password, entra_tid=None, entra_oid=None) -> int:
         _check_role(role)
         try:
             cur = db.execute(
                 "INSERT INTO users (kind, email, name, password_hash, role, role_pinned, "
-                "must_change_password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "must_change_password, entra_tid, entra_oid, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (kind, email.strip(), name, password_hash, role, int(pinned),
-                 int(must_change_password), _to_iso(self._clock())),
+                 int(must_change_password), entra_tid, entra_oid, _to_iso(self._clock())),
             )
         except sqlite3.IntegrityError as exc:
             if not _is_unique(exc):
@@ -145,10 +146,11 @@ class UserStore:
 
     def create(self, kind: str, email: str, name: str, role: str, *, pinned: bool = False,
                password_hash: str | None = None,
-               must_change_password: bool = False) -> UserRecord:
+               must_change_password: bool = False, entra_tid: str | None = None,
+               entra_oid: str | None = None) -> UserRecord:
         with self._store.write_tx() as db:
             uid = self._insert(db, kind, email, name, role, pinned, password_hash,
-                               must_change_password)
+                               must_change_password, entra_tid, entra_oid)
         return self.get(uid)
 
     def create_first_admin(self, kind: str, email: str, name: str, role: str = "admin", *,
@@ -280,8 +282,20 @@ class UserStore:
 
     # --- Entra and sign-in -------------------------------------------------
 
-    def bind_entra(self, user_id: int, tid: str, oid: str) -> None:
-        self.update(user_id, entra_tid=tid, entra_oid=oid)
+    def bind_entra(self, user_id: int, tid: str, oid: str) -> bool:
+        """Attach a Microsoft identity to an account that has none yet. False if the
+        account is gone or already bound (compare-and-set). Raises DuplicateUserError if
+        the identity is bound to another account."""
+        try:
+            with self._store.write_tx() as db:
+                cur = db.execute(
+                    "UPDATE users SET entra_tid = ?, entra_oid = ? "
+                    "WHERE id = ? AND entra_oid IS NULL", (tid, oid, user_id))
+                return cur.rowcount == 1
+        except sqlite3.IntegrityError as exc:
+            if not _is_unique(exc):
+                raise
+            raise DuplicateUserError(oid) from exc
 
     def touch_sign_in(self, user_id: int) -> None:
         self.update(user_id, last_sign_in=self._clock())

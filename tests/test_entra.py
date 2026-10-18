@@ -19,6 +19,7 @@ from auth_helpers import CSRF, assert_all_routes_guarded, sign_in
 
 GROUP_A = "11111111-1111-1111-1111-111111111111"
 GROUP_B = "22222222-2222-2222-2222-222222222222"
+NEW_TENANT = "33333333-3333-3333-3333-333333333333"
 HTML = {"Accept": "text/html"}
 METADATA = {
     "issuer": "https://login.microsoftonline.com/tenant/v2.0",
@@ -103,7 +104,8 @@ def test_identity_checks(settings):
     settings.allowed_emails = ["someone@else.com"]
     settings.allowed_group_id = "g"
     only_email = claims_for(settings, preferred_username=None, email="a@b.com")
-    assert verified_identity(only_email, settings).upn == "a@b.com"
+    got = verified_identity(only_email, settings)
+    assert got.upn == "a@b.com" and got.matchable is False
 
 
 # ---- sign_in_entra: new users, roles ----
@@ -350,9 +352,9 @@ def test_settings_change_applies_to_next_login(tmp_path, monkeypatch, settings):
     app = create_app(Settings(_env_file=None), docker_client=object(), http=httpx.AsyncClient(),
                      store=Store(str(tmp_path / "x" / "dashboard.db")), start_scheduler=False)
     try:
-        route = respx.get(WELL_KNOWN.format("newtenant")).mock(
+        route = respx.get(WELL_KNOWN.format(NEW_TENANT)).mock(
             return_value=httpx.Response(200, json={
-                **METADATA, "authorization_endpoint": "https://login.microsoftonline.com/newtenant/authorize"}))
+                **METADATA, "authorization_endpoint": "https://login.microsoftonline.com/" + NEW_TENANT + "/authorize"}))
         with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
             assert c.get("/auth/entra").status_code == 404
             sign_in(c, app)
@@ -360,7 +362,7 @@ def test_settings_change_applies_to_next_login(tmp_path, monkeypatch, settings):
                 ("general", {"server_name": "x", "tz": "Europe/London",
                              "public_url": "https://new.example.com"}),
                 ("signin", {"local_sign_in": "on", "default_role": "viewer",
-                            "azure_tenant_id": "newtenant", "azure_client_id": "newclient",
+                            "azure_tenant_id": NEW_TENANT, "azure_client_id": "newclient",
                             "azure_client_secret": "newsecret"}),
             ):
                 r = c.post(f"/settings/{section}", data={**form, "csrf_token": CSRF})
@@ -472,3 +474,104 @@ def test_group_mapping_needs_admin_and_csrf(app):
         sign_in(c, app)
         assert c.post("/settings/group-mappings", data={"group_id": GROUP_A,
                                                        "role": "viewer"}).status_code == 403
+
+
+# ---- review fixes ----
+
+def test_email_only_token_does_not_bind_precreated_account(app, settings, caplog):
+    users = app.state.users
+    pre = users.create("entra", "victim@example.com", "Victim", "admin", pinned=True)
+    only_email = ident(settings, oid="attacker", preferred_username=None,
+                       email="victim@example.com")
+    with caplog.at_level(logging.WARNING, logger="app.entra"):
+        assert sign_in_entra(users, only_email, settings, []) is None
+    assert users.get(pre.id).entra_oid is None and users.count() == 1
+    assert "preferred_username" in caplog.text
+
+
+def test_email_only_token_new_user_is_created(app, settings):
+    rec = sign_in_entra(app.state.users, ident(settings, preferred_username=None,
+                                               email="fresh@example.com"), settings, [])
+    assert rec.email == "fresh@example.com" and rec.entra_oid == "oid-alice"
+
+
+def test_same_upn_different_oid_logs(app, settings, caplog):
+    users = app.state.users
+    sign_in_entra(users, ident(settings), settings, [])
+    with caplog.at_level(logging.WARNING, logger="app.entra"):
+        assert sign_in_entra(users, ident(settings, oid="other"), settings, []) is None
+    assert "different Microsoft account" in caplog.text
+
+
+def test_upn_refresh_clash_is_logged_and_sign_in_continues(app, settings, caplog):
+    users = app.state.users
+    sign_in_entra(users, ident(settings, oid="o1", preferred_username="a@example.com"),
+                  settings, [])
+    sign_in_entra(users, ident(settings, oid="o2", preferred_username="b@example.com"),
+                  settings, [])
+    with caplog.at_level(logging.WARNING, logger="app.entra"):
+        r = sign_in_entra(users, ident(settings, oid="o2", preferred_username="a@example.com"),
+                          settings, [])
+    assert r.email == "b@example.com" and "another account uses it" in caplog.text
+
+
+MAPS = [{"group_id": GROUP_A, "role": "operator"}]
+
+
+def test_overage_keeps_unpinned_users_role(app, settings, caplog):
+    users = app.state.users
+    r = sign_in_entra(users, ident(settings, groups=[GROUP_A]), settings, MAPS)
+    assert r.role == "operator"
+    with caplog.at_level(logging.WARNING, logger="app.entra"):
+        r = sign_in_entra(users, ident(settings), settings, MAPS)  # no groups claim
+    assert r.role == "operator" and "No groups in the token" in caplog.text
+    # a default above the group's role doesn't promote either
+    s = settings.model_copy(update={"default_role": "operator"})
+    v = sign_in_entra(users, ident(s, oid="o2", preferred_username="v@example.com",
+                                   groups=[GROUP_B]), s, [{"group_id": GROUP_B, "role": "viewer"}])
+    assert v.role == "viewer"
+    v = sign_in_entra(users, ident(s, oid="o2", preferred_username="v@example.com"),
+                      s, [{"group_id": GROUP_B, "role": "viewer"}])
+    assert v.role == "viewer"
+
+
+def test_overage_new_user_gets_app_role_or_default(app, settings):
+    users = app.state.users
+    r = sign_in_entra(users, ident(settings, roles=["DockerManager.Operator"]), settings, MAPS)
+    assert r.role == "operator"
+    r = sign_in_entra(users, ident(settings, oid="o2", preferred_username="n@example.com"),
+                      settings, MAPS)
+    assert r.role == "viewer"
+
+
+def test_no_mappings_still_recomputes_without_groups(app, settings):
+    users = app.state.users
+    sign_in_entra(users, ident(settings, roles=["DockerManager.Operator"]), settings, [])
+    assert sign_in_entra(users, ident(settings), settings, []).role == "viewer"
+
+
+def test_recompute_pins_legacy_default(app, settings):
+    users = app.state.users
+    rec = users.create("entra", "alice@example.com", "Alice", "viewer")
+    s = settings.model_copy(update={"default_role": "admin_legacy"})
+    r = sign_in_entra(users, ident(s), s, [])
+    assert r.id == rec.id and (r.role, r.role_pinned) == ("admin", True)
+
+
+def test_disabled_second_admin_does_not_count(app, settings):
+    users = app.state.users
+    sign_in_entra(users, ident(settings, roles=["DockerManager.Admin"]), settings, [])
+    other = users.create("local", "boss@example.com", "Boss", "admin")
+    users.update(other.id, disabled=True)
+    assert sign_in_entra(users, ident(settings), settings, []).role == "admin"
+
+
+@respx.mock
+@pytest.mark.parametrize("response", [httpx.Response(400, json={}), httpx.ConnectError("down")])
+def test_login_metadata_failure_is_502_page(client, response, caplog):
+    respx.get(WELL_KNOWN.format("tenant")).mock(
+        side_effect=response if isinstance(response, Exception) else None,
+        return_value=None if isinstance(response, Exception) else response)
+    r = client.get("/auth/entra")
+    assert r.status_code == 502 and "Sign-in failed" in r.text
+    assert "secret" not in caplog.text
