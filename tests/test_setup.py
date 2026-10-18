@@ -104,10 +104,8 @@ def test_token_never_stored_in_database(app, tmp_path):
 
 
 def test_every_page_redirects_to_setup(client):
-    for path in ("/", "/history", "/settings", "/auth/anything-else"):
+    for path in ("/", "/history", "/settings"):
         r = client.get(path, headers=HTML)
-        if path.startswith("/auth/"):
-            continue  # /auth/* is public (and unknown there)
         assert r.status_code == 302 and r.headers["location"] == "/setup", path
     assert client.get("/healthz").status_code == 200
     assert client.get("/", headers={"Accept": "application/json"}).status_code == 401
@@ -472,5 +470,97 @@ def test_migration_happens_before_first_request(monkeypatch, tmp_path):
     app = build(Settings(_env_file=None), tmp_path)  # no TestClient started yet
     try:
         assert app.state.users.by_email("entra", "a@x.com") is not None
+    finally:
+        app.state.store.close()
+
+
+# ---- review fixes ----
+
+def good_claims(**over):
+    return {"userinfo": {
+        "tid": "tenant", "iss": "https://login.microsoftonline.com/tenant/v2.0",
+        "aud": "client", "oid": "oid-x", "preferred_username": "x@example.com",
+        "name": "X", **over}}
+
+
+def test_direct_entra_login_while_setup_open_goes_to_setup(client):
+    r = client.get("/auth/entra", headers=HTML)
+    assert r.status_code == 303 and r.headers["location"] == "/setup"
+
+
+@pytest.mark.parametrize("extra", [{}, {"roles": ["DockerManager.Admin"]}])
+def test_callback_without_setup_flag_creates_nobody(app, client, tmp_path, extra):
+    app.state.oauth.entra.authorize_access_token = AsyncMock(
+        return_value=good_claims(**extra))
+    r = client.get("/auth/callback?code=1&state=2", headers=HTML)
+    assert r.status_code == 303 and r.headers["location"] == "/setup"
+    assert app.state.users.count() == 0 and app.state.setup.is_open()
+    assert (tmp_path / "setup-token").exists()
+
+
+def test_sign_in_entra_refuses_while_setup_open(app, settings):
+    from app.entra import sign_in_entra
+
+    assert sign_in_entra(app.state.users, identity(), settings, [], setup_open=True) is None
+    assert app.state.users.count() == 0
+
+
+def test_token_step_rotates_the_session(client, tmp_path):
+    client.get("/setup")
+    before = client.cookies.get("session")
+    old_csrf = csrf_of(client)
+    r = enter_token(client, tmp_path)
+    assert r.status_code == 303
+    after = client.cookies.get("session")
+    assert after and after != before
+    assert csrf_of(client, "/setup/admin") != old_csrf
+    assert client.get("/setup/admin").status_code == 200
+
+
+def test_oversized_initial_password_file_refused(monkeypatch, tmp_path, settings, caplog):
+    initial_env(monkeypatch, tmp_path, password=("x" * 5000))
+    with caplog.at_level(logging.ERROR, logger="app.setup"):
+        app = build(settings, tmp_path)
+    try:
+        assert app.state.users.count() == 0 and app.state.setup.is_open()
+        assert "xxxx" not in caplog.text and "larger than" in caplog.text
+    finally:
+        app.state.store.close()
+
+
+def test_token_file_removed_whenever_setup_closes(app, tmp_path):
+    assert (tmp_path / "setup-token").exists()
+    app.state.users.create("local", "x@example.com", "X", "admin")  # another path
+    assert not app.state.setup.is_open()
+    assert not (tmp_path / "setup-token").exists()
+
+
+def test_bad_token_file_is_regenerated_and_fixed_to_0600(settings, tmp_path):
+    first = build(settings, tmp_path)
+    first.state.store.close()
+    path = tmp_path / "setup-token"
+    path.write_text("short\n")
+    second = build(settings, tmp_path)
+    second.state.store.close()
+    assert path.read_text().strip() != "short" and len(path.read_text().strip()) == 43
+    good = path.read_text()
+    os.chmod(path, 0o644)
+    third = build(settings, tmp_path)
+    third.state.store.close()
+    assert path.read_text() == good and stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_non_guid_group_is_reported_not_silently_dropped(monkeypatch, tmp_path, caplog):
+    old_db(tmp_path)
+    monkeypatch.setenv("ALLOWED_GROUP_ID", "not-a-guid")
+    with caplog.at_level(logging.ERROR, logger="app.setup"):
+        app = build(Settings(_env_file=None), tmp_path)
+    try:
+        assert app.state.settings_service.group_mappings() == []
+        assert "reset-admin" in caplog.text
+        audit = [e.summary for e in app.state.store.list_audit()
+                 if e.summary.startswith("Upgraded")][0]
+        assert "group was skipped" in audit
+        assert app.state.settings.default_role == "pending"
     finally:
         app.state.store.close()

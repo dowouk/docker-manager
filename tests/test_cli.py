@@ -43,7 +43,9 @@ def test_creates_a_local_admin_and_prints_password(tmp_path, capsys):
     assert any("Admin reset from the command line: Owner@Example.com" in e.summary
                for e in store.list_audit())
     assert password not in " ".join(e.summary for e in store.list_audit())
-    assert "docker" not in out.lower() or password in out  # only password + instruction
+    lines = out.splitlines()
+    assert len(lines) == 2 and lines[0] == f"One-time password: {password}"
+    assert lines[1].startswith("Sign in with it;")
 
 
 def test_resets_an_existing_account(tmp_path, capsys):
@@ -97,3 +99,37 @@ def test_usage_errors_exit_2(argv, tmp_path, capsys):
     assert cli.main(argv) == 2
     assert capsys.readouterr().out == ""
     assert not (tmp_path / "dashboard.db").exists()
+
+
+def test_turns_local_sign_in_back_on(tmp_path, capsys, monkeypatch):
+    import httpx
+    from fastapi.testclient import TestClient
+
+    from app.config import Settings
+    from app.main import create_app
+
+    monkeypatch.setenv("PUBLIC_URL", "https://dash.example.com")
+    monkeypatch.setenv("AZURE_TENANT_ID", "tenant")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "client")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "secret")
+    store = Store(str(tmp_path / "dashboard.db"))
+    store.save_settings({"local_sign_in": False})
+    store.close()
+    assert cli.main(["reset-admin", "a@example.com"]) == 0
+    out = capsys.readouterr().out
+    assert "Local sign-in was off and is now on" in out
+    password = out.split("One-time password: ")[1].split()[0]
+    store = Store(str(tmp_path / "dashboard.db"))
+    assert store.load_settings()["local_sign_in"] is True
+    assert any("Local sign-in turned on" in e.summary for e in store.list_audit())
+    app = create_app(Settings(_env_file=None), docker_client=object(),
+                     http=httpx.AsyncClient(), store=store, start_scheduler=False)
+    assert app.state.settings.local_sign_in
+    import re
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        page = c.get("/auth/login")
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+        r = c.post("/auth/login", data={"email": "a@example.com", "password": password,
+                                        "csrf_token": csrf})
+        assert r.status_code == 303
+    store.close()

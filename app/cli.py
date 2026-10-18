@@ -28,8 +28,9 @@ def _one_time_password() -> str:
             return password
 
 
-def reset_admin(email: str, settings: Settings | None = None) -> str:
-    """Create or reset the local Admin and return the new one-time password."""
+def reset_admin(email: str, settings: Settings | None = None) -> tuple[str, bool]:
+    """Create or reset the local Admin; return the one-time password and whether local
+    sign-in had to be turned back on."""
     settings = settings or Settings()
     store = Store(os.path.join(settings.data_dir, "dashboard.db"))
     try:
@@ -47,11 +48,17 @@ def reset_admin(email: str, settings: Settings | None = None) -> str:
             users.set_recovery_codes(rec.id, [])
             users.end_sessions(rec.id)
         store.add_audit("command line", "users", f"Admin reset from the command line: {email}")
+        # An Entra-only install may have local sign-in off; this is the way back in.
+        turned_on = store.load_settings().get("local_sign_in") is False
+        if turned_on:
+            store.save_settings({"local_sign_in": True})
+            store.add_audit("command line", "settings",
+                            "Local sign-in turned on from the command line")
         try:  # an open first-start setup is closed now that a user exists
             os.unlink(os.path.join(settings.data_dir, TOKEN_FILE))
         except OSError:
             pass
-        return password
+        return password, turned_on
     finally:
         store.close()
 
@@ -69,8 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     if not _valid_email(email):
         print("Give a valid email address: docker-manager reset-admin <email>", file=sys.stderr)
         return 2
-    password = reset_admin(email)
+    password, turned_on = reset_admin(email)
     print(f"One-time password: {password}")
+    if turned_on:
+        print("Local sign-in was off and is now on; restart the container to apply it.")
     print("Sign in with it; you will be asked to choose a new password and set up "
           "two-step sign-in again.")
     return 0

@@ -7,6 +7,7 @@ the token file is deleted and ``/setup`` is closed for good.
 import asyncio
 import logging
 import os
+import re
 import secrets
 import threading
 from collections.abc import Callable
@@ -18,7 +19,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.auth import csrf_token, verify_csrf
 from app.passwords import hash_password, password_problem
-from app.settings_service import SettingsService, _valid_public_url
+from app.sessions import _COOKIE_ATTRS, _COOKIE_MAX_AGE, COOKIE
+from app.settings_service import _GUID, SettingsService, _valid_public_url
 from app.store import Store
 from app.users import DuplicateUserError, UserRecord, UserStore
 
@@ -29,6 +31,8 @@ IP_LIMIT = 20
 WINDOW = timedelta(minutes=15)
 CLOSED_MESSAGE = "Setup has already been completed – sign in"
 _SYSTEM = "system"
+MAX_PASSWORD_FILE = 4096
+_TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
 def _valid_email(value: str) -> bool:
@@ -64,6 +68,7 @@ class Setup:
             if self._closed:
                 return
             self._closed = True
+        self._remove_token()  # however setup closed, the token is useless now
         for callback in self.on_close:
             callback()
 
@@ -92,14 +97,23 @@ class Setup:
                 pass
         if group:
             service = self._settings_service
-            try:
-                service.save_group_mappings(
-                    service.group_mappings() + [{"group_id": group, "role": "admin"}],
-                    _SYSTEM, f"Group {group} mapped to Admin (from the old allowed group)")
-                done.append(f"group {group} maps to Admin")
-            except ValueError:
-                log.error("ALLOWED_GROUP_ID isn't a group Object ID, so it couldn't be "
-                          "migrated; add a group role on the Settings page")
+            skipped = None
+            if not _GUID.fullmatch(group):
+                skipped = "isn't a group Object ID (a GUID)"
+            else:
+                try:
+                    service.save_group_mappings(
+                        service.group_mappings() + [{"group_id": group, "role": "admin"}],
+                        _SYSTEM, f"Group {group} mapped to Admin (from the old allowed group)")
+                    done.append(f"group {group} maps to Admin")
+                except ValueError:
+                    skipped = "couldn't be saved as a group role"
+            if skipped:
+                log.error("ALLOWED_GROUP_ID %s, so it was not migrated; add a group role "
+                          "on the Settings page%s", skipped,
+                          "" if emails else " (or run `docker-manager reset-admin <email>` "
+                          "to get back in)")
+                done.append("the old allowed group was skipped – it " + skipped)
         if emails or group:
             # Never open the doors: people outside the old rules wait for approval.
             self._store.save_settings({"default_role": "pending"})
@@ -126,11 +140,16 @@ class Setup:
             return False
         try:
             with open(path, encoding="utf-8") as f:
-                password = f.read().rstrip("\r\n")
-        except OSError as exc:
+                password = f.read(MAX_PASSWORD_FILE + 1)
+        except (OSError, UnicodeDecodeError) as exc:
             log.error("Can't read INITIAL_ADMIN_PASSWORD_FILE (%s); "
                       "falling back to the setup token", type(exc).__name__)
             return False
+        if len(password) > MAX_PASSWORD_FILE:
+            log.error("INITIAL_ADMIN_PASSWORD_FILE is larger than %d bytes; "
+                      "falling back to the setup token", MAX_PASSWORD_FILE)
+            return False
+        password = password.rstrip("\r\n")
         problem = password_problem(password)
         if problem:
             log.error("The initial admin password is refused (%s); "
@@ -159,7 +178,11 @@ class Setup:
 
     def _ensure_token(self) -> str:
         existing = self._read_token()
-        if existing:
+        if existing and _TOKEN_SHAPE.fullmatch(existing):
+            try:
+                os.chmod(self._token_path, 0o600)
+            except OSError:
+                pass
             return existing
         token = secrets.token_urlsafe(32)
         os.makedirs(os.path.dirname(self._token_path) or ".", exist_ok=True)
@@ -230,7 +253,7 @@ class Setup:
         self._finish(rec)
         return rec
 
-    def _finish(self, rec: UserRecord, public_url: str | None = None) -> None:
+    def _remove_token(self) -> None:
         try:
             os.unlink(self._token_path)
         except FileNotFoundError:
@@ -238,6 +261,8 @@ class Setup:
         except OSError:
             log.warning("Couldn't delete the setup token file %s; delete it by hand",
                         self._token_path)
+
+    def _finish(self, rec: UserRecord, public_url: str | None = None) -> None:
         self._store.set_meta("setup_complete", "1")
         if public_url and not self._settings_service.effective().public_url \
                 and _valid_public_url(public_url):
@@ -288,8 +313,16 @@ def setup_routes(app: FastAPI) -> None:
         if not setup().check_token(token, ip):
             app.state.store.add_audit(ip, "setup", "Setup token refused")
             return page(request, "token", 401, error="That token isn't right")
-        request.session["setup_ok"] = True
-        return RedirectResponse("/setup/admin", status_code=303)
+        # Fresh session and CSRF token from here on (the cookie changes with it).
+        sessions = app.state.sessions
+        old = request.cookies.get(COOKIE)
+        if old:
+            sessions.delete(old)
+        fresh = sessions.create({"setup_ok": True, "csrf": secrets.token_urlsafe(32)})
+        response = RedirectResponse("/setup/admin", status_code=303)
+        response.headers.append(
+            "set-cookie", f"{COOKIE}={fresh}; Max-Age={_COOKIE_MAX_AGE}; {_COOKIE_ATTRS}")
+        return response
 
     def admin_page(request: Request, status: int = 200, **ctx):
         return page(request, "admin", status, entra=bool(app.state.settings.entra_enabled),

@@ -132,9 +132,12 @@ def _pre_created(users: UserStore, identity: EntraIdentity) -> UserRecord | None
 
 
 def sign_in_entra(users: UserStore, identity: EntraIdentity, settings: Settings,
-                  group_mappings: list[dict]) -> UserRecord | None:
+                  group_mappings: list[dict], setup_open: bool = False) -> UserRecord | None:
     """Find or create the account for a verified identity and apply its mapped role.
-    None means the person may not sign in (disabled, or the address belongs to someone else)."""
+    None means the person may not sign in (disabled, or the address belongs to someone else),
+    or first-start setup is still open (only the token holder may create the first user)."""
+    if setup_open:
+        return None
     audit = users._store.add_audit
     mapped = mapped_role({"roles": identity.roles, "groups": identity.groups}, group_mappings)
     default, default_pinned = default_role_for_new(settings.default_role)
@@ -212,11 +215,17 @@ def setup_entra(app: FastAPI) -> None:
             return _page(NOT_SET_UP, "Set the dashboard address on the Settings page first.", 404)
         return _page(NOT_SET_UP, "Ask the administrator to set up Microsoft sign-in.", 404)
 
+    def setup_is_open() -> bool:
+        setup = getattr(app.state, "setup", None)
+        return setup is not None and setup.is_open()
+
     @app.get("/auth/entra", include_in_schema=False)
     async def login(request: Request):
         oauth = app.state.oauth
         if oauth is None:
             return not_set_up(app.state.settings)
+        if setup_is_open() and not request.session.get("setup_entra"):
+            return RedirectResponse("/setup", status_code=303)
         try:
             return await oauth.entra.authorize_redirect(
                 request, redirect_uri(app.state.settings))
@@ -253,6 +262,9 @@ def setup_entra(app: FastAPI) -> None:
                 # Ruling 3: first-start setup installs this hook; without it nobody signs in.
                 hook = getattr(app.state, "entra_setup_hook", None)
                 record = hook(identity) if hook is not None else None
+            elif setup_is_open():
+                # Nobody signs in (or is created) before the token holder finishes setup.
+                return RedirectResponse("/setup", status_code=303)
             else:
                 record = sign_in_entra(app.state.users, identity, settings,
                                        app.state.settings_service.group_mappings())
