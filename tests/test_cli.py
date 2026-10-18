@@ -48,6 +48,22 @@ def test_creates_a_local_admin_and_prints_password(tmp_path, capsys):
     assert lines[1].startswith("Sign in with it;")
 
 
+def test_clears_the_accounts_failures_and_lock(tmp_path, capsys):
+    store, users = users_of(tmp_path)
+    for _ in range(5):
+        users.record_failure("account", "a@example.com")
+    users.record_failure("account-lock", "a@example.com")
+    users.record_failure("ip", "1.2.3.4")
+    store.close()
+
+    assert cli.main(["reset-admin", "A@Example.com"]) == 0
+    capsys.readouterr()
+    store, users = users_of(tmp_path)
+    assert users.failures("account", "a@example.com", 900) == 0
+    assert users.failures("account-lock", "a@example.com", 900) == 0
+    assert users.failures("ip", "1.2.3.4", 900) == 1  # an address block is left alone
+
+
 def test_resets_an_existing_account(tmp_path, capsys):
     store, users = users_of(tmp_path)
     rec = users.create("local", "a@example.com", "A", "viewer",

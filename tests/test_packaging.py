@@ -78,7 +78,8 @@ def test_env_example_covers_every_value_the_examples_read_from_it():
         text = (ROOT / "examples" / name / "compose.yml").read_text(encoding="utf-8")
         assert "SESSION_SECRET" not in text
         assert "ALLOWED_" not in text, "ALLOWED_* are only read once, on upgrade"
-        assert 'PUBLIC_URL: "' in text
+        keys = [l.split(":", 1)[0].strip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+        assert "PUBLIC_URL" in keys
         for var in SETTINGS_PAGE_VARS:
             assert f'# {var}: "${{{var}}}"' in text, f"{name} example should carry {var} commented out"
 

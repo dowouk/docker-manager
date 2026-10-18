@@ -47,6 +47,9 @@ def reset_admin(email: str, settings: Settings | None = None) -> tuple[str, bool
             users.set_totp(rec.id, None, False)  # they enrol again
             users.set_recovery_codes(rec.id, [])
             users.end_sessions(rec.id)
+        # A locked account is the usual reason for running this: let them in at once.
+        for scope in ("account", "account-lock"):
+            users.clear_failures(scope, email.strip().lower())
         store.add_audit("command line", "users", f"Admin reset from the command line: {email}")
         # An Entra-only install may have local sign-in off; this is the way back in.
         turned_on = store.load_settings().get("local_sign_in") is False

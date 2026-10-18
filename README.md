@@ -156,7 +156,7 @@ If nobody can sign in, run this on the server:
 docker exec docker-manager docker-manager reset-admin you@example.com
 ```
 
-It creates the local Admin (or resets the existing one), and prints a **one-time password**. It also turns off that account's two-step sign-in so they enrol again, ends all of their sessions, and turns **local sign-in back on** if it had been switched off – restart the container (`docker compose restart`) for that last part to apply. The person must choose a new password at their next sign-in. The change is recorded in History.
+It creates the local Admin (or resets the existing one), and prints a **one-time password**. It also clears that account's failed attempts and lock, turns off its two-step sign-in so they enrol again, ends all of their sessions, and turns **local sign-in back on** if it had been switched off – restart the container (`docker compose restart`) for that last part to apply. The person must choose a new password at their next sign-in. The change is recorded in History.
 
 ## Set up the Azure app registration for Microsoft sign-in
 
@@ -297,7 +297,7 @@ What this does and doesn't do:
 - Back the key up. If the key file is missing, a new one is created when the dashboard starts, so anything saved with the old key can't be read: the dashboard still starts, the fields say "The saved value can't be read – enter it again", and you enter them again. If the file is there but can't be used (it is not 32 bytes long, or can't be read), the dashboard still starts and logs one error, but it never overwrites the file; saved secrets can't be read and new ones can't be saved until you restore the original key or fix the file.
 - The folder for `SECRET_KEY_FILE` must be writable by the dashboard. When moving the key there from the default place, **move the existing `secret.key` into that folder first** – if you only set the variable, a new key is created and the secrets you saved can no longer be read.
 
-**Upgrading from 0.1.** If you copy the new example compose file over your old one, the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or enter the email settings on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=` to switch email off) no longer locks the Email section; only a variable with a value does.
+**Upgrading from 0.1.** If you copy the new example compose file over your old one, your `AZURE_*` values (now commented out in the example) and the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or enter the email settings on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=` to switch email off) no longer locks the Email section; only a variable with a value does.
 
 Nothing is needed in the environment to start the dashboard any more: `PUBLIC_URL` and the `AZURE_*` values are optional because they can be set on the Settings page. Only `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` are set with environment variables alone. The four sign-in settings (local sign-in, hiding local sign-in, two-step sign-in for Admins and the default role) are on the Settings page only.
 
@@ -372,20 +372,20 @@ The login must be stored in `config.json` itself. If `docker login` says it used
 
 ## Upgrading from 0.1 or 0.2
 
-Pull the new image and run `docker compose up -d`. You don't need to change your compose file or `.env`.
+Pull the new image and run `docker compose up -d`. **Keep your existing compose file and `.env` for the upgrade** – don't replace them with the new examples. You don't need to change either. If you do switch to the new example files, carry your `AZURE_*` values over (or enter them on the Settings page) and keep `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` in place until the first 0.3 start has run, because that is when they are read.
 
 - **There is no setup token** on an install that already has a database – you are never sent to `/setup`.
 - **Everyone signs in again once.** Sessions changed, so old ones are no longer recognised.
 - **`ALLOWED_EMAILS`** – each sign-in name becomes a pre-created, pinned **Admin** (they join up with the person at their next Microsoft sign-in).
-- **`ALLOWED_GROUP_ID`** – becomes a group mapping that gives members the **Admin** role (see Settings → Sign-in). This needs the groups claim you set up in 0.1.
+- **`ALLOWED_GROUP_ID`** – becomes a group mapping that gives members the **Admin** role (see Settings → Sign-in). This needs the groups claim you set up in 0.1. If the value isn't a group Object ID (a GUID), it is skipped with an error in the log; add the group on the Settings page, or run `reset-admin` to get in.
 - **With either one set**, the default role becomes **Waiting for approval**, because 0.1 refused everyone else. New people wait until an Admin approves them on the **Users** page.
-- **With neither set**, 0.1 let everyone who could sign in do everything, so the default role starts as **Admin (as in 0.1)** and a banner says so on every page. Everyone who signs in stays an Admin until you change the default role on the Settings page and set roles on the Users page. Do this soon.
+- **With neither set**, 0.1 let everyone who could sign in do everything, so the default role starts as **Admin (as in 0.1)** and a banner says so on every page for Admins. Everyone who signs in stays an Admin until you change the default role on the Settings page and set roles on the Users page. Do this soon.
 - `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` are read **once**, at the upgrade, and ignored after that – removing them from your compose file changes nothing, and adding them later does nothing either. Manage access on the Users and Settings pages.
 - Your existing `AZURE_*` and `PUBLIC_URL` values keep working. They show as locked on the Settings page until you remove them from the compose file or `.env`.
 
 ## Monitoring
 
-`/healthz` is public (no sign-in) and returns only a one-word status: **200** when the dashboard and its database are working, **503** if not. Nothing else is revealed. The Docker image has a built-in health check that uses it, so `docker ps` shows `healthy` or `unhealthy`.
+`/healthz` is public (no sign-in) and returns a small JSON status (`{"status": "ok"}` with **200** when the dashboard and its database are working, or `"unavailable"` with **503**). Nothing else is revealed. The Docker image has a built-in health check that uses it, so `docker ps` shows `healthy` or `unhealthy`.
 
 - **Uptime Kuma:** add an **HTTP(s)** monitor for `https://updates.server1.example.com/healthz`, accepted status code `200-299`.
 - **Caddy or Traefik:** you don't need a health check in the proxy for this; use the one above if you want one.
@@ -440,7 +440,7 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 
 **Nobody can sign in, or there is no Admin left** – run `reset-admin` (see [Lost access](#lost-access-reset-admin)).
 
-**"Too many attempts – try again in 15 minutes."** – five wrong passwords for an account, or twenty from one address. Wait 15 minutes, or an Admin can reset the account with `reset-admin`.
+**"Too many attempts – try again in 15 minutes."** – five wrong passwords for an account, or twenty from one address. Wait 15 minutes, or run `reset-admin` for that email, which clears the account's failures and lock (an address block from the same IP still lasts 15 minutes).
 
 **Microsoft sign-in isn't offered** – it needs the tenant ID, client ID and client secret **and** the dashboard's address (`PUBLIC_URL` or the Settings page).
 
