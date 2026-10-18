@@ -95,7 +95,15 @@ class Setup:
                 done.append(f"{upn} is an Admin")
             except DuplicateUserError:
                 pass
-        if group:
+        if group and emails:
+            # 0.2 required BOTH (email AND group); mapping the group as well would let
+            # every group member in, so only the listed people carry over.
+            log.error("Both ALLOWED_EMAILS and ALLOWED_GROUP_ID were set. 0.2 needed both, "
+                      "so only the listed people were kept as Admins and the group was not "
+                      "mapped; add a group role on the Settings page if you want it")
+            done.append("the old allowed group was not mapped because it was combined with "
+                        "the email list – add a group role on the Settings page if wanted")
+        elif group:
             service = self._settings_service
             skipped = None
             if not _GUID.fullmatch(group):
@@ -111,8 +119,7 @@ class Setup:
             if skipped:
                 log.error("ALLOWED_GROUP_ID %s, so it was not migrated; add a group role "
                           "on the Settings page%s", skipped,
-                          "" if emails else " (or run `docker-manager reset-admin <email>` "
-                          "to get back in)")
+                          " (or run `docker-manager reset-admin <email>` to get back in)")
                 done.append("the old allowed group was skipped – it " + skipped)
         if emails or group:
             # Never open the doors: people outside the old rules wait for approval.
@@ -207,6 +214,10 @@ class Setup:
     def locked(self, ip: str) -> bool:
         return self._users.failures("setup", ip, WINDOW) >= IP_LIMIT
 
+    def just_blocked(self, ip: str) -> bool:
+        """True only for the failure that tipped this address into the block."""
+        return self._users.failures("setup", ip, WINDOW) == IP_LIMIT
+
     def check_token(self, token: str, ip: str) -> bool:
         """Constant-time compare; a failure counts against the address."""
         if not self.is_open() or self.locked(ip):
@@ -273,7 +284,10 @@ class Setup:
 
 def _request_origin(request: Request) -> str | None:
     """scheme + host of the setup request. Only the token holder reaches here, which is
-    why (and only why) the request's own headers are good enough."""
+    why (and only why) the request's own headers are good enough.
+
+    This is the deliberate, setup-only exception to "never derive public_url from the
+    request": nobody else can reach it, and an Admin can change the address afterwards."""
     parts = urlsplit(f"{request.url.scheme}://{request.url.netloc}")
     origin = f"{parts.scheme}://{parts.netloc}"
     return origin if _valid_public_url(origin) else None
@@ -311,7 +325,8 @@ def setup_routes(app: FastAPI) -> None:
             return page(request, "token", 429,
                         error="Too many attempts – try again in 15 minutes.")
         if not setup().check_token(token, ip):
-            app.state.store.add_audit(ip, "setup", "Setup token refused")
+            if setup().just_blocked(ip):  # only the block is audited, not every guess
+                app.state.store.add_audit(ip, "setup", "Setup token refused: address blocked")
             return page(request, "token", 401, error="That token isn't right")
         # Fresh session and CSRF token from here on (the cookie changes with it).
         sessions = app.state.sessions

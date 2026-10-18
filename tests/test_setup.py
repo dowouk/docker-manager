@@ -127,6 +127,16 @@ def test_wrong_token_refused_and_rate_limited(client, tmp_path):
     assert client.get("/setup/admin").status_code == 303
 
 
+def test_setup_token_failures_audit_only_the_block(app, client, tmp_path):
+    for _ in range(19):
+        enter_token(client, tmp_path, "nope")
+    assert not any(e.kind == "setup" for e in app.state.store.list_audit())
+    enter_token(client, tmp_path, "nope")  # the 20th trips the block
+    enter_token(client, tmp_path, "nope")  # refused up front, not counted
+    rows = [e.summary for e in app.state.store.list_audit() if e.kind == "setup"]
+    assert rows == ["Setup token refused: address blocked"]
+
+
 def test_admin_form_needs_the_token_first(client, tmp_path):
     r = client.get("/setup/admin")
     assert r.status_code == 303 and r.headers["location"] == "/setup"
@@ -429,6 +439,24 @@ def test_upgrade_with_group_maps_it_to_admin(monkeypatch, tmp_path):
             {"group_id": GROUP, "role": "admin"}]
         assert app.state.settings.default_role == "pending"
         assert app.state.users.count() == 0 and not app.state.setup.is_open()
+    finally:
+        app.state.store.close()
+
+
+def test_upgrade_with_emails_and_group_does_not_map_the_group(monkeypatch, tmp_path, caplog):
+    old_db(tmp_path)
+    monkeypatch.setenv("ALLOWED_EMAILS", "a@x.com")
+    monkeypatch.setenv("ALLOWED_GROUP_ID", GROUP)
+    with caplog.at_level(logging.ERROR, logger="app.setup"):
+        app = build(Settings(_env_file=None), tmp_path)
+    try:
+        assert app.state.settings_service.group_mappings() == []
+        assert app.state.users.by_email("entra", "a@x.com").role == "admin"
+        assert app.state.settings.default_role == "pending"
+        assert "Settings page" in caplog.text
+        audit = [e.summary for e in app.state.store.list_audit()
+                 if e.summary.startswith("Upgraded")][0]
+        assert "group was not mapped" in audit and "Settings page" in audit
     finally:
         app.state.store.close()
 

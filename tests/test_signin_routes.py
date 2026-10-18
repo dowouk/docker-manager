@@ -125,10 +125,18 @@ def test_disabled_user_looks_like_wrong_password(app, client):
     assert r.status_code == 401 and "Email or password is wrong" in r.text
 
 
-def test_failure_is_audited_and_counts_for_unknown_emails(app, client):
+def test_unknown_email_failure_is_counted_but_not_audited(app, client):
     login(client, email="ghost@example.com", password="x")
-    assert ("signin", "Sign-in failed: ghost@example.com") in audit(app)
     assert app.state.users.failures("account", "ghost@example.com", timedelta(minutes=15)) == 1
+    assert not any("ghost" in s or k == "signin" for k, s in audit(app))
+    assert app.state.store.list_audit() == []
+
+
+def test_known_email_failure_is_audited_with_the_stored_email(app, client):
+    add_user(app)
+    login(client, email="  ANN@example.com ", password="wrong wrong wrong")
+    assert ("signin", "Sign-in failed: ann@example.com") in audit(app)
+    assert not any("ANN" in s for _, s in audit(app))
 
 
 def test_sign_in_requires_csrf(app, client):

@@ -125,9 +125,14 @@ def setup_signin(app: FastAPI) -> None:
         ok = await asyncio.to_thread(verify_password, stored, password)
         if rec is None or rec.disabled or not rec.password_hash or not ok:
             tripped = _fail(users, request, key)
-            shown = email.strip()[:200]
-            app.state.store.add_audit(shown or "unknown", "signin", f"Sign-in failed: {shown}")
-            _audit_trips(request, shown or "unknown", tripped)
+            # Unknown accounts are counted for the lock but never audited (anonymous
+            # callers could otherwise write unlimited rows, with text they chose); for
+            # known ones the text is the stored email, never what was submitted.
+            if rec is not None:
+                app.state.store.add_audit(rec.email, "signin", f"Sign-in failed: {rec.email}")
+                _audit_trips(request, rec.email, tripped)
+            else:
+                _audit_trips(request, "unknown", (False, tripped[1]))
             return signin_page(request, 401, BAD_CREDENTIALS)
         if await asyncio.to_thread(needs_rehash, rec.password_hash):
             users.set_password_hash(rec.id, await asyncio.to_thread(hash_password, password),
