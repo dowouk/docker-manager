@@ -2,6 +2,7 @@ import asyncio
 import smtplib
 import socket
 import ssl
+import threading
 
 import httpx
 import pytest
@@ -248,18 +249,25 @@ def test_all_private(monkeypatch):
 # --- ACS ---
 
 class FakeACSClient:
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, finishes=True):
         self.messages = []
         self.fail = fail
+        self.finishes = finishes
+        self.waited = []
 
     def begin_send(self, message):
         self.messages.append(message)
-        fail = self.fail
+        fail, finishes = self.fail, self.finishes
+        waited = self.waited
 
         class Poller:
-            def result(self_):
+            def result(self_, timeout=None):
+                waited.append(timeout)
                 if fail:
                     raise fail
+
+            def done(self_):
+                return finishes
         return Poller()
 
 
@@ -287,6 +295,71 @@ def test_acs_sends_message():
 def test_acs_exception_rejected():
     msg = err_of(lambda: send_acs(lambda cs: FakeACSClient(fail=RuntimeError("accesskey=SECRETKEY"))))
     assert msg == "The email service rejected the message"
+
+
+def test_acs_client_gets_timeouts_and_a_low_retry_count(monkeypatch):
+    seen = {}
+
+    class Poller:
+        def result(self, timeout=None):
+            seen["timeout"] = timeout
+
+        def done(self):
+            return True
+
+    class Client:
+        def begin_send(self, message):
+            return Poller()
+
+    def from_connection_string(cs, **kw):
+        seen["kw"] = kw
+        return Client()
+
+    from azure.communication.email import EmailClient
+    monkeypatch.setattr(EmailClient, "from_connection_string", from_connection_string)
+    send_acs(None)
+    assert seen["kw"] == {"connection_timeout": 10, "read_timeout": 20, "retry_total": 1}
+    assert seen["timeout"] == 25
+
+
+def test_acs_unfinished_send_is_no_answer():
+    client = FakeACSClient(finishes=False)
+    msg = err_of(lambda: send_acs(lambda cs: client))
+    assert msg == "The email service didn't answer in time" and client.waited == [25]
+
+
+def test_acs_keeps_the_fixed_reason_of_a_not_private_style_error():
+    # NotifyError raised inside the worker is passed on unchanged, not flattened.
+    class Odd(ACSProvider):
+        def _send(self, config, message):
+            raise NotifyError(providers.NO_ANSWER)
+
+    async def go():
+        async with httpx.AsyncClient() as http:
+            await Odd().send({}, MSG, http)
+    assert err_of(lambda: run(go())) == providers.NO_ANSWER
+
+
+async def test_hung_sends_cannot_starve_other_thread_work():
+    release = threading.Event()
+    try:
+        hung = [asyncio.ensure_future(providers.run_blocking(release.wait, 30))
+                for _ in range(6)]  # more than the pool's 4 workers
+        await asyncio.sleep(0.1)
+        # An unrelated to_thread call (stand-in for password hashing) is not held up.
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "hashed"), 2) == "hashed"
+    finally:
+        release.set()
+        await asyncio.gather(*hung, return_exceptions=True)
+        providers.shutdown_notify_executor()
+
+
+def test_notify_pool_is_bounded_named_and_restartable():
+    pool = providers.notify_executor()
+    assert pool._max_workers == 4 and pool._thread_name_prefix == "notify"
+    providers.shutdown_notify_executor()
+    assert providers.notify_executor() is not pool
+    providers.shutdown_notify_executor()
 
 
 # --- validate / registry ---

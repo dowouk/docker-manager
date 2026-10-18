@@ -10,6 +10,8 @@ import re
 import smtplib
 import socket
 import ssl
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Literal, Protocol
@@ -25,6 +27,38 @@ UNREACHABLE = "The email service couldn't be reached"
 REJECTED = "The email service rejected the message"
 NO_ANSWER = "The email service didn't answer in time"
 NOT_PRIVATE = "Unencrypted SMTP is only allowed to private addresses"
+
+ACS_CONNECT_TIMEOUT = 10
+ACS_READ_TIMEOUT = 20
+ACS_RETRIES = 1
+ACS_RESULT_TIMEOUT = 25
+
+# Provider work that blocks (SMTP, the Azure SDK) runs in its own small pool, not the loop's
+# default executor: a send that hangs can then only delay notifications, never password
+# hashing or anything else that uses asyncio.to_thread.
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def notify_executor() -> ThreadPoolExecutor:
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notify")
+        return _executor
+
+
+def shutdown_notify_executor() -> None:
+    """Called on app shutdown; doesn't wait for hung sends (their sockets time out on their own)."""
+    global _executor
+    with _executor_lock:
+        pool, _executor = _executor, None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+async def run_blocking(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(notify_executor(), fn, *args)
 
 
 @dataclass(frozen=True)
@@ -105,17 +139,24 @@ class ACSProvider:
         else:
             from azure.communication.email import EmailClient
 
-            client = EmailClient.from_connection_string(config["connection_string"])
-        client.begin_send({
+            client = EmailClient.from_connection_string(
+                config["connection_string"], connection_timeout=ACS_CONNECT_TIMEOUT,
+                read_timeout=ACS_READ_TIMEOUT, retry_total=ACS_RETRIES)
+        poller = client.begin_send({
             "senderAddress": config["sender"],
             "recipients": {"to": [{"address": a} for a in message.recipients]},
             "content": {"subject": message.subject, "html": message.html,
                         "plainText": message.plain},
-        }).result()
+        })
+        poller.result(timeout=ACS_RESULT_TIMEOUT)
+        if not poller.done():  # result() returns quietly when the wait runs out
+            raise NotifyError(NO_ANSWER)
 
     async def send(self, config: dict, message: Message, http: httpx.AsyncClient) -> None:
         try:
-            await asyncio.to_thread(self._send, config, message)
+            await run_blocking(self._send, config, message)
+        except NotifyError:
+            raise
         except Exception:  # SDK errors can echo the connection string; keep only a fixed reason
             raise NotifyError(REJECTED) from None
 
@@ -259,7 +300,7 @@ class SMTPProvider:
         return REJECTED  # ValueError/UnicodeError from bad config or characters; never echo them
 
     async def send(self, config: dict, message: Message, http: httpx.AsyncClient) -> None:
-        await asyncio.to_thread(self._send, config, message)
+        await run_blocking(self._send, config, message)
 
 
 PROVIDERS: dict[str, Provider] = {p.key: p for p in (ACSProvider(), SMTP2GOProvider(), SMTPProvider())}
