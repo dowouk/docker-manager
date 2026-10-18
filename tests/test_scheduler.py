@@ -335,3 +335,25 @@ async def test_heartbeat_does_not_follow_redirects():
     async with httpx.AsyncClient(follow_redirects=True) as http:
         await sched_mod.heartbeat(http, "https://hc.example/p", False)
     assert other.call_count == 0
+
+
+async def test_heartbeat_url_never_reaches_the_logs(monkeypatch, caplog):
+    import logging
+    from app.main import configure_logging
+    saved = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
+    try:
+        configure_logging()
+        monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+        monkeypatch.setattr(sched_mod, "check_failed", lambda r: False)
+        app = fake_app()
+        app.state.settings = Settings(_env_file=None).model_copy(
+            update={"heartbeat_url": "https://hc-ping.example/TOKEN-123"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda r: httpx.Response(200))) as http:
+            app.state.http = http
+            caplog.set_level(logging.INFO)
+            await sched_mod.scheduled_check(app)
+        assert "TOKEN-123" not in caplog.text
+    finally:
+        for n, level in saved.items():
+            logging.getLogger(n).setLevel(level)

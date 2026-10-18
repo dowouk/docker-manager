@@ -1151,6 +1151,9 @@ class HealthzAccessFilter(logging.Filter):
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO)
+    # httpx logs every request URL at INFO, and the heartbeat URL carries a secret ping token.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, HealthzAccessFilter) for f in access.filters):
         access.addFilter(HealthzAccessFilter())
