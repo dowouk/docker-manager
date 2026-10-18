@@ -1,4 +1,5 @@
 import base64
+import gc
 import io
 import json
 import os
@@ -113,6 +114,7 @@ def test_unset_docker_config_is_not_found(env, monkeypatch):
 
 
 def test_corrupt_db_is_not_found(env, capsys):
+    gc.collect()  # a still-open connection in this process would share the old WAL index
     for f in env.glob("dashboard.db-*"):  # WAL files would still hold the rows
         f.unlink()
     (env / "dashboard.db").write_bytes(b"not a database" * 100)
