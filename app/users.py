@@ -62,9 +62,22 @@ _COLS = ("id, kind, email, name, password_hash, totp_secret, totp_enabled, totp_
          "entra_oid, created_at, last_sign_in")
 
 _BOOLS = {"totp_enabled", "role_pinned", "disabled", "must_change_password"}
-_UPDATABLE = {"kind", "email", "name", "password_hash", "totp_secret", "totp_enabled",
-              "totp_last_step", "recovery_codes", "role", "role_pinned", "disabled",
+# Columns update() may write. Secrets and credentials (password_hash, totp_*, recovery_codes)
+# are written only by their dedicated methods.
+_UPDATABLE = {"kind", "email", "name", "role", "role_pinned", "disabled",
               "must_change_password", "entra_tid", "entra_oid", "last_sign_in"}
+_INTERNAL = _UPDATABLE | {"password_hash", "totp_secret", "totp_enabled",
+                          "totp_last_step", "recovery_codes"}
+ROLES = ("pending", "viewer", "operator", "admin")
+
+
+def _check_role(role: str) -> None:
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+
+
+def _is_unique(exc: sqlite3.IntegrityError) -> bool:
+    return "UNIQUE" in str(exc)
 
 
 def _record(r) -> UserRecord:
@@ -116,6 +129,7 @@ class UserStore:
 
     def _insert(self, db, kind, email, name, role, pinned, password_hash,
                 must_change_password) -> int:
+        _check_role(role)
         try:
             cur = db.execute(
                 "INSERT INTO users (kind, email, name, password_hash, role, role_pinned, "
@@ -124,6 +138,8 @@ class UserStore:
                  int(must_change_password), _to_iso(self._clock())),
             )
         except sqlite3.IntegrityError as exc:
+            if not _is_unique(exc):
+                raise
             raise DuplicateUserError(email.strip()) from exc
         return cur.lastrowid
 
@@ -140,6 +156,7 @@ class UserStore:
                            must_change_password: bool = False) -> UserRecord | None:
         """Insert only if there are no users, checked inside the write transaction so two
         threads or processes can't both win. None if someone else got there first."""
+        _check_role(role)
         with self._store.write_tx() as db:
             if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] != 0:
                 return None
@@ -157,9 +174,14 @@ class UserStore:
         ).fetchone()[0]
 
     def update(self, user_id: int, **fields) -> UserRecord:
-        unknown = set(fields) - _UPDATABLE
+        return self._update(user_id, _UPDATABLE, fields)
+
+    def _update(self, user_id: int, allowed: set[str], fields: dict) -> UserRecord:
+        unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"can't update {sorted(unknown)}")
+        if "role" in fields:
+            _check_role(fields["role"])
         with self._store.write_tx() as db:
             row = db.execute(f"SELECT {_COLS} FROM users WHERE id = ?", (user_id,)).fetchone()
             if row is None:
@@ -188,6 +210,8 @@ class UserStore:
                     db.execute(f"UPDATE users SET {assignments} WHERE id = ?",
                                (*values.values(), user_id))
                 except sqlite3.IntegrityError as exc:
+                    if not _is_unique(exc):
+                        raise
                     raise DuplicateUserError(str(fields.get("email", ""))) from exc
         return self.get(user_id)
 
@@ -208,8 +232,8 @@ class UserStore:
 
     def set_totp(self, user_id: int, secret: str | None, enabled: bool) -> None:
         encrypted = None if secret is None else self._box.encrypt(secret)
-        self.update(user_id, totp_secret=encrypted, totp_enabled=enabled,
-                    totp_last_step=None)
+        self._update(user_id, _INTERNAL, dict(
+            totp_secret=encrypted, totp_enabled=enabled, totp_last_step=None))
 
     def totp_secret(self, user: UserRecord) -> str | None:
         if not user.totp_secret:
@@ -217,10 +241,15 @@ class UserStore:
         return self._box.decrypt(user.totp_secret)
 
     def set_totp_last_step(self, user_id: int, step: int) -> None:
-        self.update(user_id, totp_last_step=step)
+        self._update(user_id, _INTERNAL, dict(totp_last_step=step))
+
+    def set_password_hash(self, user_id: int, password_hash: str,
+                          must_change_password: bool) -> None:
+        self._update(user_id, _INTERNAL, dict(
+            password_hash=password_hash, must_change_password=must_change_password))
 
     def set_recovery_codes(self, user_id: int, hashes: list[str]) -> None:
-        self.update(user_id, recovery_codes=list(hashes))
+        self._update(user_id, _INTERNAL, dict(recovery_codes=list(hashes)))
 
     def use_recovery_code(self, user_id: int, code_hash: str) -> bool:
         with self._store.write_tx() as db:

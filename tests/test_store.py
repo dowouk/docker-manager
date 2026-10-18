@@ -249,3 +249,29 @@ def test_session_user_id_and_delete_for_user(tmp_path):
     assert s.session_update("b", {"x": 1}, now, user_id=1) is True
     assert s.session_delete_for_user(1) == 2
     assert s.session_get("a") is None
+
+
+def test_failed_migration_3_leaves_0_2_untouched_then_keeps_flag(tmp_path, monkeypatch):
+    import pytest
+
+    from app import store as store_mod
+
+    path = str(tmp_path / "d.db")
+    _make_0_2(path)
+
+    def boom(db):
+        db.execute("CREATE TABLE users (id INTEGER)")
+        raise RuntimeError("migration 3 failed")
+
+    monkeypatch.setattr(store_mod, "MIGRATIONS",
+                        [store_mod._migration_1, store_mod._migration_2, boom])
+    with pytest.raises(RuntimeError):
+        Store(path)
+    monkeypatch.undo()
+    db = sqlite3.connect(path)
+    assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert db.execute("SELECT value FROM meta WHERE key='existing_install'").fetchone() is None
+    assert db.execute("SELECT 1 FROM sqlite_master WHERE name='users'").fetchone() is None
+    db.close()
+    assert Store(path).get_meta("existing_install") == "1"
+    assert Store(path).get_meta("existing_install") == "1"

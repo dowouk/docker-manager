@@ -212,3 +212,44 @@ def test_touch_sign_in(users, clock):
     u = admin(users)
     users.touch_sign_in(u.id)
     assert users.get(u.id).last_sign_in == clock()
+
+
+def test_update_rejects_unknown_and_crafted_fields(users):
+    u = admin(users)
+    before = users.get(u.id)
+    for bad in ({"role = 'admin', name": "x"}, {"bogus": 1}, {"totp_secret": "x"},
+                {"password_hash": "x"}, {"recovery_codes": []}, {"totp_last_step": 1}):
+        with pytest.raises(ValueError):
+            users.update(u.id, **bad)
+    assert users.get(u.id) == before
+
+
+def test_only_unique_violations_become_duplicate(users, store):
+    u = admin(users)
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError) as ei:
+        users.update(u.id, name=None)
+    assert not isinstance(ei.value, DuplicateUserError)
+    with pytest.raises(sqlite3.IntegrityError):
+        users.update(u.id, kind="bogus")
+    assert users.get(u.id).name == "Admin"
+
+
+def test_set_password_hash(users):
+    u = admin(users)
+    users.set_password_hash(u.id, "hh", True)
+    u = users.get(u.id)
+    assert u.password_hash == "hh" and u.must_change_password
+
+
+def test_role_validated(users):
+    for role in ("pending", "viewer", "operator", "admin"):
+        users.create("local", f"{role}@x.io", role, role)
+    with pytest.raises(ValueError):
+        users.create("local", "n@x.io", "N", "root")
+    with pytest.raises(ValueError):
+        users.create_first_admin("local", "m@x.io", "M", "root")
+    u = users.by_email("local", "admin@x.io")
+    with pytest.raises(ValueError):
+        users.update(u.id, role="root")
+    assert users.get(u.id).role == "admin"
