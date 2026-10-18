@@ -92,11 +92,11 @@
     <div class="stat stat-health">
       <div class="stat-head"><span class="stat-label">Fleet health</span><span class="mono stat-label">{{ overview.total }} total</span></div>
       <div class="stat-figure"><span class="stat-number">{{ overview.percent_current }}%</span><span class="stat-unit">fully current</span></div>
-      <div class="health-bar" role="img" aria-label="{{ overview.current }} up to date, {{ overview.updates }} with updates, {{ overview.errors }} with errors{% if overview.unchecked %}, {{ overview.unchecked }} not checked{% endif %}">
+      <div class="health-bar" role="img" aria-label="{{ overview.current }} up to date, {{ overview.updates }} with updates, {{ overview.errors }} with errors{% if overview.unchecked + overview.not_watched %}, {{ overview.unchecked + overview.not_watched }} not checked{% endif %}">
         {% if overview.current %}<span class="seg seg-current" style="flex: {{ overview.current }}"></span>{% endif %}
         {% if overview.updates %}<span class="seg seg-update" style="flex: {{ overview.updates }}"></span>{% endif %}
         {% if overview.errors %}<span class="seg seg-error" style="flex: {{ overview.errors }}"></span>{% endif %}
-        {% if overview.unchecked %}<span class="seg seg-empty" style="flex: {{ overview.unchecked }}"></span>{% endif %}
+        {% if overview.unchecked + overview.not_watched %}<span class="seg seg-empty" style="flex: {{ overview.unchecked + overview.not_watched }}"></span>{% endif %}
         {% if not overview.total %}<span class="seg seg-empty" style="flex: 1"></span>{% endif %}
       </div>
     </div>
@@ -190,6 +190,8 @@
               <div>
                 <div class="who-name">{{ c.name }}{% if c.is_self %} <span class="tag">This dashboard</span>{% endif %}{% if c.state != "running" %} <span class="meta">({{ c.state }})</span>{% endif %}</div>
                 <div class="meta">{% if c.project %}stack · {{ c.project }}{% else %}no stack{% endif %}{% if c.service and c.service != c.project %} · {{ c.service }}{% endif %}</div>
+                {% if can(user, Role.OPERATOR) %}<div class="meta"><a href="/containers/{{ container_key(c) | urlencode }}/rules">Watch settings</a></div>{% endif %}
+                {% if cs.rule_warnings %}<div class="meta" role="note">{{ cs.rule_warnings | join(" ") }}</div>{% endif %}
               </div>
             </div>
           </td>
@@ -200,10 +202,10 @@
           </td>
           <td data-label="Digest"><span class="mono meta">{{ short_digest(cs) }}</span></td>
           <td data-label="Status">
-            {{ status_badge("muted" if state == "unchecked" else state, STATUS_LABELS[cs.status]) }}
+            {{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
-          {% set has_action = (not cs.updatable and state != "unchecked") or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update)) %}
+          {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update)) %}
           <td data-label="Action" class="col-action{% if not has_action %} no-action{% endif %}">
             {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}</div>{% else %}<span class="faint">–</span>{% endif %}
           </td>

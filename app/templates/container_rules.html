@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Watch settings{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Watch settings</h1>
+    <p class="lede">{{ cs.container.name }} <span class="mono">({{ key }})</span></p>
+  </div>
+</section>
+{% for w in rules.warnings %}<p class="notice notice-error" role="alert">{{ w }}</p>{% endfor %}
+<div class="settings">
+  <section class="card settings-card" aria-labelledby="rules-title">
+    <h2 id="rules-title">Rules</h2>
+    <form method="post" action="/containers/{{ key | urlencode }}/rules" class="settings-form" novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      {% for f in fields %}
+      <div class="field{% if f.error %} field-invalid{% endif %}">
+        <label for="f-{{ f.name }}">{{ f.label }}</label>
+        {% if f.kind == "bool" %}
+        <select class="input" id="f-{{ f.name }}" name="{{ f.name }}"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+          <option value="yes"{% if f.value == "yes" %} selected{% endif %}>Yes</option>
+          <option value="no"{% if f.value == "no" %} selected{% endif %}>No</option>
+        </select>
+        {% else %}
+        <input class="input" id="f-{{ f.name }}" name="{{ f.name }}" type="text" autocomplete="off" spellcheck="false" value="{{ f.value }}"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+        {% endif %}
+        {% if f.error %}<p class="field-error" role="alert">{{ f.error }}</p>{% endif %}
+        <p class="field-help" id="h-{{ f.name }}">{% if f.locked %}Set by a label on the container{% else %}{{ f.help }}{% endif %}</p>
+      </div>
+      {% endfor %}
+      <div class="card-actions">
+        <button type="submit" class="button button-accent">Save</button>
+        <a class="button button-quiet" href="/">Cancel</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

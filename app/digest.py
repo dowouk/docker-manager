@@ -40,6 +40,8 @@ def _sections(result: CheckResult) -> list[dict]:
             "change": f"{mc.current_version or 'unknown'} → {mc.latest_release or 'unknown'}",
         })
     for cs in result.containers:
+        if not cs.notify or cs.status == Status.NOT_WATCHED:
+            continue  # unwatched, or kept out by the container's `notify` rule
         tag = parse_image_ref(cs.container.image_ref).tag or "latest"
         if cs.status in _BUILD:
             suffix = " (pulled, not yet recreated)" if cs.status == Status.PULLED_NOT_RECREATED else ""
@@ -70,7 +72,8 @@ STATUS_TEXT = {Status.ERROR: "Error", Status.NOT_CHECKABLE: "Not checkable"}
 
 def _update_count(result: CheckResult) -> int:
     """Updates the dashboard can apply (major versions are update-by-hand, so not counted)."""
-    count = sum(1 for cs in result.containers if cs.status in _BUILD or cs.minor_update)
+    count = sum(1 for cs in result.containers
+                if cs.notify and (cs.status in _BUILD or cs.minor_update))
     mc = result.mailcow
     if mc and not mc.error and mc.update_available:
         count += 1

@@ -42,7 +42,8 @@ def check_failed(result: CheckResult | None) -> bool:
     """Every checkable container ended in an error (one image's error is not a failed check)."""
     if result is None:
         return True
-    checkable = [cs for cs in result.containers if cs.status != Status.NOT_CHECKABLE]
+    checkable = [cs for cs in result.containers
+                 if cs.status not in (Status.NOT_CHECKABLE, Status.NOT_WATCHED)]
     return bool(checkable) and all(cs.status == Status.ERROR for cs in checkable)
 
 
@@ -63,6 +64,8 @@ def _update_items(result: CheckResult) -> dict[str, tuple[str, UpdateItem]]:
         add("mailcow", latest, "Mailcow", "",
             f"{mc.current_version or 'unknown'} → {latest or 'unknown'}")
     for cs in result.containers:
+        if not cs.notify:
+            continue  # the container's `notify` rule keeps it out of "Updates found"
         name, image = cs.container.name, cs.container.image_ref
         if cs.status in _BUILD:
             add(f"{name}:build", cs.remote_digest or "", name, image, "Newer build available")

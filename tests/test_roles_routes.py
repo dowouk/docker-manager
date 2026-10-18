@@ -19,6 +19,8 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("POST", "/containers/1/update", Role.OPERATOR),
     ("GET", "/containers/1/version-preview", Role.OPERATOR),
     ("POST", "/containers/1/version", Role.OPERATOR),
+    ("GET", "/containers/1/rules", Role.OPERATOR),
+    ("POST", "/containers/1/rules", Role.OPERATOR),
     ("GET", "/jobs/1", Role.OPERATOR),
     ("GET", "/jobs/1/stream", Role.OPERATOR),
     ("POST", "/digest/send", Role.ADMIN),

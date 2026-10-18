@@ -8,6 +8,7 @@ and the "Needs attention" cards, so the numbers on the page always agree:
 - "current"   – up to date
 - "unchecked" – can't be checked: a local image, or one pinned by digest. Neutral:
                 not a problem, and left out of the fleet-health percentage.
+- "not_watched" – switched off by a watch rule. Neutral, like "unchecked".
 """
 import re
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.imageref import parse_image_ref
 
 BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
-_ORDER = {"update": 0, "error": 1, "current": 2, "unchecked": 3}
+_ORDER = {"update": 0, "error": 1, "current": 2, "unchecked": 3, "not_watched": 4}
 
 
 def has_update(cs: ContainerStatus) -> bool:
@@ -25,6 +26,8 @@ def has_update(cs: ContainerStatus) -> bool:
 
 
 def row_state(cs: ContainerStatus) -> str:
+    if cs.status == Status.NOT_WATCHED:
+        return "not_watched"
     if cs.status == Status.NOT_CHECKABLE:
         return "unchecked"
     if cs.status == Status.ERROR:
@@ -56,6 +59,7 @@ class Overview:
     majors: int
     errors: int
     unchecked: int
+    not_watched: int = 0
 
     @property
     def attention(self) -> int:
@@ -63,7 +67,7 @@ class Overview:
 
     @property
     def percent_current(self) -> int:
-        checked = self.total - self.unchecked
+        checked = self.total - self.unchecked - self.not_watched
         return round(100 * self.current / checked) if checked else 0
 
 
@@ -80,6 +84,7 @@ def overview(result: CheckResult) -> Overview:
         majors=sum(1 for cs in result.containers if cs.major_update),
         errors=states.count("error"),
         unchecked=states.count("unchecked"),
+        not_watched=states.count("not_watched"),
     )
 
 

@@ -4,7 +4,7 @@ import functools
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -32,7 +32,7 @@ from app.notify.providers import (
     shutdown_notify_executor,
 )
 from app.imageref import parse_image_ref
-from app.inventory import detect_self_id, list_containers
+from app.inventory import container_key, detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import KeyUnusable, load_secret_box
@@ -44,6 +44,7 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.roles import Role
+from app.rules import RulesError, RulesStore
 from app.sessions import COOKIE, SessionStore
 from app.setup import Setup, setup_routes
 from app.admin_pages import setup_admin_pages
@@ -82,6 +83,7 @@ FLASH = {
     "digest_nothing": ("Digest skipped – nothing to report", "ok"),
     "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
     "digest_failed": ("The digest could not be sent – check the server logs", "error"),
+    "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
 }
 
 # Same idea for the Settings page.
@@ -118,6 +120,7 @@ STATUS_LABELS = {
     Status.PULLED_NOT_RECREATED: "Pulled – not recreated",
     Status.NOT_CHECKABLE: "Can't check",
     Status.ERROR: "Error",
+    Status.NOT_WATCHED: "Not watched",
 }
 JOB_STATUS_LABELS = {"running": "Running", "succeeded": "Succeeded", "failed": "Failed"}
 JOB_KIND_LABELS = {
@@ -152,6 +155,7 @@ async def run_check(app: FastAPI) -> CheckResult:
                 mailcow_check=functools.partial(
                     check_mailcow, state.settings.mailcow_dir, run_capture, state.http
                 ),
+                rules_for=state.rules.effective,
             )
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
@@ -191,6 +195,44 @@ def _find(app: FastAPI, container_id: str) -> ContainerStatus:
         if cs.container.id == container_id:
             return cs
     raise HTTPException(status_code=404, detail="Unknown container")
+
+
+def _find_key(app: FastAPI, key: str) -> ContainerStatus:
+    result = _latest(app)
+    for cs in result.containers if result else []:
+        if container_key(cs.container) == key:
+            return cs
+    raise HTTPException(status_code=404, detail="Unknown container")
+
+
+def _rule_fields(rules, form: Mapping[str, str] | None, errors: dict) -> list[dict]:
+    """What the watch-settings form shows: the submitted text when re-showing errors,
+    else the effective value (a label's value for a field a label sets)."""
+    def text(field: str):
+        value = getattr(rules, field)
+        return "; ".join(value) if isinstance(value, tuple) else (value or "")
+
+    specs = [
+        ("watch", "Watch this container", "bool", "Switch off to skip registry checks for it."),
+        ("include_tags", "Only consider these tags", "text",
+         "Patterns separated by semicolons, matched against the whole tag. Empty means all tags."),
+        ("exclude_tags", "Ignore these tags", "text",
+         "Patterns separated by semicolons, matched against the whole tag."),
+        ("notify", "Include in the digest and Updates found", "bool",
+         "Switch off to see its updates here without being told about them."),
+        ("release_notes", "Release notes link", "text", "A link starting with https:// or http://."),
+        ("layout_ignore", "Leave out of the layout check", "bool", "Skip the file-layout checks for it."),
+    ]
+    fields = []
+    for name, label, kind, help_ in specs:
+        locked = name in rules.from_label
+        value = text(name) if form is None or locked or name not in form else form[name]
+        if kind == "bool":
+            value = ("yes" if getattr(rules, name) else "no") if form is None or locked or name not in form \
+                else str(form[name])
+        fields.append({"name": name, "label": label, "kind": kind, "help": help_,
+                       "locked": locked, "value": value, "error": errors.get(name)})
+    return fields
 
 
 def _require_updatable(cs: ContainerStatus) -> None:
@@ -316,6 +358,7 @@ def create_app(
     # Before anything is served: migrate old allow rules, or open first-start setup.
     app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
     app.state.setup.prepare(settings)
+    app.state.rules = RulesStore(store)
     app.state.channels = ChannelStore(store, settings_service._box, lambda: settings)
     app.state.channels.migrate_0_2_email()
     app.state.notifier = Notifier(
@@ -350,6 +393,7 @@ def create_app(
         JOB_KIND_LABELS=JOB_KIND_LABELS,
         BUILD_UPDATE=view.BUILD_UPDATE,
         short_digest=_short_digest,
+        container_key=container_key,
         row_state=view.row_state,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
@@ -479,6 +523,31 @@ def create_app(
         whole = mode == "project"
         target = info.project if whole else info.name
         return submit(mode, target, user, lambda ctx: update_build(ctx, info, whole_project=whole))
+
+    def _rules_page(request: Request, user: User, key: str, form=None, errors=None, status_code=200):
+        cs = _find_key(app, key)
+        rules = app.state.rules.effective(cs.container)
+        return render(
+            request, "container_rules.html", user, status_code=status_code,
+            cs=cs, key=key, rules=rules,
+            fields=_rule_fields(rules, form, errors or {}),
+        )
+
+    @app.get("/containers/{key:path}/rules", response_class=HTMLResponse)
+    async def container_rules(request: Request, key: str,
+                              user: User = Depends(require_role(Role.OPERATOR))):
+        return _rules_page(request, user, key)
+
+    @app.post("/containers/{key:path}/rules", dependencies=[Depends(verify_csrf)])
+    async def container_rules_save(request: Request, key: str,
+                                   user: User = Depends(require_role(Role.OPERATOR))):
+        _find_key(app, key)
+        form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+        try:
+            app.state.rules.save(key, form, user.email)
+        except RulesError as exc:
+            return _rules_page(request, user, key, form, exc.errors, status_code=400)
+        return _redirect("/?msg=rules_saved")
 
     @app.get("/containers/{container_id}/version-preview", response_class=HTMLResponse)
     async def version_preview(
