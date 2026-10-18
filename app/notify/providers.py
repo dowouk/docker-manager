@@ -113,7 +113,7 @@ class ACSProvider:
     async def send(self, config: dict, message: Message, http: httpx.AsyncClient) -> None:
         try:
             await asyncio.to_thread(self._send, config, message)
-        except Exception as e:  # SDK errors can echo the connection string; keep only a fixed reason
+        except Exception:  # SDK errors can echo the connection string; keep only a fixed reason
             raise NotifyError(REJECTED) from None
 
 
