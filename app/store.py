@@ -187,6 +187,24 @@ class Store:
                 (token_hash, json.dumps(data), _to_iso(created_at), _to_iso(last_seen)),
             )
 
+    def session_touch(self, token_hash: str, last_seen: datetime) -> bool:
+        """Update last_seen only; never creates a row. False if the row is gone."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE sessions SET last_seen = ? WHERE token_hash = ?",
+                (_to_iso(last_seen), token_hash),
+            )
+            return cur.rowcount > 0
+
+    def session_update(self, token_hash: str, data: dict, last_seen: datetime) -> bool:
+        """Rewrite data and last_seen of an existing row; False if the row is gone."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE sessions SET data = ?, last_seen = ? WHERE token_hash = ?",
+                (json.dumps(data), _to_iso(last_seen), token_hash),
+            )
+            return cur.rowcount > 0
+
     def session_delete(self, token_hash: str) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))

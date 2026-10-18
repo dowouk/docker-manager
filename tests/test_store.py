@@ -150,3 +150,18 @@ def test_session_rows_and_purge(tmp_path):
     assert s.session_get("h1")[0] == {"user": {"email": "a"}}
     assert s.session_purge(idle_before=new, created_before=old) == 1
     assert s.session_get("h1") is None and s.session_get("h2") is not None
+
+
+def test_session_touch_and_update_never_create_rows(tmp_path):
+    from datetime import datetime, timezone
+    s = Store(str(tmp_path / "d.db"))
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert s.session_touch("missing", now) is False
+    assert s.session_update("missing", {"a": 1}, now) is False
+    assert s.session_get("missing") is None
+    s.session_put("h", {"a": 1}, now, now)
+    later = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert s.session_update("h", {"a": 2}, later) is True
+    assert s.session_get("h") == ({"a": 2}, now, later)
+    assert s.session_touch("h", now) is True
+    assert s.session_get("h") == ({"a": 2}, now, now)

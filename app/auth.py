@@ -1,6 +1,6 @@
 """Microsoft Entra ID sign-in (OIDC code flow + PKCE), auth guard and CSRF.
 
-The guard is a pure ASGI middleware that sits *inside* SessionMiddleware, so
+The guard is a pure ASGI middleware that sits *inside* ServerSessionMiddleware, so
 ``scope["session"]`` is available. Everything except ``/auth/*`` and
 ``/static/*`` requires a signed-in session. There is no fallback mode.
 """

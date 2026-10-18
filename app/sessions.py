@@ -50,15 +50,13 @@ class SessionStore:
         if now - last_seen > SESSION_IDLE or now - created_at > SESSION_MAX:
             self._store.session_delete(key)
             return None
-        self._store.session_put(key, data, created_at, now)
+        if not self._store.session_touch(key, now):
+            return None  # deleted since we read it
         return data
 
-    def save(self, token: str, data: dict) -> None:
-        key = _hash(token)
-        now = self._clock()
-        row = self._store.session_get(key)
-        created_at = row[1] if row else now
-        self._store.session_put(key, data, created_at, now)
+    def save(self, token: str, data: dict) -> bool:
+        """Update an existing session; False (nothing written) if it no longer exists."""
+        return self._store.session_update(_hash(token), data, self._clock())
 
     def delete(self, token: str) -> None:
         self._store.session_delete(_hash(token))
@@ -118,6 +116,8 @@ class ServerSessionMiddleware:
                 return f"{COOKIE}=; Max-Age=0; {_COOKIE_ATTRS}"
             return None
         if token:
-            self.sessions.save(token, session)
-            return None
+            if self.sessions.save(token, session):
+                return None
+            # Revoked mid-request: do not resurrect it.
+            return f"{COOKIE}=; Max-Age=0; {_COOKIE_ATTRS}"
         return f"{COOKIE}={self.sessions.create(session)}; {_COOKIE_ATTRS}"

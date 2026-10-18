@@ -41,12 +41,17 @@ def env(tmp_path):
         request.session.clear()
         return JSONResponse({})
 
+    async def revoked(request: Request):
+        sessions.delete(request.cookies["session"])  # e.g. signed out elsewhere
+        request.session["x"] = 1
+        return JSONResponse({})
+
     async def read(request: Request):
         return JSONResponse(request.session)
 
     app = Starlette(routes=[
         Route("/set", set_user), Route("/touch", touch),
-        Route("/clear", clear), Route("/read", read),
+        Route("/clear", clear), Route("/revoked", revoked), Route("/read", read),
     ])
     app.add_middleware(ServerSessionMiddleware, sessions=sessions)
     client = TestClient(app, base_url="https://testserver")
@@ -142,4 +147,14 @@ def test_purge_expired(env):
     assert sessions.purge_expired() == 0
     clock.advance(hours=9)
     assert sessions.purge_expired() == 1
+    assert _rows(store) == []
+
+
+def test_session_revoked_mid_request_is_not_resurrected(env):
+    client, store, _, sessions = env
+    client.get("/set")
+    token = client.cookies["session"]
+    r = client.get("/revoked")
+    assert "max-age=0" in r.headers["set-cookie"].lower()
+    assert sessions.load(token) is None
     assert _rows(store) == []
