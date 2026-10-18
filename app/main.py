@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.auth import User, csrf_token, current_user, require_role, setup_auth, verify_csrf
+from app.auth import RoleDenied, User, csrf_token, require_role, setup_auth, verify_csrf
 from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
@@ -317,6 +317,8 @@ def create_app(
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
+        Role=Role,
+        can=lambda user, role: user is not None and user.role >= role,
         legacy_banner=lambda user: bool(
             user is not None and user.role == Role.ADMIN
             and app.state.settings.default_role == "admin_legacy"),
@@ -357,7 +359,7 @@ def create_app(
         return _redirect(f"/jobs/{job_id}")
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request, msg: str = "", user: User = Depends(current_user)):
+    async def dashboard(request: Request, msg: str = "", user: User = Depends(require_role(Role.VIEWER))):
         result = _latest(app)
         error = None
         if result is None:
@@ -381,7 +383,7 @@ def create_app(
         )
 
     @app.post("/check", dependencies=[Depends(verify_csrf)])
-    async def check_now(user: User = Depends(current_user)):
+    async def check_now(user: User = Depends(require_role(Role.OPERATOR))):
         try:
             await run_check(app)
         except Exception:  # noqa: BLE001
@@ -390,7 +392,7 @@ def create_app(
         return _redirect("/")
 
     @app.post("/digest/send", dependencies=[Depends(verify_csrf)])
-    async def digest_send(user: User = Depends(current_user)):
+    async def digest_send(user: User = Depends(require_role(Role.ADMIN))):
         try:
             result = _latest(app) or await run_check(app)
         except Exception:  # noqa: BLE001
@@ -413,7 +415,7 @@ def create_app(
 
     @app.post("/containers/{container_id}/update", dependencies=[Depends(verify_csrf)])
     async def update_container(
-        container_id: str, mode: str = Form(...), user: User = Depends(current_user)
+        container_id: str, mode: str = Form(...), user: User = Depends(require_role(Role.OPERATOR))
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -428,7 +430,7 @@ def create_app(
 
     @app.get("/containers/{container_id}/version-preview", response_class=HTMLResponse)
     async def version_preview(
-        request: Request, container_id: str, tag: str = "", user: User = Depends(current_user)
+        request: Request, container_id: str, tag: str = "", user: User = Depends(require_role(Role.OPERATOR))
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -454,7 +456,7 @@ def create_app(
         container_id: str,
         tag: str = Form(...),
         sha: str = Form(...),
-        user: User = Depends(current_user),
+        user: User = Depends(require_role(Role.OPERATOR)),
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -485,7 +487,7 @@ def create_app(
         )
 
     @app.post("/mailcow/update", dependencies=[Depends(verify_csrf)])
-    async def mailcow_update(user: User = Depends(current_user)):
+    async def mailcow_update(user: User = Depends(require_role(Role.ADMIN))):
         result = _latest(app)
         if result is None or result.mailcow is None:
             raise HTTPException(status_code=404, detail="Mailcow not found")
@@ -494,7 +496,7 @@ def create_app(
         )
 
     @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
-    async def self_update(request: Request, user: User = Depends(current_user)):
+    async def self_update(request: Request, user: User = Depends(require_role(Role.ADMIN))):
         result = _latest(app)
         me = next((cs for cs in result.containers if cs.container.is_self), None) if result else None
         if me is None:
@@ -534,14 +536,14 @@ def create_app(
         )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
-    async def job_page(request: Request, job_id: int, user: User = Depends(current_user)):
+    async def job_page(request: Request, job_id: int, user: User = Depends(require_role(Role.OPERATOR))):
         job = store.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job")
         return render(request, "job.html", user, job=job)
 
     @app.get("/jobs/{job_id}/stream")
-    async def job_stream(job_id: int, user: User = Depends(current_user)):
+    async def job_stream(job_id: int, user: User = Depends(require_role(Role.OPERATOR))):
         async def events() -> AsyncIterator[str]:
             async for chunk in runner.subscribe(job_id):
                 if chunk.startswith(_END):
@@ -605,12 +607,12 @@ def create_app(
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    async def settings_page(request: Request, msg: str = "", user: User = Depends(current_user)):
+    async def settings_page(request: Request, msg: str = "", user: User = Depends(require_role(Role.ADMIN))):
         return render_settings(request, user, msg=msg)
 
     # The fixed paths below are declared before /settings/{section} so they win.
     @app.post("/settings/email/test", dependencies=[Depends(verify_csrf)])
-    async def settings_email_test(user: User = Depends(current_user)):
+    async def settings_email_test(user: User = Depends(require_role(Role.ADMIN))):
         try:
             await asyncio.to_thread(
                 send_test_email, app.state.settings, app.state.email_client_factory
@@ -628,7 +630,7 @@ def create_app(
         host: str = Form(""),
         username: str = Form(""),
         password: str = Form(""),
-        user: User = Depends(current_user),
+        user: User = Depends(require_role(Role.ADMIN)),
     ):
         def refuse(message: str):
             return render_settings(
@@ -658,7 +660,7 @@ def create_app(
         return _redirect("/settings?msg=registry_saved#registries")
 
     @app.post("/settings/registries/{host:path}/delete", dependencies=[Depends(verify_csrf)])
-    async def settings_registry_delete(host: str, user: User = Depends(current_user)):
+    async def settings_registry_delete(host: str, user: User = Depends(require_role(Role.ADMIN))):
         try:
             registry = normalise_host(host)
         except ValueError:
@@ -708,7 +710,7 @@ def create_app(
 
     @app.post("/settings/{section}", dependencies=[Depends(verify_csrf)])
     async def settings_save(
-        request: Request, section: str, user: User = Depends(current_user)
+        request: Request, section: str, user: User = Depends(require_role(Role.ADMIN))
     ):
         if section not in SECTIONS:
             raise HTTPException(status_code=404, detail="Unknown settings section")
@@ -723,8 +725,10 @@ def create_app(
         return _redirect(f"/settings?msg=saved#{section}")
 
     @app.get("/history", response_class=HTMLResponse)
-    async def history(request: Request, view: str = "", user: User = Depends(current_user)):
+    async def history(request: Request, view: str = "", user: User = Depends(require_role(Role.VIEWER))):
         if view == "changes":
+            if user.role < Role.ADMIN:
+                raise RoleDenied()
             return render(request, "history.html", user, view="changes",
                           changes=store.list_audit())
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())

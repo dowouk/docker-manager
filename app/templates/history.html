@@ -6,10 +6,12 @@
     <h1>History</h1>
     <p class="lede">{% if view == "changes" %}Every settings change made from this dashboard, newest first.{% else %}Every update run from this dashboard, newest first.{% endif %}</p>
   </div>
+  {% if can(user, Role.ADMIN) %}
   <nav class="segmented tabs" aria-label="History view">
     <a href="/history"{% if view != "changes" %} aria-current="page"{% endif %}>Updates</a>
     <a href="/history?view=changes"{% if view == "changes" %} aria-current="page"{% endif %}>Changes</a>
   </nav>
+  {% endif %}
 </section>
 {% if view == "changes" %}
 {% if changes %}
@@ -33,7 +35,7 @@
 {% elif jobs %}
 <div class="table-wrap">
   <table class="data">
-    <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">What</th><th scope="col">Result</th><th scope="col" class="col-action">Log</th></tr></thead>
+    <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">What</th><th scope="col">Result</th>{% if can(user, Role.OPERATOR) %}<th scope="col" class="col-action">Log</th>{% endif %}</tr></thead>
     <tbody>
     {% for job in jobs %}
       <tr>
@@ -41,7 +43,7 @@
         <td data-label="Who">{{ job.user }}</td>
         <td data-label="What"><strong>{{ JOB_KIND_LABELS.get(job.kind, job.kind) }} – {{ job.target }}</strong></td>
         <td data-label="Result"><span class="badge badge-{{ job.status }}"><span class="dot" aria-hidden="true"></span>{{ JOB_STATUS_LABELS.get(job.status, job.status) }}</span></td>
-        <td data-label="Log" class="col-action"><a class="button button-quiet button-small" href="/jobs/{{ job.id }}">View log</a></td>
+        {% if can(user, Role.OPERATOR) %}<td data-label="Log" class="col-action"><a class="button button-quiet button-small" href="/jobs/{{ job.id }}">View log</a></td>{% endif %}
       </tr>
     {% endfor %}
     </tbody>
