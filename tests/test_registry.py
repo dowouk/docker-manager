@@ -371,3 +371,20 @@ async def test_other_registries_keep_their_own_login(respx_mock, http, challenge
     token = respx_mock.get(url__startswith=realm).mock(return_value=httpx.Response(200, json={"token": "own"}))
     assert await RegistryClient(http).head_digest(parse_image_ref("ghcr.io/o/app:1")) == "sha256:own"
     assert token.call_count == 1
+
+
+async def test_in_memory_login_used_before_file(respx_mock, http, tmp_path):
+    def b64(s):
+        return base64.b64encode(s.encode()).decode()
+
+    auth = tmp_path / "config.json"
+    auth.write_text(json.dumps({"auths": {"ghcr.io": {"auth": b64("file:pw")}}}))
+    challenge = 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:o/app:pull"'
+    respx_mock.head("https://ghcr.io/v2/o/app/manifests/1").mock(side_effect=lambda r: (
+        httpx.Response(200, headers={"Docker-Content-Digest": "sha256:aaa"})
+        if r.headers.get("Authorization") == "Bearer t"
+        else httpx.Response(401, headers={"WWW-Authenticate": challenge})))
+    token = respx_mock.get("https://ghcr.io/token").mock(return_value=httpx.Response(200, json={"token": "t"}))
+    client = RegistryClient(http, str(auth), logins={"ghcr.io": b64("me:tok")})
+    await client.head_digest(parse_image_ref("ghcr.io/o/app:1"))
+    assert token.calls[0].request.headers["Authorization"] == f"Basic {b64('me:tok')}"

@@ -54,9 +54,11 @@ class RegistryClient:
         max_tag_pages: int = 10,
         tag_failure_ttl: float = 900,
         clock: Callable[[], float] = time.monotonic,
+        logins: dict[str, str] | None = None,
     ) -> None:
         self._http = http
         self._config_path = auth_file
+        self._logins = logins or {}  # normalised host -> base64 user:password, memory only
         self._ttl = tag_cache_ttl
         self._max_pages = max_tag_pages
         self._failure_ttl = tag_failure_ttl
@@ -254,6 +256,9 @@ class RegistryClient:
         return token
 
     def _credentials(self, ref: ImageRef) -> str | None:
+        login = self._logins.get("docker.io" if ref.is_docker_hub else ref.registry.lower())
+        if login:
+            return login
         if not self._config_path:
             return None
         try:

@@ -21,6 +21,9 @@ dependencies = [
     "cryptography==50.*",
 ]
 
+[project.scripts]
+docker-credential-docker-manager = "app.credhelper:main_cli"
+
 [project.urls]
 Repository = "https://github.com/dowouk/docker-manager"
 

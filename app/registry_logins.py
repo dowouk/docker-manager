@@ -1,0 +1,134 @@
+"""Registry logins: host normalisation, the generated Docker config that names the
+credential helper, and a live login test. No password is ever written to a file."""
+import base64
+import json
+import os
+import tempfile
+
+import httpx
+
+from app.registry import _PARAM_RE, RegistryError
+
+HELPER_NAME = "docker-manager"
+HELPER_CONFIG = "docker-manager.json"
+_HUB_ALIASES = {"docker.io", "index.docker.io", "registry-1.docker.io", "hub.docker.com"}
+_HUB_DOCKER_KEY = "https://index.docker.io/v1/"
+
+
+def normalise_host(host: str) -> str:
+    value = host.strip().lower()
+    for scheme in ("https://", "http://"):
+        value = value.removeprefix(scheme)
+    value = value.rstrip("/")
+    value = value.removesuffix("/v1").rstrip("/")  # Docker Hub's legacy URL
+    if not value or "/" in value:
+        raise ValueError(f"Not a registry host: {host!r}")
+    return "docker.io" if value in _HUB_ALIASES else value
+
+
+def docker_host(host: str) -> str:
+    """The key Docker uses for this host in config.json."""
+    return _HUB_DOCKER_KEY if host == "docker.io" else host
+
+
+def encode_login(username: str, password: str) -> str:
+    return base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
+def logins_by_host(logins: list[dict]) -> dict[str, str]:
+    """Normalised host -> base64 user:password, for in-memory use."""
+    out: dict[str, str] = {}
+    for item in logins:
+        try:
+            out[normalise_host(item["host"])] = encode_login(item["username"], item["password"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def auth_file_logins(path: str | None) -> dict[str, tuple[str, str]]:
+    """Normalised host -> (username, password) from a Docker config's `auths`."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            auths = json.load(fh).get("auths", {})
+        found: dict[str, tuple[str, str]] = {}
+        for key, entry in auths.items():
+            try:
+                user, _, password = base64.b64decode(entry["auth"], validate=True).decode().partition(":")
+                found.setdefault(normalise_host(key), (user, password))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return found
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _write_private(path: str, data: dict) -> None:
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")  # mkstemp is 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def write_docker_config(
+    config_dir: str, hosts: list[str], db_path: str, key_path: str, base_file: str | None
+) -> str | None:
+    """Write a Docker config that routes these hosts (and those in `base_file`) to the
+    credential helper, plus the helper's own paths-only config. None if no hosts."""
+    names: dict[str, None] = {}
+    for host in (*hosts, *auth_file_logins(base_file)):
+        try:
+            names[normalise_host(host)] = None
+        except ValueError:
+            continue
+    files = [os.path.join(config_dir, "config.json"), os.path.join(config_dir, HELPER_CONFIG)]
+    if not names:
+        for path in files:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        return None
+    os.makedirs(config_dir, mode=0o700, exist_ok=True)
+    _write_private(files[0], {"credHelpers": {docker_host(h): HELPER_NAME for h in names}})
+    _write_private(files[1], {"db": db_path, "key": key_path, "auth_file": base_file})
+    return config_dir
+
+
+async def test_login(http: httpx.AsyncClient, host: str, username: str, password: str) -> None:
+    """Raise RegistryError unless the registry accepts this login."""
+    registry = normalise_host(host)
+    api = "registry-1.docker.io" if registry == "docker.io" else registry
+    url = f"https://{api}/v2/"
+    basic = httpx.BasicAuth(username, password)
+    refused = RegistryError("The registry refused this username or password")
+    try:
+        resp = await http.get(url)
+        if resp.status_code == 401:
+            challenge = resp.headers.get("WWW-Authenticate", "")
+            if challenge.lower().startswith("bearer"):
+                params = dict(_PARAM_RE.findall(challenge))
+                realm = params.get("realm")
+                if not realm:
+                    raise RegistryError(f"{registry} sent an unusable authentication challenge")
+                query = {k: v for k, v in params.items() if k in ("service", "scope")}
+                resp = await http.get(realm, params=query, auth=basic)
+            elif challenge.lower().startswith("basic"):
+                resp = await http.get(url, auth=basic)
+            else:
+                raise RegistryError(f"{registry} sent an unusable authentication challenge")
+            if resp.status_code in (401, 403):
+                raise refused
+        if not resp.is_success:
+            raise RegistryError(f"{registry} returned HTTP {resp.status_code}")
+    except httpx.HTTPError as exc:
+        raise RegistryError(f"{registry} could not be reached") from exc
+
+
+test_login.__test__ = False  # not a pytest test, whatever imports it

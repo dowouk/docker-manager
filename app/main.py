@@ -24,10 +24,11 @@ from app.config import Settings, get_settings
 from app.digest import send_digest
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
-from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner
+from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import SecretBox, load_or_create_key
 from app.registry import RegistryClient
+from app.registry_logins import logins_by_host, write_docker_config
 from app.sessions import SessionStore
 from app.settings_service import SettingsService, key_path
 from app.store import Store
@@ -159,11 +160,32 @@ def _log_task_failure(task: asyncio.Task) -> None:
         log.error("Background check after a job failed", exc_info=exc)
 
 
+def apply_registry_logins(app: FastAPI) -> None:
+    """Checks use saved logins from memory; `docker compose pull` gets them through
+    the credential helper named in a generated config (paths only, no secrets)."""
+    state = app.state
+    logins = state.settings_service.registry_logins()
+    state.registry = RegistryClient(
+        state.http, state.settings.registry_auth_file, logins=logins_by_host(logins)
+    )
+    db_path = getattr(state.store, "path", None)
+    if db_path is None:  # a store without a known file: nothing for the helper to open
+        set_docker_config_dir(None)
+        return
+    startup = state.startup_settings
+    set_docker_config_dir(write_docker_config(
+        os.path.join(startup.data_dir, "docker-config"),
+        [item["host"] for item in logins if isinstance(item.get("host"), str)],
+        db_path,
+        key_path(startup),
+        state.settings.registry_auth_file,
+    ))
+
+
 def apply_settings(app: FastAPI) -> None:
     """Make a saved settings change take effect in the running app."""
     app.state.settings = app.state.settings_service.effective()
-    # Registry logins: Task 6 rebuilds app.state.registry here (in-memory logins
-    # plus a credential-helper config). Until then the startup client is kept.
+    apply_registry_logins(app)
     app.state.templates.env.globals["server_name"] = app.state.settings.server_name
     if app.state.scheduler is not None:
         from app.scheduler import reschedule  # deferred: scheduler imports this module
@@ -222,8 +244,9 @@ def create_app(
     app.state.settings = settings_service.effective()
     app.state.docker = docker_client
     app.state.http = http
-    app.state.registry = RegistryClient(http, app.state.settings.registry_auth_file)
+    app.state.startup_settings = settings
     app.state.store = store
+    apply_registry_logins(app)
     app.state.runner = runner
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()

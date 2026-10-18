@@ -23,3 +23,13 @@ def settings(tmp_path, monkeypatch) -> Settings:
         monkeypatch.delenv(key, raising=False)
     get_settings.cache_clear()
     return Settings(_env_file=None)
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_config_dir():
+    """apply_settings sets a process-wide config dir; don't let it leak between tests."""
+    from app.jobs import set_docker_config_dir
+
+    set_docker_config_dir(None)
+    yield
+    set_docker_config_dir(None)

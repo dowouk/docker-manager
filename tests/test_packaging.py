@@ -91,3 +91,10 @@ def test_dockerfile_bounds_graceful_shutdown():
     cmd = json.loads(cmd_line[4:])
     i = cmd.index("--timeout-graceful-shutdown")
     assert cmd[i + 1] == "5"
+
+
+def test_credential_helper_entry_point():
+    from importlib.metadata import entry_points
+
+    found = {e.name: e.value for e in entry_points(group="console_scripts")}
+    assert found["docker-credential-docker-manager"] == "app.credhelper:main_cli"

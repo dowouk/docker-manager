@@ -17,6 +17,15 @@ _ENV_KEYS = ("PATH", "HOME", "LANG")
 _ENV_PREFIXES = ("LC_", "DOCKER_", "COMPOSE_")
 
 
+_docker_config_dir: str | None = None
+
+
+def set_docker_config_dir(path: str | None) -> None:
+    """The generated Docker config (credential-helper entries) to use for children."""
+    global _docker_config_dir
+    _docker_config_dir = path
+
+
 def subprocess_env() -> dict[str, str]:
     """Environment for child processes: only what docker/compose need.
 
@@ -33,6 +42,11 @@ def subprocess_env() -> dict[str, str]:
         for key, value in os.environ.items()
         if key in _ENV_KEYS or key.startswith(_ENV_PREFIXES)
     }
+    if _docker_config_dir:
+        # The generated config names the credential helper and wins over everything:
+        # it also covers the hosts in the 0.1 auth file.
+        env["DOCKER_CONFIG"] = _docker_config_dir
+        return env
     auth_file = os.environ.get("REGISTRY_AUTH_FILE")
     if auth_file and "DOCKER_CONFIG" not in env and os.path.basename(auth_file) == "config.json":
         env["DOCKER_CONFIG"] = os.path.dirname(auth_file) or "."

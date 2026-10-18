@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -8,6 +10,7 @@ import httpx
 import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
+from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.jobs import BUSY_MESSAGE, BusyError
 from app.config import Settings
@@ -776,3 +779,30 @@ def test_health_timeout_read_at_call_time(client_for, seeded, monkeypatch):
     ctx = type("Ctx", (), {"log": staticmethod(lambda t: None)})()
     asyncio.run(runner.submitted[0][3](ctx))
     assert seen["health_timeout"] == 77
+
+
+def test_apply_settings_writes_helper_config(settings, tmp_path):
+    from app.jobs import subprocess_env
+
+    app = make_app(settings, tmp_path)
+    app.state.settings_service.save_registry_logins(
+        [{"host": "ghcr.io", "username": "me", "password": "s3cret-pw-xyz"}], "me", "added ghcr.io")
+    apply_settings(app)
+    config_dir = tmp_path / "docker-config"
+    cfg = json.loads((config_dir / "config.json").read_text())
+    assert cfg == {"credHelpers": {"ghcr.io": "docker-manager"}}
+    assert subprocess_env()["DOCKER_CONFIG"] == str(config_dir)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert b"s3cret-pw-xyz" not in path.read_bytes(), path
+    creds = app.state.registry._credentials(parse_image_ref("ghcr.io/o/app:1"))
+    assert base64.b64decode(creds) == b"me:s3cret-pw-xyz"
+
+
+def test_startup_picks_up_saved_logins(settings, tmp_path):
+    first = make_app(settings, tmp_path)
+    first.state.settings_service.save_registry_logins(
+        [{"host": "ghcr.io", "username": "me", "password": "pw"}], "me", "x")
+    second = make_app(settings, tmp_path)
+    assert second.state.registry._credentials(parse_image_ref("ghcr.io/o/app:1"))
+    assert (tmp_path / "docker-config" / "config.json").exists()

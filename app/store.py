@@ -84,6 +84,7 @@ def _from_iso(value: str | None) -> datetime | None:
 
 class Store:
     def __init__(self, path: str) -> None:
+        self.path = path
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)

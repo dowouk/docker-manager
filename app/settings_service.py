@@ -147,6 +147,23 @@ def _form_string(field: Field, value) -> str:
     return str(value)
 
 
+def _logins_from_plain(plain: str | None) -> list[dict]:
+    try:
+        data = json.loads(plain) if plain is not None else []
+    except ValueError:
+        return []
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def load_registry_logins(store: Store, box: SecretBox) -> list[dict]:
+    """Decrypted registry logins, or [] if none are saved or they can't be read.
+    Lets the credential helper read them without building a SettingsService."""
+    stored = store.load_settings().get(REGISTRY_LOGINS)
+    token = stored.get("enc") if isinstance(stored, dict) else None
+    plain = box.decrypt(token) if isinstance(token, str) else None
+    return _logins_from_plain(plain)
+
+
 class SettingsService:
     def __init__(self, base: Settings, store: Store, box: SecretBox) -> None:
         self._base = base
@@ -243,8 +260,4 @@ class SettingsService:
         stored = self._store.load_settings().get(REGISTRY_LOGINS)
         if stored is None:
             return []
-        plain = self._decrypt(REGISTRY_LOGINS, stored)
-        try:
-            return json.loads(plain) if plain is not None else []
-        except ValueError:
-            return []
+        return _logins_from_plain(self._decrypt(REGISTRY_LOGINS, stored))
