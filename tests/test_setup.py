@@ -164,7 +164,7 @@ def test_creating_the_admin_closes_setup(app, client, tmp_path):
     # an anonymous visitor is back to the sign-in page, and /setup is gone for everyone
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as other:
         assert other.get("/setup", headers=HTML).headers["location"] == "/auth/login"
-        assert other.post("/setup/token", data={"token": token}).status_code in (302, 401, 403)
+        assert other.post("/setup/token", data={"token": token}).status_code == 401
         sign_in(other, app)
         assert other.get("/setup").status_code == 404
         assert other.get("/setup/admin").status_code == 404
