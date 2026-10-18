@@ -159,6 +159,18 @@ def _page(title: str, body: str, status: int) -> HTMLResponse:
 
 def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None:
     oauth = OAuth()
+    if not settings.entra_enabled:
+        # Task 7 replaces this; until then Microsoft sign-in is simply unavailable.
+        app.state.oauth = oauth
+
+        @app.get("/auth/login", include_in_schema=False)
+        @app.get("/auth/callback", include_in_schema=False)
+        async def not_set_up():
+            return _page("Microsoft sign-in isn't set up",
+                         "Ask the administrator to set up Microsoft sign-in.", 503)
+
+        _finish_setup(app, sessions)
+        return
     oauth.register(
         name="entra",
         client_id=settings.azure_client_id,
@@ -170,10 +182,12 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
         client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
     )
     app.state.oauth = oauth
-    redirect_uri = settings.public_url.rstrip("/") + "/auth/callback"
+    public = settings.public_url.rstrip("/") if settings.public_url else None
 
     @app.get("/auth/login", include_in_schema=False)
     async def login(request: Request):
+        redirect_uri = (public + "/auth/callback" if public
+                        else str(request.url_for("callback")))
         return await oauth.entra.authorize_redirect(request, redirect_uri)
 
     @app.get("/auth/callback", include_in_schema=False)
@@ -200,6 +214,10 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
         request.session["csrf"] = secrets.token_urlsafe(32)
         return RedirectResponse("/", status_code=302)
 
+    _finish_setup(app, sessions)
+
+
+def _finish_setup(app: FastAPI, sessions: SessionStore) -> None:
     @app.post("/auth/logout", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def logout(request: Request):
         request.session.clear()

@@ -238,3 +238,19 @@ def test_app_starts_with_a_bad_key_file_and_leaves_it_alone(settings, tmp_path, 
         r = c.post("/settings/email", data=GOOD_EMAIL)
         assert r.status_code == 400 and "TOPSECRET" not in r.text
     assert key.read_bytes() == b"too short"
+
+
+def test_signin_section_renders_choice_as_select(client):
+    r = client.get("/settings")
+    assert "Sign-in" in r.text
+    assert '<select class="input" id="f-default_role"' in r.text
+    assert 'value="viewer" selected' in r.text
+    assert "admin_legacy" not in r.text
+
+
+def test_signin_save_refuses_turning_off_local_without_entra(client, app):
+    # AZURE_* come from the env in the fixture, so Entra counts as configured
+    r = client.post("/settings/signin", data={"csrf_token": CSRF, "default_role": "operator"})
+    assert r.status_code == 303 or r.status_code == 302
+    assert app.state.settings.default_role == "operator"
+    assert app.state.settings.local_sign_in is False

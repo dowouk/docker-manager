@@ -459,3 +459,17 @@ def test_helper_rejects_plain_route_under_static(settings):
 
     with pytest.raises(AssertionError, match="not a StaticFiles mount"):
         assert_all_routes_guarded(app)
+
+
+def test_login_without_entra_is_503_page(settings, monkeypatch):
+    for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "PUBLIC_URL"):
+        monkeypatch.delenv(k)
+    from app.config import Settings
+
+    app = make_app(Settings(_env_file=None))
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        r = c.get("/auth/login")
+        assert r.status_code == 503
+        assert "Microsoft sign-in isn't set up" in r.text
+        assert c.get("/auth/signed-out").status_code == 200
+        assert c.get("/").status_code == 401

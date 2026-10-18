@@ -25,12 +25,18 @@
         </label>
         {% else %}
         <label for="f-{{ f.name }}">{{ f.label }}</label>
+        {% if f.kind == "choice" %}
+        <select class="input" id="f-{{ f.name }}" name="{{ f.name }}"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+          {% for val, text in f.choices %}<option value="{{ val }}"{% if val == f.value %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+        {% else %}
         <input class="input" id="f-{{ f.name }}" name="{{ f.name }}"
           {% if f.kind == "secret" %}type="password" autocomplete="new-password" value=""
           {% elif f.kind in ("int", "float") %}type="number" step="any" inputmode="decimal"{% if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}{% if f.maximum is not none %} max="{{ f.maximum }}"{% endif %} value="{{ f.value }}"
           {% elif f.kind == "email" %}type="email" autocomplete="off" value="{{ f.value }}"
           {% else %}type="text" autocomplete="off" spellcheck="false" value="{{ f.value }}"{% endif %}
           {% if f.locked %}disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+        {% endif %}
         {% endif %}
         {% if f.error %}<p class="field-error" role="alert">{{ f.error }}</p>{% endif %}
         <p class="field-help" id="h-{{ f.name }}">

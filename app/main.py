@@ -36,7 +36,7 @@ from app.registry_logins import (
 )
 from app.sessions import SessionStore
 from app.settings_service import (
-    FIELDS, KEY_UNUSABLE_MESSAGE, SECTIONS, SettingsError, SettingsService, key_path,
+    FIELDS, KEY_UNUSABLE_MESSAGE, _choices_for, SECTIONS, SettingsError, SettingsService, key_path,
 )
 from app.store import Store
 from app import view
@@ -545,6 +545,7 @@ def create_app(
             out.append({
                 "name": f.name, "label": f.label, "kind": f.kind, "help": f.help,
                 "minimum": f.minimum, "maximum": f.maximum,
+                "choices": _choices_for(f, value) if f.kind == "choice" else (),
                 "value": value, "locked": locked,
                 "error": (errors or {}).get(f.name),
                 "has_secret": f.kind == "secret" and service.has_secret(f.name),

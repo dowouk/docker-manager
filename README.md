@@ -220,10 +220,10 @@ Settings can be environment variables in the compose file, and many can also be 
 | Variable | Required | Default | Settings page | What it's for |
 | --- | --- | --- | --- | --- |
 | `SERVER_NAME` | No | `Docker Manager` | Yes | Name shown on the page and in the email |
-| `PUBLIC_URL` | Yes | – | No | The dashboard's address, for example `https://updates.server1.example.com` |
-| `AZURE_TENANT_ID` | Yes | – | No | Directory (tenant) ID – the long code, not your domain name |
-| `AZURE_CLIENT_ID` | Yes | – | No | Application (client) ID |
-| `AZURE_CLIENT_SECRET` | Yes | – | No | Client secret **Value** (keep in `.env`) |
+| `PUBLIC_URL` | No | – | Yes | The dashboard's address, for example `https://updates.server1.example.com` |
+| `AZURE_TENANT_ID` | No | – | Yes | Directory (tenant) ID – the long code, not your domain name |
+| `AZURE_CLIENT_ID` | No | – | Yes | Application (client) ID |
+| `AZURE_CLIENT_SECRET` | No | – | Yes | Client secret **Value** (keep in `.env`) |
 | `SESSION_SECRET` | No | – | – | No longer needed – ignored if set, so 0.1 `.env` files still work |
 | `ALLOWED_EMAILS` | No | – | No | Comma-separated **sign-in names** (UPNs) allowed in |
 | `ALLOWED_GROUP_ID` | No | – | No | Object ID of an Entra group allowed in; needs a groups claim |
@@ -238,12 +238,16 @@ Settings can be environment variables in the compose file, and many can also be 
 | `TZ` | No | `Europe/London` | Yes | Time zone for the schedule and the times shown |
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | Yes | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
 | `REGISTRY_AUTH_FILE` | No | – | Logins can be added there instead | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
+| `LOCAL_SIGN_IN` | No | `true` | Yes | Allow local accounts (email and password kept on this server) |
+| `HIDE_LOCAL_FOR_NON_ADMINS` | No | `false` | Yes | Show local sign-in only behind an "Admin sign-in" link |
+| `REQUIRE_TOTP_ADMINS` | No | `true` | Yes | Require two-step sign-in for local Admin accounts |
+| `DEFAULT_ROLE` | No | `viewer` | Yes | Role given to new Microsoft sign-ins: `pending`, `viewer` or `operator` |
 | `DATA_DIR` | No | `/data` | No | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 | `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | No | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 
 The email is only sent when the connection string, sender and recipients are all set – by `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO`, or on the Settings page.
 
-`SECRET_KEY_FILE`, `DATA_DIR`, `COMPOSE_ROOT`, `PUBLIC_URL` and the `AZURE_*` values are only ever set with environment variables.
+`SECRET_KEY_FILE`, `DATA_DIR` and `COMPOSE_ROOT` are only ever set with environment variables.
 
 ## Private images
 
