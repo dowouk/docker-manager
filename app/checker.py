@@ -10,7 +10,7 @@ from app.config import Settings
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo, Mount
 from app.registry import NotFoundError, RegistryClient
-from app.rules import Rules, tag_allowed
+from app.rules import Rules, TagFilter
 from app.versions import find_version_updates, parse_version_tag
 
 _MAILCOW_PROJECT = "mailcowdockerized"
@@ -158,9 +158,12 @@ async def _check_image(image_ref: str, registry: RegistryClient) -> _Remote:
     return remote
 
 
-def _status_for(c: ContainerInfo, remote: _Remote | None, rules: Rules) -> ContainerStatus:
+def _status_for(
+    c: ContainerInfo, remote: _Remote | None, rules: Rules,
+    allowed_tags: list[str] | None = None, tag_warnings: list[str] | None = None,
+) -> ContainerStatus:
     updatable, reason = _updatable(c)
-    warnings = list(rules.warnings)
+    warnings = [*rules.warnings, *(tag_warnings or [])]
 
     def make(status: Status, **kw) -> ContainerStatus:
         return ContainerStatus(
@@ -191,9 +194,8 @@ def _status_for(c: ContainerInfo, remote: _Remote | None, rules: Rules) -> Conta
     else:
         status = Status.NEWER_BUILD
     minor = major = None
-    if remote.tags is not None:
-        allowed = [t for t in remote.tags if tag_allowed(t, rules, warnings)]
-        updates = find_version_updates(ref.tag, allowed)
+    if allowed_tags is not None:
+        updates = find_version_updates(ref.tag, allowed_tags)
         minor, major = updates.minor, updates.major
     return make(
         status,
@@ -226,6 +228,17 @@ async def check_all(
         zip(refs, await asyncio.gather(*(_check_image(r, registry) for r in refs)))
     )
 
+    # Pattern matching is CPU work: do it off the event loop, one thread job per container.
+    async def filtered(c: ContainerInfo) -> tuple[list[str] | None, list[str]]:
+        remote = remotes.get(c.image_ref)
+        if not (rules[c.id].watch and remote is not None and remote.tags is not None):
+            return None, []
+        tag_filter = TagFilter(rules[c.id])
+        allowed = await asyncio.to_thread(tag_filter.filter, remote.tags)
+        return allowed, tag_filter.warnings
+
+    tag_results = await asyncio.gather(*(filtered(c) for c in regular))
+
     mailcow = None
     if mailcow_containers and not os.path.isdir(settings.mailcow_dir):
         # Mailcow runs here but its folder isn't mounted: say so rather than hide it.
@@ -240,6 +253,9 @@ async def check_all(
 
     return CheckResult(
         checked_at=datetime.now(timezone.utc),
-        containers=[_status_for(c, remotes.get(c.image_ref), rules[c.id]) for c in regular],
+        containers=[
+            _status_for(c, remotes.get(c.image_ref), rules[c.id], *tag_results[i])
+            for i, c in enumerate(regular)
+        ],
         mailcow=mailcow,
     )

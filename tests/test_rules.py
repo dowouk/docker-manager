@@ -151,7 +151,7 @@ async def test_tag_filter_applies_per_container(tmp_path, settings):
     reg = FakeRegistry({"pg:16.2": "sha256:old"}, {"pg:16.2": ["16.3", "16.4-alpine", "17.0"]})
     c = info(tmp_path, name="db", image="pg:16.2", digests=["pg@sha256:old"])
     plain = await check_all([c], reg, settings, None)
-    assert plain.containers[0].minor_update == "16.4-alpine" or plain.containers[0].minor_update == "16.3"
+    assert plain.containers[0].minor_update == "16.3"
     result = await check_all(
         [c], reg, settings, None,
         rules_for=lambda _: Rules(exclude_tags=("16\\.3",), include_tags=("1.*",)),
@@ -162,11 +162,11 @@ async def test_tag_filter_applies_per_container(tmp_path, settings):
 
 
 async def test_pathological_rule_does_not_stop_check(tmp_path, settings):
-    reg = FakeRegistry({"pg:16.2": "sha256:old"}, {"pg:16.2": ["16.3", "a" * 40 + "!"]})
+    reg = FakeRegistry({"pg:16.2": "sha256:old"}, {"pg:16.2": ["16.3", "1" * 40 + "!"]})
     c = info(tmp_path, name="db", image="pg:16.2", digests=["pg@sha256:old"])
     started = time.monotonic()
     result = await check_all([c], reg, settings, None,
-                             rules_for=lambda _: Rules(exclude_tags=("(a|aa)+$",)))
+                             rules_for=lambda _: Rules(exclude_tags=("(1|11)+$",)))
     assert time.monotonic() - started < 2
     assert result.containers[0].minor_update == "16.3"
     assert len(result.containers[0].rule_warnings) == 1
@@ -203,3 +203,125 @@ async def test_not_watched_and_notify_false_in_views(tmp_path, settings):
     assert not check_failed(result)
     subject, html, _ = render_digest(result, settings)
     assert subject.endswith("all up to date") and "quiet" not in html and "off" not in html
+
+
+PROBES = ["((((a{50}){50}){50}){50})", "((((a{100}){100}){100}){100})", "(a+)+", "(a{2}){3}",
+          "a{21}", "a{1,21}", "(a)\\1", "(?=a)", "(?<!a)b", "(?P=x)", "a{2}{3}", "(?(1)a|b)"]
+GOOD = ["16\\..*", "^v?\\d+$", "(a|aa)+$", "(?:1|2)\\.\\d+", "a{20}", "[a-z]{1,20}", "x{2}y{3}",
+        "(?i)RC.*", "[(]{2}", "a+?b*", "(?P<n>a)b", "\\{3\\}"]
+
+
+@pytest.mark.parametrize("pattern", PROBES)
+def test_dangerous_patterns_rejected_before_compiling(pattern, store, monkeypatch):
+    import regex
+    def boom(*a, **k):
+        raise AssertionError("compiled")
+    monkeypatch.setattr(regex, "compile", boom)
+    monkeypatch.setattr(regex, "fullmatch", boom)
+    with pytest.raises(RulesError) as exc:
+        RulesStore(store).save("k", {"include_tags": pattern}, "u")
+    assert "include_tags" in exc.value.errors
+    rules = RulesStore(store).effective(container(**{
+        "docker-manager.exclude_tags": f"keep;{pattern}"}))
+    assert rules.exclude_tags == ("keep",)
+    assert len(rules.warnings) == 1 and "ignored" in rules.warnings[0]
+
+
+@pytest.mark.parametrize("pattern", GOOD)
+def test_ordinary_patterns_accepted(pattern, store):
+    RulesStore(store).save("k", {"include_tags": pattern}, "u")
+
+
+async def test_many_slow_patterns_do_not_stall_the_loop(tmp_path, settings):
+    import asyncio
+    tags = ["1" * 30 + str(i) + "!" for i in range(20)]
+    slow = tuple(f"(1|11)+{i}*$" for i in range(10))
+    reg = FakeRegistry({"pg:1.2": "sha256:old"}, {"pg:1.2": tags})
+    cs = [info(tmp_path, name=f"db{i}", image="pg:1.2", digests=["pg@sha256:old"])
+          for i in range(2)]
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    started = time.monotonic()
+    result = await check_all(cs, reg, settings, None,
+                             rules_for=lambda _: Rules(exclude_tags=slow))
+    elapsed = time.monotonic() - started
+    task.cancel()
+    assert elapsed < 2
+    assert ticks > 20
+    assert all(c.rule_warnings for c in result.containers)
+
+
+def test_only_version_like_tags_are_matched():
+    from app.rules import TagFilter
+    f = TagFilter(Rules(exclude_tags=("(a|aa)+$",)))
+    assert f.filter(["latest", "a" * 40 + "!", "1.2"]) == ["1.2"]
+    assert f.warnings == []
+
+
+def test_pattern_that_times_out_is_switched_off(monkeypatch):
+    import regex
+    from app.rules import TagFilter
+    calls = []
+    real = regex.fullmatch
+
+    def spy(p, t, **k):
+        calls.append(t)
+        return real(p, t, **k)
+
+    monkeypatch.setattr(regex, "fullmatch", spy)
+    f = TagFilter(Rules(exclude_tags=("(1|11)+$",)))
+    assert f.allowed("1" * 40 + "!") and f.allowed("1" * 41 + "!")
+    assert len(calls) == 1
+
+
+def test_match_budget_stops_matching(monkeypatch):
+    import app.rules as r
+    monkeypatch.setattr(r, "MATCH_BUDGET", 0.0)
+    f = r.TagFilter(Rules(include_tags=("1.*",)))
+    assert f.allowed("1.1") is True  # first call spends the budget
+    assert f.allowed("1.2") is False
+    assert any("took too long" in w for w in f.warnings)
+
+
+@pytest.mark.parametrize("bad", [5, None, [1], "abc", ["(a|b"], {"x": 1}])
+def test_hand_edited_list_values_ignored(store, bad):
+    store.save_settings({"container_rules": {"site/web": {"include_tags": bad}}})
+    rules = RulesStore(store).effective(container())
+    assert rules.include_tags == ()
+    if bad != ["(a|b"]:  # an unbalanced pattern is only found at match time
+        assert rules.warnings
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("watch", "no"), ("watch", None), ("notify", 0),
+    ("release_notes", "javascript:alert(1)"), ("release_notes", 5)])
+def test_hand_edited_scalar_values_ignored(store, field, bad):
+    store.save_settings({"container_rules": {"site/web": {field: bad}}})
+    rules = RulesStore(store).effective(container())
+    assert rules == Rules(warnings=rules.warnings) and rules.warnings
+
+
+def test_hand_edited_row_shapes(store):
+    for raw in ({"site/web": "x"}, {"site/web": None}, [], "x", 5):
+        store.save_settings({"container_rules": raw})
+        assert RulesStore(store).effective(container()) == Rules()
+        assert RulesStore(store).snapshot()(container()) == Rules()
+
+
+def test_snapshot_reads_the_row_once(store, monkeypatch):
+    rs = RulesStore(store)
+    rs.save("site/web", {"watch": "no"}, "u")
+    reads = []
+    real = store.load_settings
+    monkeypatch.setattr(store, "load_settings", lambda: reads.append(1) or real())
+    fn = rs.snapshot()
+    for _ in range(5):
+        assert not fn(container()).watch
+    assert len(reads) == 1

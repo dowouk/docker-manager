@@ -64,10 +64,13 @@ def test_invalid_input_re_shows_form(settings, tmp_path, seeded):  # noqa: F811
 
 
 def test_label_set_field_is_disabled(settings, tmp_path, seeded):  # noqa: F811
-    seeded.containers[0].container.labels = {"docker-manager.enable": "false"}
+    seeded.containers[0].container.labels = {"docker-manager.enable": "false",
+                                              "docker-manager.include_tags": "1.*"}
     app = make_app(settings, tmp_path, seeded)
     with logged_in_client(app, Role.OPERATOR) as c:
         html = c.get("/containers/site/web/rules").text
     assert "Set by a label on the container" in html
     assert 'name="watch" disabled' in html
+    assert 'name="include_tags" type="text" autocomplete="off" spellcheck="false" value="1.*" disabled' in html
     assert 'name="exclude_tags" disabled' not in html
+    assert 'name="exclude_tags" type="text" autocomplete="off" spellcheck="false" value="" disabled' not in html

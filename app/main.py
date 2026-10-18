@@ -155,7 +155,7 @@ async def run_check(app: FastAPI) -> CheckResult:
                 mailcow_check=functools.partial(
                     check_mailcow, state.settings.mailcow_dir, run_capture, state.http
                 ),
-                rules_for=state.rules.effective,
+                rules_for=state.rules.snapshot(),
             )
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
