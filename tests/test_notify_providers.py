@@ -318,7 +318,8 @@ def test_acs_client_gets_timeouts_and_a_low_retry_count(monkeypatch):
     from azure.communication.email import EmailClient
     monkeypatch.setattr(EmailClient, "from_connection_string", from_connection_string)
     send_acs(None)
-    assert seen["kw"] == {"connection_timeout": 10, "read_timeout": 20, "retry_total": 1}
+    assert seen["kw"] == {"connection_timeout": 10, "read_timeout": 20, "retry_total": 1,
+                          "polling_interval": 2}
     assert seen["timeout"] == 25
 
 

@@ -139,9 +139,11 @@ class ACSProvider:
         else:
             from azure.communication.email import EmailClient
 
+            # The SDK polls every 30 s by default, longer than our result timeout.
             client = EmailClient.from_connection_string(
                 config["connection_string"], connection_timeout=ACS_CONNECT_TIMEOUT,
-                read_timeout=ACS_READ_TIMEOUT, retry_total=ACS_RETRIES)
+                read_timeout=ACS_READ_TIMEOUT, retry_total=ACS_RETRIES,
+                polling_interval=2)
         poller = client.begin_send({
             "senderAddress": config["sender"],
             "recipients": {"to": [{"address": a} for a in message.recipients]},
