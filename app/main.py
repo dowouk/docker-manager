@@ -669,13 +669,10 @@ def create_app(
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
         """Liveness for the container HEALTHCHECK: public, no detail, never cached."""
-        try:
-            with app.state.store._lock:
-                app.state.store._db.execute("SELECT 1").fetchone()
-        except Exception:
-            body, status = {"status": "unavailable"}, 503
-        else:
+        if app.state.store.ping():
             body, status = {"status": "ok"}, 200
+        else:
+            body, status = {"status": "unavailable"}, 503
         return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
     return app
@@ -691,8 +688,14 @@ class HealthzAccessFilter(logging.Filter):
         return True
 
 
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO)
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, HealthzAccessFilter) for f in access.filters):
+        access.addFilter(HealthzAccessFilter())
+
+
 def build_app() -> FastAPI:
     """Factory for `uvicorn --factory app.main:build_app`."""
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("uvicorn.access").addFilter(HealthzAccessFilter())
+    configure_logging()
     return create_app(get_settings())

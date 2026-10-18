@@ -53,7 +53,10 @@ EXPECTED_AUTH_ROUTES = {
 
 
 def assert_all_routes_guarded(app: FastAPI) -> None:
-    """Every route outside /auth/ and /static/ must refuse anonymous requests.
+    """Every route outside /auth/, /static/ and /healthz must refuse anonymous requests.
+
+    /healthz must answer 200/503 and never redirect; /setup* is skipped only while
+    ``app.state.setup.is_open()`` is true.
 
     Also asserts the /auth/* route set is exactly the expected one, so a stray
     route under the public prefix cannot become public unnoticed.

@@ -201,12 +201,13 @@ def test_disabled_user_is_signed_out_on_next_request(settings):
         rec = sign_in(c, app, Role.VIEWER)
         assert c.get("/").status_code == 200
         app.state.users.update(rec.id, disabled=True)
-        # disabling normally ends sessions too; a stale one must still be refused
+        # disabling normally ends sessions; a session that survives anyway must be refused
         set_session(c, app, {"user_id": rec.id, "csrf": CSRF})
         before = _session_rows(app)
         r = c.get("/", headers=HTML)
         assert r.status_code == 302 and r.headers["location"] == "/auth/login"
         assert _session_rows(app) < before
+        assert app.state.sessions.load(c.cookies.get("session") or "x") is None
         assert "max-age=0" in r.headers["set-cookie"].lower()
     assert CALLS == ["index"]
 
@@ -281,6 +282,65 @@ def test_session_with_user_id_has_it_in_the_column(settings):
         rec = sign_in(c, app, Role.VIEWER)
     store = app.state.sessions._store
     assert store._db.execute("SELECT user_id FROM sessions").fetchone()[0] == rec.id
+
+
+def test_anonymous_session_survives_guard_refusal(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        set_session(c, app, {"oauth_state": "abc", "csrf": CSRF})
+        token = c.cookies["session"]
+        r = c.get("/", headers=HTML)
+        assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+        assert "set-cookie" not in r.headers
+        assert app.state.sessions.load(token) == {"oauth_state": "abc", "csrf": CSRF}
+        assert c.get("/", headers={"Accept": "application/json"}).status_code == 401
+        assert app.state.sessions.load(token) is not None
+
+
+def test_users_lookup_failure_fails_closed(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False,
+                    raise_server_exceptions=False) as c:
+        sign_in(c, app, Role.ADMIN)
+
+        def boom(_id):
+            raise RuntimeError("db down")
+
+        app.state.users.get = boom
+        r = c.get("/", headers=HTML)
+        assert r.status_code in (500, 401)
+    assert CALLS == []
+
+
+def _ws_closes_1008(app, c):
+    from starlette.testclient import WebSocketDisconnect
+
+    app.add_api_websocket_route("/ws", lambda ws: None)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/ws"):
+            pass
+    return exc.value.code == 1008
+
+
+def test_websocket_refused_for_pending_and_stale_user(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver") as c:
+        sign_in(c, app, Role.PENDING)
+        assert _ws_closes_1008(app, c)
+    with TestClient(app, base_url="https://testserver") as c:
+        set_session(c, app, {"user_id": 9999, "csrf": CSRF})
+        assert _ws_closes_1008(app, c)
+
+
+@pytest.mark.parametrize("path", ["/setupx", "/setup/../x", "/setup/%2e%2e/x"])
+def test_setup_lookalike_paths_not_public_while_open(settings, path):
+    app = make_app(settings, setup_open=lambda: True)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        r = c.get(path, headers=HTML)
+        assert r.status_code in (302, 401, 404)
+        if r.status_code == 302:
+            assert r.headers["location"] in ("/setup", "/auth/login")
+    assert CALLS == []
 
 
 # ---- CSRF ----

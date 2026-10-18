@@ -42,7 +42,7 @@ def test_healthz_head_works(app):
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_healthz_503_when_store_fails(app):
+def test_healthz_503_when_store_fails(app, caplog):
     class Broken:
         def execute(self, *a, **kw):
             raise RuntimeError("database is locked: /secret/path")
@@ -51,8 +51,10 @@ def test_healthz_503_when_store_fails(app):
             pass
 
     app.state.store._db = Broken()
-    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-        r = c.get("/healthz")
+    with caplog.at_level(logging.WARNING, logger="app.store"):
+        with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+            r = c.get("/healthz")
+    assert "RuntimeError" in caplog.text and "locked" not in caplog.text
     assert r.status_code == 503 and r.json() == {"status": "unavailable"}
     assert "secret" not in r.text and r.headers["cache-control"] == "no-store"
 
@@ -86,6 +88,20 @@ def test_access_log_filter_drops_only_healthz():
     assert f.filter(_record("/")) is True
     assert f.filter(_record("/healthzz")) is True
     assert f.filter(logging.LogRecord("x", logging.INFO, __file__, 1, "plain", None, None)) is True
+
+
+def test_build_app_logging_attaches_filter_once():
+    from app.main import configure_logging
+
+    access = logging.getLogger("uvicorn.access")
+    before = list(access.filters)
+    access.filters[:] = [f for f in before if not isinstance(f, HealthzAccessFilter)]
+    try:
+        configure_logging()
+        configure_logging()
+        assert sum(isinstance(f, HealthzAccessFilter) for f in access.filters) == 1
+    finally:
+        access.filters[:] = before
 
 
 def test_dockerfile_healthcheck_targets_healthz():

@@ -133,8 +133,10 @@ class AuthGuardMiddleware:
         session = scope.get("session")
         user = self._load(session)
         if user is None:
-            if isinstance(session, dict):
-                session.clear()  # persisted as a sign-out by the session middleware
+            if isinstance(session, dict) and session.get("user_id") is not None:
+                # Signed-in session whose user is gone/disabled: persisted as a sign-out.
+                # Anonymous sessions (OAuth state, CSRF) are left alone.
+                session.clear()
             await self._refuse(scope, receive, send, "/auth/login")
             return
         if user.role == Role.PENDING and not _pending_may_visit(path):

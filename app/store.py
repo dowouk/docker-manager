@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -113,7 +114,20 @@ def _from_iso(value: str | None) -> datetime | None:
     return dt
 
 
+log = logging.getLogger(__name__)
+
+
 class Store:
+    def ping(self) -> bool:
+        """True if the database answers a trivial query."""
+        try:
+            with self._lock:
+                self._db.execute("SELECT 1").fetchone()
+            return True
+        except Exception as exc:
+            log.warning("Health check: the database didn't answer (%s)", type(exc).__name__)
+            return False
+
     def close(self) -> None:
         with self._lock:
             self._db.close()
