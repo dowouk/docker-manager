@@ -18,6 +18,7 @@ def settings(tmp_path, monkeypatch) -> Settings:
     for key in (
         "ALLOWED_GROUP_ID", "ALLOWED_EMAILS", "ACS_CONNECTION_STRING",
         "DIGEST_FROM", "DIGEST_TO", "REGISTRY_AUTH_FILE", "HEALTH_TIMEOUT_SECONDS",
+        "SECRET_KEY_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
     get_settings.cache_clear()

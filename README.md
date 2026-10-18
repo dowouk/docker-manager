@@ -215,6 +215,7 @@ All settings are environment variables in the compose file. The Entra app regist
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
 | `REGISTRY_AUTH_FILE` | No | – | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
 | `DATA_DIR` | No | `/data` | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
+| `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 
 The email is only sent when `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are all set.
 
