@@ -121,6 +121,15 @@ def test_subscribed_skips_disabled_and_unsubscribed(settings, tmp_path):
     assert len(cs.subscribed("digest")) == 2 and cs.subscribed("updates_found") == []
 
 
+def test_provider_switch_drops_old_secret(settings, tmp_path):
+    cs = make(settings, tmp_path)
+    ch = cs.save(new(), ACS, "me")
+    out = cs.save(Channel(ch.id, "Ops", "smtp2go", {}, ["a@x.com"], {"digest"}),
+                  {"sender": "a@x.com", "api_key": "KEY"}, "me")
+    assert "connection_string" not in out.config and out.config["api_key"] == "KEY"
+    assert "connection_string" not in cs.get(ch.id).config
+
+
 def test_unreadable_row_is_not_overwritten(settings, tmp_path):
     store = Store(str(tmp_path / "d.db"))
     make(settings, tmp_path, store=store).save(new(), ACS, "me")
@@ -164,6 +173,7 @@ def test_migration_env_wins(settings, tmp_path, monkeypatch):
     cs = ChannelStore(store, box, lambda: env_settings(monkeypatch))
     cs.migrate_0_2_email()
     assert [c.id for c in cs.list()] == ["env"]
+    assert store.list_audit()[0].summary == "Email settings moved to notification channels"
     assert not {"acs_connection_string", "digest_from", "digest_to"} & store.load_settings().keys()
 
 
@@ -195,3 +205,56 @@ def test_create_app_migrates_and_old_digest_still_sees_values(settings, tmp_path
     eff = app.state.settings
     assert eff.digest_enabled and eff.digest_to == ["x@x.com", "y@x.com"]
     assert eff.digest_schedule == "0 9 * * MON"
+
+
+def test_migration_keeps_every_recipient(settings, tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    box = SecretBox(b"k" * 32)
+    seed_0_2(store, box, digest_to=[f"u{i}@x.com" for i in range(25)])
+    cs = ChannelStore(store, box, lambda: settings)
+    cs.migrate_0_2_email()
+    assert len(cs.list()[0].recipients) == 25
+
+
+def test_migration_is_atomic(settings, tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "d.db"))
+    box = SecretBox(b"k" * 32)
+    seed_0_2(store, box)
+    cs = ChannelStore(store, box, lambda: settings)
+    monkeypatch.setattr(ChannelStore, "_audit", staticmethod(lambda *a: 1 / 0))
+    with pytest.raises(ZeroDivisionError):
+        cs.migrate_0_2_email()
+    assert cs.list() == [] and "digest_from" in store.load_settings()
+    assert not store.get_meta("email_channel_migrated")
+    monkeypatch.undo()
+    cs.migrate_0_2_email()
+    assert len(cs.list()) == 1
+
+
+def test_migration_does_not_overwrite_unreadable_channels(settings, tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    make(settings, tmp_path, store=store).save(new(), ACS, "me")
+    seed_0_2(store, SecretBox(b"z" * 32))
+    cs = ChannelStore(store, SecretBox(b"z" * 32), lambda: settings)
+    before = store.load_settings()["notification_channels"]
+    cs.migrate_0_2_email()
+    assert store.load_settings()["notification_channels"] == before
+    assert "digest_from" in store.load_settings() and not store.get_meta("email_channel_migrated")
+
+
+def test_unreadable_warning_logged_once(settings, tmp_path, caplog):
+    store = Store(str(tmp_path / "d.db"))
+    make(settings, tmp_path, store=store).save(new(), ACS, "me")
+    other = make(settings, tmp_path, key=b"z" * 32, store=store)
+    other.list(); other.list(); other.subscribed("digest")
+    assert caplog.text.count("can't be read") == 1
+
+
+def test_create_app_survives_env_plus_saved_rows_with_bad_key(settings, tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "d.db"))
+    store.save_settings({"digest_from": "d@x.com", "digest_to": ["x@x.com"]})
+    monkeypatch.setenv("ACS_CONNECTION_STRING", SECRET)
+    (tmp_path / "secret.key").write_bytes(b"too short")
+    app = create_app(Settings(_env_file=None), docker_client=object(), http=httpx.AsyncClient(),
+                     store=store, runner=FakeRunner(), start_scheduler=False)
+    assert app.state.channels.list() == []

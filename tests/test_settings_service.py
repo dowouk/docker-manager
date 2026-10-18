@@ -136,6 +136,9 @@ def test_empty_env_value_does_not_lock(settings, tmp_path, monkeypatch):
     s = svc(base, tmp_path)
     for name in ("acs_connection_string", "digest_from", "digest_to"):
         assert s.locked(name) is None
+    s.save("digest", {"digest_schedule": "0 9 * * MON"}, "me")
+    assert s.effective().digest_schedule == "0 9 * * MON"
+    assert not s.effective().acs_connection_string
 
 
 def test_false_env_value_still_locks(settings, tmp_path, monkeypatch):
@@ -150,6 +153,7 @@ def test_locked_secret_field_in_form_is_skipped(settings, tmp_path, monkeypatch)
     monkeypatch.setenv("ACS_CONNECTION_STRING", "endpoint=from-env")
     s = svc(Settings(_env_file=None), tmp_path)
     assert s.locked("acs_connection_string") == "ACS_CONNECTION_STRING"
+    s._store.save_settings({"acs_connection_string": {"enc": s._box.encrypt("endpoint=db")}})
     assert s.effective().acs_connection_string == "endpoint=from-env"
 
 

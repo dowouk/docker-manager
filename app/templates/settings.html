@@ -55,7 +55,7 @@
     <form method="post" action="/settings/email/test" class="settings-test">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <button type="submit" class="button button-quiet button-small">Send test email</button>
-      <span class="meta">Sends to the saved recipients using the saved settings.</span>
+      <span class="meta">Sends to the recipients of your email channel or environment settings.</span>
     </form>
     {% endif %}
     {% if key == "signin" %}

@@ -14,9 +14,9 @@ from typing import Callable
 
 from app.config import Settings
 from app.keys import KeyUnusable, SecretBox
-from app.notify.providers import PROVIDERS, _EMAIL
-from app.settings_service import KEY_UNUSABLE_MESSAGE, _env_set
-from app.store import Store
+from app.notify.providers import EMAIL_ADDRESS, PROVIDERS
+from app.settings_service import KEY_UNUSABLE_MESSAGE, env_set
+from app.store import Store, _now
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +97,9 @@ class ChannelStore:
         self.unreadable = False
 
     # -- reading ---------------------------------------------------------------------------
-    def _saved(self) -> list[Channel]:
-        stored = self._store.load_settings().get(CHANNELS_KEY)
+    def _parse(self, stored) -> list[Channel] | None:
+        """Channels from the stored value; None if it can't be read."""
         if stored is None:
-            self.unreadable = False
             return []
         token = stored.get("enc") if isinstance(stored, dict) else None
         plain = self._box.decrypt(token) if isinstance(token, str) else None
@@ -109,19 +108,42 @@ class ChannelStore:
         except ValueError:
             data = None
         if not isinstance(data, list):
-            self.unreadable = True
-            log.warning("Saved notification channels can't be read; treating them as none")
-            return []
-        self.unreadable = False
+            return None
         return [c for c in (_load(d) for d in data) if c is not None]
 
-    def _write(self, channels: list[Channel]) -> None:
+    def _saved(self) -> list[Channel]:
+        channels = self._parse(self._store.load_settings().get(CHANNELS_KEY))
+        self._note_readable(channels is not None)
+        return channels or []
+
+    def _note_readable(self, readable: bool) -> None:
+        if not readable and not self.unreadable:
+            log.warning("Saved notification channels can't be read; treating them as none")
+        self.unreadable = not readable
+
+    def _locked(self, db) -> list[Channel]:
+        """Read inside a write transaction; refuse if the stored row can't be read."""
+        row = db.execute("SELECT value FROM settings WHERE name = ?", (CHANNELS_KEY,)).fetchone()
+        channels = self._parse(json.loads(row[0]) if row else None)
+        self._note_readable(channels is not None)
+        if channels is None:
+            raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE})
+        return channels
+
+    def _put(self, db, channels: list[Channel]) -> None:
         token = self._box.encrypt(json.dumps([_dump(c) for c in channels]))
-        self._store.save_settings({CHANNELS_KEY: {"enc": token}})
+        db.execute("INSERT INTO settings (name, value) VALUES (?, ?) "
+                   "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                   (CHANNELS_KEY, json.dumps({"enc": token})))
+
+    @staticmethod
+    def _audit(db, user: str, summary: str) -> None:
+        db.execute("INSERT INTO audit (at, user, kind, summary) VALUES (?, ?, ?, ?)",
+                   (_now(), user, "settings", summary))
 
     def _env_channel(self) -> Channel | None:
         base = self._settings()
-        if not all(_env_set(base, n) for n in LEGACY_FIELDS):
+        if not all(env_set(base, n) for n in LEGACY_FIELDS):
             return None
         return Channel(ENV_ID, "Email (from environment)", "acs",
                        {"connection_string": base.acs_connection_string or "",
@@ -160,13 +182,24 @@ class ChannelStore:
     def save(self, channel: Channel, form_config: dict, user: str) -> Channel:
         if channel.readonly or channel.id == ENV_ID:
             raise ChannelError({"channel": "This channel comes from the environment and can't be changed here"})
-        saved = self._saved()
-        if self.unreadable:
-            raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE})
+        try:
+            with self._store.write_tx() as db:
+                saved = self._locked(db)
+                result, verb = self._validated(channel, form_config, saved)
+                channels = [result if c.id == result.id else c for c in saved]
+                if verb == "added":
+                    channels.append(result)
+                self._put(db, channels)
+                self._audit(db, user, f"Notification channel {verb}: {result.name}")
+        except KeyUnusable:
+            raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE}) from None
+        return result
+
+    def _validated(self, channel: Channel, form_config: dict,
+                   saved: list[Channel]) -> tuple[Channel, str]:
         existing = next((c for c in saved if c.id == channel.id), None) if channel.id else None
         if channel.id and existing is None:
             raise ChannelError({"channel": "That channel no longer exists"})
-
         errors: dict[str, str] = {}
         name = (channel.name or "").strip()
         if not 1 <= len(name) <= 60:
@@ -177,7 +210,7 @@ class ChannelStore:
         recipients = _dedupe(channel.recipients)
         if not 1 <= len(recipients) <= MAX_RECIPIENTS:
             errors["recipients"] = f"Enter 1 to {MAX_RECIPIENTS} email addresses"
-        elif not all(_EMAIL.match(r) for r in recipients):
+        elif not all(EMAIL_ADDRESS.match(r) for r in recipients):
             errors["recipients"] = "Enter valid email addresses"
         if not channel.events <= EVENTS.keys():
             errors["events"] = "Choose from the listed events"
@@ -194,70 +227,65 @@ class ChannelStore:
             errors.update({k: v for k, v in provider.validate(config).items() if k not in errors})
         if errors:
             raise ChannelError(errors)
-
         result = Channel(existing.id if existing else secrets.token_hex(8), name,
                          channel.provider, config, recipients, set(channel.events),
                          channel.enabled)
-        channels = [result if c.id == result.id else c for c in saved]
-        if existing is None:
-            channels.append(result)
-        try:
-            self._write(channels)
-        except KeyUnusable:
-            raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE}) from None
-        verb = "changed" if existing else "added"
-        self._store.add_audit(user, "settings", f"Notification channel {verb}: {name}")
-        return result
+        return result, "changed" if existing else "added"
 
     def delete(self, channel_id: str, user: str) -> None:
         if channel_id == ENV_ID:
             raise ChannelError({"channel": "This channel comes from the environment and can't be removed here"})
-        saved = self._saved()
-        if self.unreadable:
-            raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE})
-        target = next((c for c in saved if c.id == channel_id), None)
-        if target is None:
-            return
         try:
-            self._write([c for c in saved if c.id != channel_id])
+            with self._store.write_tx() as db:
+                saved = self._locked(db)
+                target = next((c for c in saved if c.id == channel_id), None)
+                if target is None:
+                    return
+                self._put(db, [c for c in saved if c.id != channel_id])
+                self._audit(db, user, f"Notification channel removed: {target.name}")
         except KeyUnusable:
             raise ChannelError({"channel": KEY_UNUSABLE_MESSAGE}) from None
-        self._store.add_audit(user, "settings", f"Notification channel removed: {target.name}")
 
     # -- 0.2 migration ---------------------------------------------------------------------
     def migrate_0_2_email(self) -> None:
-        """Turn the email settings saved on the 0.2 Settings page into a channel, once."""
-        if self._store.get_meta(MIGRATED_META):
-            return
-        rows = self._store.load_settings()
-        present = [n for n in LEGACY_FIELDS if n in rows]
-        if not present:
-            self._store.set_meta(MIGRATED_META, "1")
-            return
-        if self._env_channel() is None:
-            values = self._legacy_values(rows)
-            if values is UNREADABLE:
-                log.warning("The saved email settings can't be read; not migrated yet")
-                return  # keep the rows and try again next start
-            if values is not None:
-                self._create_migrated(values)
-        for name in present:
-            self._store.delete_setting(name)
-        self._store.add_audit("system", "settings", "Email settings moved to notification channels")
-        self._store.set_meta(MIGRATED_META, "1")
+        """Turn the email settings saved on the 0.2 Settings page into a channel, once.
+        One transaction: the channel, the row removal and the marker land together."""
+        with self._store.write_tx() as db:
+            if db.execute("SELECT 1 FROM meta WHERE key = ?", (MIGRATED_META,)).fetchone():
+                return
+            rows = {n: json.loads(v) for n, v in db.execute("SELECT name, value FROM settings")}
+            present = [n for n in LEGACY_FIELDS if n in rows]
+            if present and self._env_channel() is None:
+                values = self._legacy_values(rows)
+                if values is UNREADABLE:
+                    log.warning("The saved email settings can't be read; not migrated yet")
+                    return  # keep the rows and try again next start
+                if values is not None:
+                    try:
+                        saved = self._locked(db)
+                        self._put(db, [*saved, self._migrated_channel(values)])
+                    except (KeyUnusable, ChannelError) as exc:
+                        log.warning("Email settings not migrated yet (%s)", type(exc).__name__)
+                        return
+            for name in present:
+                db.execute("DELETE FROM settings WHERE name = ?", (name,))
+            if present:
+                self._audit(db, "system", "Email settings moved to notification channels")
+            db.execute("INSERT INTO meta (key, value) VALUES (?, '1') "
+                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (MIGRATED_META,))
 
     def _legacy_values(self, rows: dict) -> dict | None:
         """Env values win over saved rows; None if incomplete, UNREADABLE if the key fails."""
         base = self._settings()
         conn = rows.get("acs_connection_string")
-        if _env_set(base, "acs_connection_string"):
+        if env_set(base, "acs_connection_string"):
             conn_plain = base.acs_connection_string
         else:
             token = conn.get("enc") if isinstance(conn, dict) else None
             conn_plain = self._box.decrypt(token) if isinstance(token, str) else None
-        sender = base.digest_from if _env_set(base, "digest_from") else rows.get("digest_from")
-        to = list(base.digest_to) if _env_set(base, "digest_to") else rows.get("digest_to")
-        if conn_plain is None and not _env_set(base, "acs_connection_string") \
+        sender = base.digest_from if env_set(base, "digest_from") else rows.get("digest_from")
+        to = list(base.digest_to) if env_set(base, "digest_to") else rows.get("digest_to")
+        if conn_plain is None and not env_set(base, "acs_connection_string") \
                 and "acs_connection_string" in rows:
             return UNREADABLE
         if not (conn_plain and sender and isinstance(to, list) and to):
@@ -265,9 +293,9 @@ class ChannelStore:
         return {"connection_string": conn_plain, "sender": str(sender),
                 "recipients": [str(r) for r in to]}
 
-    def _create_migrated(self, values: dict) -> None:
-        recipients = _dedupe(values["recipients"])[:MAX_RECIPIENTS]
-        channel = Channel(secrets.token_hex(8), "Email", "acs",
-                          {"connection_string": values["connection_string"],
-                           "sender": values["sender"]}, recipients, {"digest"})
-        self._write([*self._saved(), channel])
+    @staticmethod
+    def _migrated_channel(values: dict) -> Channel:
+        # Every recipient comes across: the cap applies to the edit form only.
+        return Channel(secrets.token_hex(8), "Email", "acs",
+                       {"connection_string": values["connection_string"],
+                        "sender": values["sender"]}, _dedupe(values["recipients"]), {"digest"})

@@ -60,7 +60,7 @@ class Provider(Protocol):
     async def send(self, config: dict, message: Message, http: httpx.AsyncClient) -> None: ...
 
 
-_EMAIL = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+$")
+EMAIL_ADDRESS = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+$")
 
 
 def _validate(fields: tuple[ProviderField, ...], config: dict) -> dict[str, str]:
@@ -71,7 +71,7 @@ def _validate(fields: tuple[ProviderField, ...], config: dict) -> dict[str, str]
             if f.required:
                 errors[f.name] = "Required"
             continue
-        if f.kind == "email" and not _EMAIL.match(value):
+        if f.kind == "email" and not EMAIL_ADDRESS.match(value):
             errors[f.name] = "Enter an email address"
         elif f.kind == "int":
             if not (value.isascii() and value.isdecimal()) or not 1 <= int(value) <= 65535:
