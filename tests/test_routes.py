@@ -190,7 +190,7 @@ def test_not_compose_row_has_no_update_button(client_for, seeded):
     web_id = seeded.containers[0].container.id
     assert f"/containers/{web_id}/update" in html
     assert lone_id in html or "lone" in html
-    assert f"/containers/{lone_id}/" not in html
+    assert f"/containers/{lone_id}/update" not in html  # the skip form is fine
     assert "Not started by compose" in html
 
 

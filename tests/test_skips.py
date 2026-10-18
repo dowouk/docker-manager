@@ -73,11 +73,29 @@ def test_skip_tag_clears_only_that_kind(tmp_path, skips):
     assert newer.containers[1].minor_update == "16.4"
 
 
+def test_build_update_without_digest_is_skippable(tmp_path, skips):
+    r = result_with(tmp_path, digest=None)
+    item = next(i for i in update_items(r) if i.kind == "build")
+    assert item.value == "latest"
+    skips.skip(item.container_key, "build", item.value, "me")
+    assert visible_result(r, skips)[0].containers[0].status == Status.UP_TO_DATE
+
+
+def test_active_reads_without_writing_unless_something_expired(skips, clock, monkeypatch):
+    skips.snooze("site/web", "build", 7, "me")
+    monkeypatch.setattr(skips._store, "write_tx", lambda: pytest.fail("wrote"))
+    assert len(skips.active()) == 1
+
+
 def test_original_result_is_not_modified(tmp_path, skips):
     skips.skip("site/web", "build", "sha256:aaa", "me", "")
     r = result_with(tmp_path)
+    skips.skip("site/db", "minor", "16.3", "me", "")
+    skips.skip("site/db", "major", "17.0", "me", "")
     visible_result(r, skips)
     assert r.containers[0].status == Status.NEWER_BUILD
+    assert (r.containers[1].minor_update, r.containers[1].major_update) == ("16.3", "17.0")
+    assert r.mailcow.update_available
 
 
 def test_snooze_hides_any_value_until_expiry(tmp_path, skips, clock):
@@ -100,9 +118,9 @@ def test_snooze_30_days_and_bad_days(skips, clock):
 
 def test_remove_restores_immediately(tmp_path, skips):
     s = skips.skip("site/web", "build", "sha256:aaa", "me")
-    assert skips.remove(s.id, "me").id == s.id
+    assert skips.remove(s.id).id == s.id
     assert visible_result(result_with(tmp_path), skips)[0].containers[0].status == Status.NEWER_BUILD
-    assert skips.remove(s.id, "me") is None
+    assert skips.remove(s.id) is None
 
 
 def test_new_skip_replaces_the_old_for_same_container_and_kind(skips):
@@ -140,13 +158,25 @@ def test_reason_is_capped_and_one_line(skips):
 def test_migration_4_on_a_0_4_database(tmp_path):
     path = str(tmp_path / "d.db")
     s = Store(path)
-    with s.write_tx() as db:
+    s.set_meta("existing_install", "1")
+    s.set_meta("upgraded_from_0_1", "1")
+    s.save_settings({"server_name": "box"})
+    s.create_job("build", "web", "me")
+    user = sqlite3.connect(path)  # a user row, written directly
+    user.execute("INSERT INTO users (kind, email, name, role, created_at) "
+                 "VALUES ('local', 'a@b.c', 'A', 'admin', '2026-01-01T00:00:00+00:00')")
+    user.commit(); user.close()
+    with s.write_tx() as db:  # now shape it as 0.4 left it: schema 3, no skips table
         db.execute("DROP TABLE skips")
         db.execute("UPDATE schema_version SET version = 3")
     s.close()
     s = Store(path)
-    SkipStore(s).skip("site/web", "build", "x", "me")
     assert sqlite3.connect(path).execute("SELECT version FROM schema_version").fetchone()[0] == 4
+    assert s.get_meta("existing_install") == "1" and s.get_meta("upgraded_from_0_1") == "1"
+    assert s.load_settings() == {"server_name": "box"}
+    assert [j.target for j in s.list_jobs()] == ["web"]
+    assert sqlite3.connect(path).execute("SELECT email FROM users").fetchall() == [("a@b.c",)]
+    SkipStore(s).skip("site/web", "build", "x", "me")
     with pytest.raises(sqlite3.IntegrityError):
         with s.write_tx() as db:
             db.execute("INSERT INTO skips (key, kind, user, created_at) VALUES ('a','bogus','u','t')")
@@ -244,7 +274,20 @@ def test_reason_capped_by_route(settings, tmp_path, seeded):  # noqa: F811
 
 def test_dashboard_counts_exclude_skipped(settings, tmp_path, seeded):  # noqa: F811
     app = make_app(settings, tmp_path, seeded)
-    app.state.skips.snooze("mailcow", "mailcow", 7, "me")
-    with logged_in_client(app, Role.OPERATOR) as c:
-        page = c.get("/").text
-    assert "Update Mailcow" not in page and "snoozed" in page.lower()
+    db = cid(app, "db")
+    with logged_in_client(app, Role.ADMIN, follow_redirects=False) as c:
+        before = c.get("/").text
+        assert "Update Mailcow" in before and f"/containers/{db}/version-preview?tag=16.3" in before
+        assert "5 need" in before
+        post(c, f"/containers/{db}/skip", kind="minor", mode="skip")
+        post(c, f"/containers/{db}/skip", kind="major", mode="skip")
+        post(c, "/containers/mailcow/skip", kind="mailcow", mode="snooze7")
+        after = c.get("/").text
+        assert "Update Mailcow" not in after
+        assert "version-preview?tag=16.3" not in after
+        assert "3 need" in after  # was 5: db and Mailcow are hidden
+        assert "Skipped" in after and "Snoozed until" in after
+        for s in app.state.skips.active():
+            assert post(c, f"/skips/{s.id}/remove").status_code == 303
+        back = c.get("/").text
+    assert "Update Mailcow" in back and "version-preview?tag=16.3" in back and "5 need" in back

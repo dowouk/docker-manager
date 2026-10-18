@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from app.checker import CheckResult, ContainerStatus, Status
+from app.imageref import parse_image_ref
 from app.inventory import container_key
 from app.store import Store, _from_iso, _to_iso
 
@@ -53,8 +54,10 @@ def container_items(cs: ContainerStatus) -> list[ItemRef]:
     c = cs.container
     key, name = container_key(c), c.name
     items = []
-    if cs.status in _BUILD and cs.remote_digest:
-        items.append(ItemRef(f"{name}:build", key, "build", cs.remote_digest, c.id))
+    if cs.status in _BUILD:
+        # No digest (shouldn't happen): the tag is a stable value, so it stays skippable.
+        value = cs.remote_digest or parse_image_ref(c.image_ref).tag or "latest"
+        items.append(ItemRef(f"{name}:build", key, "build", value, c.id))
     if cs.minor_update:
         items.append(ItemRef(f"{name}:minor", key, "minor", cs.minor_update, c.id))
     if cs.major_update:
@@ -125,14 +128,7 @@ class SkipStore:
         return self._add(container_key, kind, None, self._clock() + timedelta(days=days),
                          user, reason)
 
-    def get(self, skip_id: int) -> Skip | None:
-        with self._store._lock:
-            r = self._store._db.execute(
-                "SELECT id, key, kind, value, until, user, reason, created_at "
-                "FROM skips WHERE id = ?", (skip_id,)).fetchone()
-        return self._row(r) if r else None
-
-    def remove(self, skip_id: int, user: str) -> Skip | None:
+    def remove(self, skip_id: int) -> Skip | None:
         """Delete the skip; returns it (None if it was already gone)."""
         with self._store.write_tx() as db:
             r = db.execute(
@@ -143,18 +139,23 @@ class SkipStore:
             db.execute("DELETE FROM skips WHERE id = ?", (skip_id,))
         return self._row(r)
 
+    def now(self) -> datetime:
+        return self._clock()
+
     def active(self) -> list[Skip]:
-        """Skips in force; expired snoozes are left out and purged."""
+        """Skips in force; expired snoozes are left out and purged (a write only when needed)."""
         now = _to_iso(self._clock())
-        with self._store.write_tx() as db:
-            db.execute("DELETE FROM skips WHERE until IS NOT NULL AND until <= ?", (now,))
-            rows = db.execute(
-                "SELECT id, key, kind, value, until, user, reason, created_at "
-                "FROM skips ORDER BY id DESC").fetchall()
-        return [self._row(r) for r in rows]
+        cols = "SELECT id, key, kind, value, until, user, reason, created_at FROM skips "
+        with self._store._lock:
+            rows = self._store._db.execute(cols + "ORDER BY id DESC").fetchall()
+        expired = [r[0] for r in rows if r[4] is not None and r[4] <= now]
+        if expired:
+            with self._store.write_tx() as db:
+                db.executemany("DELETE FROM skips WHERE id = ?", [(i,) for i in expired])
+        return [self._row(r) for r in rows if r[0] not in expired]
 
     def is_skipped(self, item: ItemRef) -> Skip | None:
-        return _matching(item, self.active(), self._clock())
+        return _matching(item, self.active(), self.now())
 
 
 def visible_result(result: CheckResult, skips: SkipStore
@@ -164,7 +165,7 @@ def visible_result(result: CheckResult, skips: SkipStore
     A hidden Mailcow update appears as `(None, skip)`.
     """
     active = skips.active()
-    now = skips._clock()
+    now = skips.now()
     hidden: list[tuple[ContainerStatus | None, Skip]] = []
     containers = []
     for cs in result.containers:

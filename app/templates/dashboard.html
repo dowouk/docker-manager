@@ -68,6 +68,8 @@
 {% endif %}
 {% endmacro %}
 
+{% macro skip_badge(skip) %}{% if skip.until %}Snoozed until {{ skip.until | uk_date }}{% else %}Skipped{% endif %}{% endmacro %}
+
 {# "Skip…" disclosure: one small form per update on offer. Operator and above. #}
 {% macro skip_menu(items) %}
 {% if items and can(user, Role.OPERATOR) %}
@@ -202,6 +204,7 @@
           <td data-label="Status">
             {% if mc.error %}{{ status_badge("error", "Error") }}<div class="meta">{{ mc.error }}</div>
             {% elif mc.update_available %}{{ status_badge("update", "Update available") }}
+            {% elif hidden_by_id.get("mailcow") %}{{ status_badge("muted", skip_badge(hidden_by_id["mailcow"])) }}
             {% elif mc.update_available is sameas false %}{{ status_badge("current", "Up to date") }}
             {% else %}{{ status_badge("muted", "Unknown") }}{% endif %}
           </td>
@@ -229,7 +232,8 @@
           </td>
           <td data-label="Digest"><span class="mono meta">{{ short_digest(cs) }}</span></td>
           <td data-label="Status">
-            {{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}
+            {% if c.id in hidden_by_id and state == "current" %}{{ status_badge("muted", skip_badge(hidden_by_id[c.id])) }}
+            {% else %}{{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}{% endif %}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
           {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}

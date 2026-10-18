@@ -483,6 +483,7 @@ def create_app(
             request, "dashboard.html", user,
             result=shown,
             skipped=app.state.skips.active(),
+            hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
             rows=view.by_urgency(shown) if shown else [],
             overview=view.overview(shown) if shown else None,
             attention=view.attention(shown) if shown else [],
@@ -569,7 +570,7 @@ def create_app(
 
     @app.post("/skips/{skip_id}/remove", dependencies=[Depends(verify_csrf)])
     async def remove_skip(skip_id: int, user: User = Depends(require_role(Role.OPERATOR))):
-        skip = app.state.skips.remove(skip_id, user.email)
+        skip = app.state.skips.remove(skip_id)
         if skip is None:
             raise HTTPException(status_code=404, detail="Unknown skip")
         what = "snooze" if skip.snoozed else "skip"
