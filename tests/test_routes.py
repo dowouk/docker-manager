@@ -12,7 +12,7 @@ from app.inventory import ContainerInfo
 from app.jobs import BUSY_MESSAGE, BusyError
 from app.main import create_app
 from app.store import Store
-from auth_helpers import CSRF, USER, assert_all_routes_guarded, logged_in_client, session_cookie
+from auth_helpers import CSRF, USER, assert_all_routes_guarded, logged_in_client, set_session
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
 
@@ -451,7 +451,7 @@ async def test_job_triggers_check_afterwards(settings, tmp_path, seeded, monkeyp
     app = make_app(settings, tmp_path, seeded, runner=runner)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as c:
-        c.cookies.set("session", session_cookie(settings.session_secret, {"user": USER, "csrf": CSRF}))
+        set_session(c, app, {"user": USER, "csrf": CSRF})
         r = await c.post("/mailcow/update", data={"csrf_token": CSRF})
     assert r.status_code == 303
     work = runner.submitted[0][3]

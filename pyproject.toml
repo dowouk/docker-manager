@@ -13,7 +13,6 @@ dependencies = [
     "httpx==0.28.*",
     "authlib==1.9.*",
     "joserfc==1.7.*",
-    "itsdangerous==2.2.*",
     "docker==7.2.*",
     "apscheduler==3.11.*",
     "azure-communication-email==1.1.*",

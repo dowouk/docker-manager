@@ -27,6 +27,7 @@ from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.registry import RegistryClient
+from app.sessions import SessionStore
 from app.store import Store
 from app import view
 from app.updaters import (
@@ -208,7 +209,9 @@ def create_app(
     backup_dir = os.path.join(settings.data_dir, "backups")
     tz = ZoneInfo(settings.tz)
 
-    setup_auth(app, settings)
+    app.state.sessions = SessionStore(store)
+    app.state.sessions.purge_expired()  # dead rows would otherwise pile up
+    setup_auth(app, settings, app.state.sessions)
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
 
     env = jinja2.Environment(

@@ -1,3 +1,4 @@
+import os
 from unittest.mock import AsyncMock
 
 import httpx
@@ -19,14 +20,17 @@ from app.auth import (
     user_from_claims,
     verify_csrf,
 )
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client
+from app.sessions import SessionStore
+from app.store import Store
+from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, set_session
 
 CALLS: list[str] = []
 
 
 def make_app(settings) -> FastAPI:
     app = FastAPI()
-    setup_auth(app, settings)
+    app.state.sessions = SessionStore(Store(os.path.join(settings.data_dir, "dashboard.db")))
+    setup_auth(app, settings, app.state.sessions)
 
     @app.get("/")
     def index(user: User = Depends(current_user)):
@@ -138,20 +142,28 @@ def test_logged_in_reaches_handler(logged_in_client_):
     assert r.status_code == 200 and r.json()["user"] == "test@example.com"
 
 
-def test_tampered_or_wrongly_signed_cookie_rejected(settings):
-    from auth_helpers import USER, set_session_cookie
+def test_unknown_session_token_rejected(settings):
     app = make_app(settings)
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-        set_session_cookie(c, "another-secret", {"user": USER})
+        c.cookies.set("session", "not-a-real-token", domain="testserver.local", path="/")
         assert c.get("/", headers={"Accept": "application/json"}).status_code == 401
     assert CALLS == []
 
 
+def test_old_signed_cookie_redirects_to_login(settings):
+    app = make_app(settings)
+    old = "eyJ1c2VyIjogeyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIn19.aBcDeF.xYz123-signature"
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        c.cookies.set("session", old, domain="testserver.local", path="/")
+        r = c.get("/", headers={"Accept": "text/html"})
+    assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+    assert CALLS == []
+
+
 def test_session_without_user_rejected(settings):
-    from auth_helpers import set_session_cookie
     app = make_app(settings)
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-        set_session_cookie(c, settings.session_secret, {"csrf": CSRF})
+        set_session(c, app, {"csrf": CSRF})
         assert c.get("/", headers={"Accept": "application/json"}).status_code == 401
 
 
@@ -180,7 +192,8 @@ def test_post_with_csrf_header_ok(logged_in_client_):
 
 def test_csrf_token_stored_in_session(settings):
     app = FastAPI()
-    setup_auth(app, settings)
+    app.state.sessions = SessionStore(Store(os.path.join(settings.data_dir, "dashboard.db")))
+    setup_auth(app, settings, app.state.sessions)
 
     from starlette.requests import Request
 
@@ -312,8 +325,8 @@ def _callback(settings, monkeypatch, userinfo=None, error=False):
     monkeypatch.setattr(app.state.oauth.entra, "authorize_access_token", mock)
     c = TestClient(app, base_url="https://testserver", follow_redirects=False)
     # pre-existing (attacker-planted) session data must be discarded
-    from auth_helpers import set_session_cookie
-    set_session_cookie(c, settings.session_secret, {"planted": "x"})
+    set_session(c, app, {"planted": "x"})
+    c.app_ = app
     return c
 
 
@@ -326,12 +339,7 @@ def test_callback_success_sets_minimal_session(settings, monkeypatch):
     assert "samesite=lax" in r.headers["set-cookie"].lower()
     r = c.get("/")
     assert r.status_code == 200 and r.json()["user"] == "Alice@Example.com"
-    # decode cookie to verify what's stored
-    import json
-    from base64 import b64decode
-    import itsdangerous
-    raw = itsdangerous.TimestampSigner(settings.session_secret).unsign(c.cookies["session"])
-    data = json.loads(b64decode(raw))
+    data = c.app_.state.sessions.load(c.cookies["session"])
     assert set(data) == {"user", "csrf"}
     assert data["user"] == {"name": "Alice", "email": "Alice@Example.com"}
     assert data["csrf"]
