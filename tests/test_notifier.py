@@ -326,3 +326,21 @@ async def test_env_only_install_only_ever_sends_the_digest(settings, tmp_path, m
     assert rig.subjects == []
     assert await n.digest(result(cs("a", minor_update="1.1"))) == "sent"
     assert len(rig.subjects) == 1 and rig.provider.sent[0][1].recipients == ("e@x.com",)
+
+
+async def test_unknown_notify_error_text_is_stored_as_rejected(settings, tmp_path):
+    rig = Rig(settings, tmp_path, failing("accesskey=TOPSECRET leaked by a provider"))
+    ch = rig.channel(events=("job_failed",))
+    await rig.notifier.send("job_failed", ("S", "p", "h"))
+    last = rig.notifier.last_result(ch.id)
+    assert last["reason"] == REJECTED and "TOPSECRET" not in json.dumps(last)
+
+
+async def test_unknown_provider_is_logged_and_recorded(settings, tmp_path, caplog):
+    rig = Rig(settings, tmp_path)
+    ch = rig.channel(events=("job_failed",))
+    rig.notifier._providers = {}
+    with caplog.at_level(logging.WARNING):
+        assert await rig.notifier.send("job_failed", ("S", "p", "h")) == 0
+    assert "Notification to Ops skipped (unknown provider)" in caplog.text
+    assert rig.notifier.last_result(ch.id)["reason"] == notifier_mod.UNKNOWN_PROVIDER

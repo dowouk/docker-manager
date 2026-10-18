@@ -18,7 +18,9 @@ from app.imageref import parse_image_ref
 from app.notify import messages
 from app.notify.channels import Channel, ChannelStore
 from app.notify.messages import Rendered, UpdateItem
-from app.notify.providers import PROVIDERS, REJECTED, NO_ANSWER, Message, NotifyError
+from app.notify.providers import (
+    LOGIN_REFUSED, NOT_PRIVATE, NO_ANSWER, PROVIDERS, REJECTED, UNREACHABLE, Message, NotifyError,
+)
 from app.store import Store
 
 log = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ log = logging.getLogger(__name__)
 SEND_TIMEOUT = 30
 UNKNOWN_PROVIDER = "This channel's provider isn't available"
 NO_SUCH_CHANNEL = "That channel no longer exists"
+FIXED_REASONS = frozenset({LOGIN_REFUSED, UNREACHABLE, REJECTED, NO_ANSWER, NOT_PRIVATE})
 FAILURES_AFTER = 2  # consecutive failed checks before the first alert
 _BUILD = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
 
@@ -98,13 +101,14 @@ class Notifier:
         provider = self._providers.get(channel.provider)
         if provider is None:
             reason = UNKNOWN_PROVIDER
+            log.warning("Notification to %s skipped (unknown provider)", channel.name)
         else:
             message = Message(rendered[0], rendered[1], rendered[2], tuple(channel.recipients))
             try:
                 await asyncio.wait_for(
                     provider.send(channel.config, message, self._http), SEND_TIMEOUT)
             except NotifyError as exc:
-                reason = str(exc)
+                reason = str(exc) if str(exc) in FIXED_REASONS else REJECTED
                 log.warning("Notification to %s failed (NotifyError)", channel.name)
             except asyncio.TimeoutError:
                 reason = NO_ANSWER

@@ -200,7 +200,7 @@ Events:
 | Weekly digest | `DIGEST_SCHEDULE` (now a setting) | on |
 | Updates found | A check finds updates **that weren't in the previous notification** | off |
 | Update finished | A job succeeds / fails / rolls back | failures only |
-| Check failing | The scheduled check has failed 2 times in a row; and when it recovers | on |
+| Check failing | Any check (scheduled, Check now or after an update) has failed 2 times in a row; and when it recovers | on |
 
 A **failed check** means the check as a whole didn't work: it raised, Docker couldn't be reached, or **every** registry lookup failed. One image's registry error (a rate limit, one private registry down) is not a failed check – it shows on that row and in the digest's "Couldn't check" section as today (Claude's call). The heartbeat uses the same rule.
 | Layout problems | New problems found by the layout check | on |

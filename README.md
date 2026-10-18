@@ -213,10 +213,10 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 | Event | Ticked for a new channel | Sent when |
 | --- | --- | --- |
 | **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating and what couldn't be checked, and goes to every channel that has this ticked |
-| **Updates found** | No | A check finds updates that haven't been reported yet. It only lists updates you haven't already been told about |
-| **Update failed** | Yes | An update, rollback or Mailcow update ends in failure |
-| **Update finished** | No | An update finishes successfully |
-| **Check failing or recovered** | Yes | Every container check failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
+| **Updates found** | No | A check finds updates that haven't been reported yet. It only lists updates you haven't already been told about. When you first turn it on, it starts from what is already known, so only later updates are sent |
+| **Update failed** | Yes | An update, rollback or Mailcow update ends in failure. Self-updates and jobs interrupted by a restart don't send a message |
+| **Update finished** | No | An update finishes successfully (self-updates and interrupted jobs don't send a message) |
+| **Check failing or recovered** | Yes | A check failed: it raised an error, Docker couldn't be reached, or every registry lookup failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
 | **Layout problems** | Yes | Not sent yet: it comes with the layout check in the next release (0.5). It is ticked by default so you will get it when it arrives |
 | **User waiting for approval** | Yes | Someone signs in with Microsoft for the first time and is waiting for an Admin to approve them |
 
@@ -265,8 +265,8 @@ Choose **SMTP** for any mail server, including Microsoft 365. Enter the **Host**
 
 You don't need to do anything when you upgrade to 0.4, and you should **keep your existing compose file**.
 
-- If `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are in your environment, they show as a read-only **Email (from environment)** channel that carries the weekly digest only. To change it, change the environment; to manage it on the page instead, remove the variables and run `docker compose up -d`.
-- If you saved email settings on the 0.2 or 0.3 Settings page, they are moved into one **Email** channel the first time 0.4 starts. It carries the weekly digest only, and every recipient is carried over. If only part of it came from the environment (for example the connection string), the connection string is copied into the channel, where it is stored encrypted.
+- If `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are in your environment, they show as a read-only **Email (from environment)** channel that carries the weekly digest only. To change it, change the environment; to manage it on the page instead, remove the variables, run `docker compose up -d`, and add a new channel on the page – nothing carries over from the environment channel.
+- If you saved email settings on the 0.2 or 0.3 Settings page, they are moved into one **Email** channel the first time 0.4 starts. It carries the weekly digest only, and every recipient is carried over (recipients that differ only by letter case are merged into one). If only part of it came from the environment (for example the connection string), the connection string is copied into the channel, where it is stored encrypted.
 - Nothing else is sent until an Admin ticks more events on a channel.
 - `DIGEST_SCHEDULE` and `DIGEST_WHEN_NONE` still work, and are now shown on the **Weekly digest** card.
 

@@ -3,7 +3,7 @@
 {% block content %}
 <p class="back"><a href="/settings#notifications">&larr; Back to settings</a></p>
 <section class="card settings-card form-card-wide" aria-labelledby="channel-title">
-  <h1 id="channel-title">{{ "Edit " ~ channel.name if channel else "Add a channel" }}</h1>
+  <h1 id="channel-title" class="channel-title">{{ "Edit " ~ channel.name if channel else "Add a channel" }}</h1>
   <p class="card-text">Provider: {{ provider.label }}</p>
   {% if errors.channel or errors.provider %}<p class="notice notice-error" role="alert">{{ errors.channel or errors.provider }}</p>{% endif %}
   <form method="post" action="{{ '/settings/channels/' ~ channel.id if channel else '/settings/channels' }}" class="settings-form" novalidate>
@@ -48,8 +48,8 @@
         <button type="button" class="button button-quiet button-small" data-preset data-host="{{ presets.smtp2go.host }}" data-port="{{ presets.smtp2go.port }}" data-security="{{ presets.smtp2go.security }}">SMTP2GO</button>
         <button type="button" class="button button-quiet button-small" data-preset data-host="{{ presets.m365.host }}" data-port="{{ presets.m365.port }}" data-security="{{ presets.m365.security }}">Microsoft 365</button>
       </div>
-      <p class="field-help">Microsoft 365 is ending username-and-password SMTP sign-in, so this may stop working. Azure Communication Services or SMTP2GO are safer choices.</p>
     </div>
+    <p class="field-help">Microsoft 365 is ending username-and-password SMTP sign-in, so this may stop working. Azure Communication Services or SMTP2GO are safer choices.</p>
     {% endif %}
 
     {% for f in fields %}
