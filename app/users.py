@@ -155,7 +155,8 @@ class UserStore:
 
     def create_first_admin(self, kind: str, email: str, name: str, role: str = "admin", *,
                            pinned: bool = False, password_hash: str | None = None,
-                           must_change_password: bool = False) -> UserRecord | None:
+                           must_change_password: bool = False, entra_tid: str | None = None,
+                           entra_oid: str | None = None) -> UserRecord | None:
         """Insert only if there are no users, checked inside the write transaction so two
         threads or processes can't both win. None if someone else got there first."""
         _check_role(role)
@@ -163,7 +164,7 @@ class UserStore:
             if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] != 0:
                 return None
             uid = self._insert(db, kind, email, name, role, pinned, password_hash,
-                               must_change_password)
+                               must_change_password, entra_tid, entra_oid)
         return self.get(uid)
 
     # --- update / delete ---------------------------------------------------

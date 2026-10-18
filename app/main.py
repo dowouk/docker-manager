@@ -37,6 +37,7 @@ from app.registry_logins import (
 )
 from app.roles import Role
 from app.sessions import SessionStore
+from app.setup import Setup, setup_routes
 from app.signin import setup_signin
 from app.users import UserStore
 from app.settings_service import (
@@ -281,7 +282,15 @@ def create_app(
     app.state.users = UserStore(store, settings_service._box)
     app.state.sessions = SessionStore(store)
     app.state.sessions.purge_expired()  # dead rows would otherwise pile up
-    setup_auth(app, settings, app.state.sessions)
+    # Before anything is served: migrate old allow rules, or open first-start setup.
+    app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
+    app.state.setup.prepare(settings)
+    app.state.settings = settings_service.effective()  # the migration may have changed it
+    app.state.entra_setup_hook = app.state.setup.complete_with_entra
+    app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
+    if not app.state.setup.is_open():
+        app.state.entra_setup_hook = None
+    setup_auth(app, settings, app.state.sessions, setup_open=app.state.setup.is_open)
     setup_entra(app)
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
 
@@ -308,10 +317,14 @@ def create_app(
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
+        legacy_banner=lambda user: bool(
+            user is not None and user.role == Role.ADMIN
+            and app.state.settings.default_role == "admin_legacy"),
     )
     templates = Jinja2Templates(env=env)
     app.state.templates = templates
     setup_signin(app)
+    setup_routes(app)
 
     def render(request: Request, name: str, user: User, status_code: int = 200, **ctx):
         return templates.TemplateResponse(

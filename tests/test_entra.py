@@ -334,8 +334,11 @@ def test_setup_flow_uses_hook(app, client, settings):
 
 def test_setup_flow_without_hook_refused(app, client, settings):
     from auth_helpers import set_session
+    app.state.entra_setup_hook = None
     set_session(client, app, {"setup_entra": True})
-    assert callback(client, app, settings).status_code == 403
+    # setup is closed in this app, so the clear message, not "no access"
+    r = callback(client, app, settings)
+    assert r.status_code == 409 and "Setup has already been completed" in r.text
     assert app.state.users.count() == 0
 
 

@@ -33,3 +33,21 @@ def _no_docker_config_dir():
     set_docker_config_dir(None)
     yield
     set_docker_config_dir(None)
+
+
+@pytest.fixture(autouse=True)
+def _existing_install(request, monkeypatch):
+    """Most tests mean "a dashboard that is already set up": mark the database as an
+    upgraded install (setup closed, no migration) unless the test is about first start."""
+    if request.node.get_closest_marker("fresh_install"):
+        return
+    from app.setup import Setup
+
+    real = Setup.prepare
+
+    def prepare(self, settings):
+        self._store.set_meta("existing_install", "1")
+        self._store.set_meta("allow_rules_migrated", "1")
+        real(self, settings)
+
+    monkeypatch.setattr(Setup, "prepare", prepare)

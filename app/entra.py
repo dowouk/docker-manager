@@ -256,6 +256,13 @@ def setup_entra(app: FastAPI) -> None:
             else:
                 record = sign_in_entra(app.state.users, identity, settings,
                                        app.state.settings_service.group_mappings())
+        if record is None and setup_flow:
+            setup = getattr(app.state, "setup", None)
+            if setup is not None and not setup.is_open():
+                # Lost the first-start race (or it finished while signing in): not "no access".
+                return _page("Setup has already been completed",
+                             "Someone else finished setting up the dashboard. "
+                             "<a href=\"/auth/login\">Sign in</a>.", 409)
         if record is None or record.disabled:
             return _page(
                 "You don't have access to this dashboard",

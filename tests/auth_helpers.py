@@ -139,7 +139,7 @@ def assert_all_routes_guarded(app: FastAPI, expected_auth: set | None = None) ->
                         f"{method} {concrete} ({accept}) returned {r.status_code} unauthenticated"
                     )
                     if r.status_code == 302:
-                        assert r.headers["location"] == "/auth/login"
+                        assert r.headers["location"] == ("/setup" if setup_open else "/auth/login")
         checked += 1
     assert auth_routes == (EXPECTED_AUTH_ROUTES if expected_auth is None else expected_auth), f"unexpected /auth routes: {auth_routes}"
     assert checked, "no routes were checked"
