@@ -1,6 +1,7 @@
 """Reusable auth test helpers (also used against the full app in Task 13)."""
 import re
 
+from app.keys import KeyUnusable
 from app.roles import Role
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -13,22 +14,31 @@ CSRF = "test-csrf-token"
 EMAIL = "test@example.com"
 
 
+TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
+
+
+def _give_totp(users, rec):
+    """Local Admins need two-step on (require_totp_admins) or the guard sends every
+    test to the enrolment page."""
+    try:
+        users.set_totp(rec.id, TEST_TOTP_SECRET, True)
+    except KeyUnusable:  # a test with a deliberately broken key file: flag only
+        with users._store.write_tx() as db:
+            db.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", (rec.id,))
+
+
 def make_user(app: FastAPI, role: Role = Role.ADMIN, email: str = EMAIL, name: str = "Test User"):
     """The local test user with the given role (created, or its role changed if it exists)."""
     users = app.state.users
     rec = users.by_email("local", email)
     if rec is None:
         rec = users.create("local", email, name, role.value)
-        if role == Role.ADMIN:
-            # local Admins must have two-step on (require_totp_admins), or the guard
-            # would send every test to the enrolment page; flag only, no secret needed
-            with users._store.write_tx() as db:
-                db.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", (rec.id,))
-        return users.get(rec.id)
-    if rec.role != role.value:
+    elif rec.role != role.value:
         # direct write: the last-admin rule is not what these tests are about
         with users._store.write_tx() as db:
             db.execute("UPDATE users SET role = ? WHERE id = ?", (role.value, rec.id))
+    if role == Role.ADMIN and not users.get(rec.id).totp_enabled:
+        _give_totp(users, rec)
     return users.get(rec.id)
 
 

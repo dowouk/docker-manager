@@ -240,8 +240,21 @@ class UserStore:
             return None
         return self._box.decrypt(user.totp_secret)
 
-    def set_totp_last_step(self, user_id: int, step: int) -> None:
-        self._update(user_id, _INTERNAL, dict(totp_last_step=step))
+    def set_totp_last_step(self, user_id: int, step: int) -> bool:
+        """Compare-and-set: False if this step (or a later one) was already used, so two
+        concurrent sign-ins can't both spend the same code."""
+        with self._store.write_tx() as db:
+            cur = db.execute(
+                "UPDATE users SET totp_last_step = ? WHERE id = ? "
+                "AND (totp_last_step IS NULL OR totp_last_step < ?)", (step, user_id, step))
+            return cur.rowcount > 0
+
+    def seal(self, text: str) -> str:
+        """Encrypt short-lived text (e.g. an unconfirmed TOTP secret kept in a session)."""
+        return self._box.encrypt(text)
+
+    def unseal(self, token: str) -> str | None:
+        return self._box.decrypt(token) if isinstance(token, str) else None
 
     def set_password_hash(self, user_id: int, password_hash: str,
                           must_change_password: bool) -> None:
@@ -296,7 +309,7 @@ class UserStore:
 
     # --- failures ----------------------------------------------------------
 
-    def record_failure(self, scope: Literal["account", "ip", "setup"], key: str) -> None:
+    def record_failure(self, scope: Literal["account", "ip", "setup", "account-lock", "ip-lock"], key: str) -> None:
         with self._store._lock, self._store._db:
             self._store._db.execute(
                 "INSERT INTO auth_failures (scope, key, at) VALUES (?, ?, ?)",

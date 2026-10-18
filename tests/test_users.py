@@ -253,3 +253,9 @@ def test_role_validated(users):
     with pytest.raises(ValueError):
         users.update(u.id, role="root")
     assert users.get(u.id).role == "admin"
+
+
+def test_seal_roundtrip(users):
+    token = users.seal("SECRET")
+    assert "SECRET" not in token and users.unseal(token) == "SECRET"
+    assert users.unseal("garbage") is None

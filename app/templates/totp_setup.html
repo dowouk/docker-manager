@@ -17,6 +17,19 @@
   <ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
   <div class="card-actions"><a class="button button-accent" href="/">Done</a></div>
 </section>
+{% elif stage == "password" %}
+<section class="card form-card">
+  <p class="card-text">Confirm your password to set up two-step sign-in.</p>
+  {% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/account/two-step" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="current_password">Current password</label>
+      <input class="input" id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="card-actions"><button type="submit" class="button button-accent">Continue</button></div>
+  </form>
+</section>
 {% else %}
 <section class="card form-card">
   {% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}

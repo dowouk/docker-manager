@@ -424,3 +424,107 @@ def test_forced_page_applies_on_live_record(app, client):
 
 def test_all_routes_still_guarded(app):
     assert_all_routes_guarded(app)
+
+
+# --- fix round 1 -------------------------------------------------------------------
+
+def test_lock_lasts_fifteen_minutes_from_when_it_trips(app, client, clock):
+    add_user(app)
+    for _ in range(5):
+        assert login(client, password="wrong wrong wrong").status_code == 401
+        clock.advance(minutes=3, seconds=30)
+    # 5th failure was at t=14 min; the first has aged out only at t=15
+    clock.advance(minutes=-3, seconds=-30)  # back to t=14
+    assert login(client).status_code == 429
+    clock.advance(minutes=14)  # t=28
+    assert login(client).status_code == 429
+    clock.advance(minutes=1, seconds=1)  # t=29:01
+    assert login(client).status_code == 303
+
+
+def test_ip_block_audit_is_not_an_account_lock(app, client):
+    for i in range(20):
+        login(client, email=f"user{i}@example.com", password="x")
+    kinds = audit(app)
+    assert ("signin", "Sign-ins blocked from an address") in kinds
+    assert not any(s.startswith("Sign-in locked") and "user19" in s for _, s in kinds)
+
+
+def test_email_is_stripped_before_lookup(app, client):
+    add_user(app)
+    assert login(client, email="  ann@example.com ").status_code == 303
+
+
+def test_unconfirmed_totp_secret_is_encrypted_in_the_session_row(app, client):
+    add_user(app, role=Role.ADMIN)
+    login(client)
+    page = client.get("/account/two-step")
+    secret = re.search(r'class="secret-key">([A-Z2-7]+)<', page.text).group(1)
+    with app.state.store._lock:
+        rows = app.state.store._db.execute("SELECT data FROM sessions").fetchall()
+    assert rows and all(secret not in r[0] for r in rows)
+    assert any("totp_setup_secret" in r[0] for r in rows)
+
+
+def test_totp_step_is_compare_and_set(app, client, monkeypatch):
+    rec = add_user(app, totp_on=True)
+    users = app.state.users
+    assert users.set_totp_last_step(rec.id, 100) is True
+    assert users.set_totp_last_step(rec.id, 100) is False
+    assert users.set_totp_last_step(rec.id, 99) is False
+    assert users.set_totp_last_step(rec.id, 101) is True
+    login(client)
+    token = csrf_of(client, "/auth/totp")
+    monkeypatch.setattr(users, "set_totp_last_step", lambda *a: False)  # lost the race
+    r = client.post("/auth/totp", data={"csrf_token": token, "code": code_now()})
+    assert r.status_code == 401
+
+
+def test_voluntary_enrolment_asks_for_current_password_first(app, client):
+    rec = add_user(app)
+    login(client)
+    page = client.get("/account/two-step")
+    assert "current_password" in page.text and "secret-key" not in page.text
+    token = csrf_of(client, "/account/two-step")
+    r = client.post("/account/two-step", data={"csrf_token": token, "current_password": "wrong"})
+    assert r.status_code == 400 and "secret-key" not in r.text
+    r = client.post("/account/two-step", data={"csrf_token": token, "current_password": PASSWORD})
+    assert r.status_code == 200 and "secret-key" in r.text
+    secret = re.search(r'class="secret-key">([A-Z2-7]+)<', r.text).group(1)
+    r = client.post("/account/two-step", data={"csrf_token": token, "code": pyotp.TOTP(secret).now()})
+    assert r.status_code == 200 and app.state.users.get(rec.id).totp_enabled
+
+
+def test_posts_refuse_missing_csrf(app, client):
+    add_user(app, totp_on=True)
+    login(client)
+    token = csrf_of(client, "/auth/totp")
+    assert client.post("/auth/totp", data={"code": code_now()}).status_code == 403
+    client.post("/auth/totp", data={"csrf_token": token, "code": code_now()})
+    assert client.post("/account/password", data={"new_password": "x"}).status_code == 403
+    assert client.post("/account/two-step", data={"current_password": PASSWORD}).status_code == 403
+
+
+def test_voluntary_password_change_ends_other_sessions(app, client):
+    rec = add_user(app)
+    app.state.sessions.create({"user_id": rec.id, "csrf": "x"})
+    login(client)
+    token = csrf_of(client, "/account/password")
+    r = client.post("/account/password", data={
+        "csrf_token": token, "current_password": PASSWORD,
+        "new_password": "a brand new passphrase", "confirm_password": "a brand new passphrase"})
+    assert r.status_code == 200
+    with app.state.store._lock:
+        n = app.state.store._db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (rec.id,)).fetchone()[0]
+    assert n == 1
+    assert client.get("/", headers=HTML).status_code != 302
+
+
+def test_forced_user_is_sent_back_from_the_other_page(app, client):
+    add_user(app, role=Role.ADMIN, must_change_password=True)
+    login(client)
+    assert client.get("/account/two-step", headers=HTML).headers["location"] == "/account/password"
+    app.state.users.set_password_hash(
+        app.state.users.by_email("local", "ann@example.com").id, hash_password(PASSWORD), False)
+    assert client.get("/account/password", headers=HTML).headers["location"] == "/account/two-step"
