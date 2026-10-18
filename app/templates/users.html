@@ -66,6 +66,7 @@
           {% endif %}
           {% if r.kind == "local" %}
           <form method="post" action="/users/{{ r.id }}/reset-password"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset password</button></form>
+          <form method="post" action="/users/{{ r.id }}/invite"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">New invite link</button></form>
           <form method="post" action="/users/{{ r.id }}/reset-two-step"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset two-step</button></form>
           {% endif %}
           <form method="post" action="/users/{{ r.id }}/sign-out"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Sign out everywhere</button></form>

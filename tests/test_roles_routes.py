@@ -52,6 +52,7 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("POST", "/users/1/reset-two-step", Role.ADMIN),
     ("POST", "/users/1/sign-out", Role.ADMIN),
     ("POST", "/users/1/delete", Role.ADMIN),
+    ("POST", "/users/1/invite", Role.ADMIN),
 ]
 
 BELOW = {Role.VIEWER: Role.PENDING, Role.OPERATOR: Role.VIEWER, Role.ADMIN: Role.OPERATOR}

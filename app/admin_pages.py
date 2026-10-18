@@ -91,6 +91,9 @@ def setup_admin_pages(app: FastAPI) -> None:
         users: UserStore = app.state.users
         email = email.strip()
         name = name.strip() or email
+        if not app.state.settings.local_sign_in:
+            return users_page(request, user, 400,
+                              "Local sign-in is turned off – turn it on in Settings first")
         if role_or_400(role) is None or method not in ("password", "invite"):
             return users_page(request, user, 400, "Choose a role and how they get started")
         if not _valid_email(email):
@@ -110,11 +113,26 @@ def setup_admin_pages(app: FastAPI) -> None:
         if password:
             return users_page(request, user, result={
                 "kind": "password", "email": rec.email, "password": password})
-        path = f"/auth/invite/{users.create_invite(rec.id)}"
+        return invite_result(request, user, rec)
+
+    def invite_result(request: Request, user: User, rec: UserRecord):
+        path = f"/auth/invite/{app.state.users.create_invite(rec.id)}"
         public = (app.state.settings.public_url or "").rstrip("/")
         return users_page(request, user, result={
             "kind": "invite", "email": rec.email, "path": path,
             "url": public + path if public else None})
+
+    @app.post("/users/{user_id}/invite", include_in_schema=False,
+              dependencies=[Depends(verify_csrf)])
+    async def users_invite(request: Request, user_id: int, user: User = Depends(admin)):
+        rec = target(user_id)
+        if rec.kind != "local":
+            return users_page(request, user, 400, "Microsoft users sign in with Microsoft")
+        if not app.state.settings.local_sign_in:
+            return users_page(request, user, 400,
+                              "Local sign-in is turned off – turn it on in Settings first")
+        audit(user, f"Created a new invite link for {rec.email}")
+        return invite_result(request, user, rec)
 
     @app.post("/users/entra", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def users_add_entra(request: Request, user: User = Depends(admin),
@@ -156,8 +174,10 @@ def setup_admin_pages(app: FastAPI) -> None:
 
     @app.post("/users/{user_id}/unpin", include_in_schema=False,
               dependencies=[Depends(verify_csrf)])
-    async def users_unpin(user_id: int, user: User = Depends(admin)):
+    async def users_unpin(request: Request, user_id: int, user: User = Depends(admin)):
         rec = target(user_id)
+        if rec.kind != "entra":
+            return users_page(request, user, 400, "Only Microsoft users can follow Entra roles")
         app.state.users.update(rec.id, role_pinned=False)
         audit(user, f"Let Entra decide the role of {rec.email}")
         return done("unpinned")
@@ -170,6 +190,7 @@ def setup_admin_pages(app: FastAPI) -> None:
         def change():
             app.state.users.update(rec.id, disabled=True)
             app.state.users.end_sessions(rec.id)
+            app.state.users.delete_invites(rec.id)
             audit(user, f"Disabled {rec.email}")
             return done("disabled")
         return guarded(request, user, change)
@@ -193,6 +214,7 @@ def setup_admin_pages(app: FastAPI) -> None:
         app.state.users.set_password_hash(
             rec.id, await asyncio.to_thread(hash_password, password), True)
         app.state.users.end_sessions(rec.id)
+        app.state.users.delete_invites(rec.id)
         audit(user, f"Reset the password of {rec.email} (one-time password)")
         return users_page(request, user, result={
             "kind": "password", "email": rec.email, "password": password})
@@ -204,8 +226,7 @@ def setup_admin_pages(app: FastAPI) -> None:
         rec = target(user_id)
         if rec.kind != "local":
             return users_page(request, user, 400, "Two-step sign-in is managed by Microsoft")
-        app.state.users.set_totp(rec.id, None, False)
-        app.state.users.set_recovery_codes(rec.id, [])
+        app.state.users.clear_two_step(rec.id)
         app.state.users.end_sessions(rec.id)
         audit(user, f"Reset two-step sign-in for {rec.email}")
         return done("two_step_reset")
@@ -239,6 +260,8 @@ def setup_admin_pages(app: FastAPI) -> None:
         # /auth/ is public, so keep invites out of an unfinished install ourselves.
         if app.state.setup.is_open():
             return RedirectResponse("/setup", status_code=303)
+        if not app.state.settings.local_sign_in:
+            return page(request, "invite.html", 403, public=True, usable=False, off=True)
         return None
 
     def invite_page(request: Request, token: str, rec: UserRecord | None, status: int = 200,
@@ -327,8 +350,7 @@ def setup_admin_pages(app: FastAPI) -> None:
         problem = await password_ok(request, rec, current_password)
         if problem:
             return account_page(request, user, 400, error=problem)
-        app.state.users.set_totp(rec.id, None, False)
-        app.state.users.set_recovery_codes(rec.id, [])
+        app.state.users.clear_two_step(rec.id)
         app.state.store.add_audit(rec.email, "account", "Two-step sign-in turned off")
         return account_page(request, user, notice="Two-step sign-in is turned off")
 

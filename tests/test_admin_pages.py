@@ -106,15 +106,36 @@ def test_change_role_pins_and_unpin_releases(app, admin):
     assert not app.state.users.get(rec.id).role_pinned
 
 
-def test_unpinned_user_role_is_recomputed_at_next_entra_sign_in(app, admin):
-    from app.roles import mapped_role
+def test_unpin_then_entra_callback_recomputes_role(app, admin, settings):
+    from unittest.mock import AsyncMock
 
-    rec = app.state.users.create("entra", "e@example.com", "E", "admin", pinned=True)
-    post(admin, f"/users/{rec.id}/unpin")
-    fresh = app.state.users.get(rec.id)
-    # sign-in applies mappings only to unpinned users (Task 7); the flag is what it checks
-    assert not fresh.role_pinned
-    assert mapped_role({"roles": ["DockerManager.Viewer"]}, []) == Role.VIEWER
+    claims = {
+        "tid": settings.azure_tenant_id,
+        "iss": f"https://login.microsoftonline.com/{settings.azure_tenant_id}/v2.0",
+        "aud": settings.azure_client_id, "oid": "oid-eve",
+        "preferred_username": "eve@corp.example", "name": "Eve",
+        "roles": ["DockerManager.Admin"],
+    }
+
+    def callback():
+        app.state.oauth.entra.authorize_access_token = AsyncMock(
+            return_value={"userinfo": claims})
+        with anonymous(app) as c:
+            assert c.get("/auth/callback?code=1&state=2", headers=HTML).status_code == 303
+
+    rec = app.state.users.create("entra", "eve@corp.example", "Eve", "viewer", pinned=True)
+    callback()
+    assert app.state.users.get(rec.id).role == "viewer"  # pinned: the mapping is ignored
+    assert post(admin, f"/users/{rec.id}/unpin").status_code == 303
+    callback()
+    after = app.state.users.get(rec.id)
+    assert after.role == "admin" and not after.role_pinned
+
+
+def test_unpin_refused_for_local_users(app, admin):
+    ann = local(app)
+    r = post(admin, f"/users/{ann.id}/unpin")
+    assert r.status_code == 400 and "Only Microsoft users" in r.text
 
 
 def test_disable_ends_live_session_immediately(app, admin):
@@ -264,7 +285,10 @@ def test_invite_redirects_to_setup_while_setup_open(app):
     with anonymous(app) as c:
         r = c.get("/auth/invite/whatever")
         assert r.status_code == 303 and r.headers["location"] == "/setup"
-        assert c.post("/auth/invite/whatever", data={"csrf_token": "x"}).status_code in (303, 403)
+        csrf = anon_csrf(c, "/auth/login")
+        r = c.post("/auth/invite/whatever", data={"csrf_token": csrf, "new_password": PASSWORD,
+                                                  "confirm_password": PASSWORD})
+        assert r.status_code == 303 and r.headers["location"] == "/setup"
 
 
 def test_invite_without_public_url_shows_path_and_warning(app, admin):
@@ -410,3 +434,80 @@ def test_no_secrets_in_any_rendered_page(app, admin):
     for html in pages:
         for bad in forbidden:
             assert bad not in html
+
+
+# --- review fixes -------------------------------------------------------------------
+
+def test_invite_refused_while_local_sign_in_is_off(app, admin):
+    r = post(admin, "/users/local", email="ann@example.com", role="viewer", method="invite")
+    path = secret_after(r.text, "Invite link").removeprefix("https://dash.example.com")
+    app.state.settings = app.state.settings.model_copy(update={"local_sign_in": False})
+    with anonymous(app) as c:
+        assert c.get(path).status_code == 403
+        set_session(c, app, {"csrf": CSRF})  # the sign-in page has no form to read one from
+        r = c.post(path, data={"csrf_token": CSRF, "new_password": PASSWORD,
+                               "confirm_password": PASSWORD})
+        assert r.status_code == 403 and "Local sign-in is turned off" in r.text
+        assert c.get("/", headers=HTML).status_code == 302
+    assert app.state.users.by_email("local", "ann@example.com").password_hash is None
+
+
+def test_creating_local_users_refused_while_local_sign_in_is_off(app, admin):
+    app.state.settings = app.state.settings.model_copy(update={"local_sign_in": False})
+    for method in ("invite", "password"):
+        r = post(admin, "/users/local", email="ann@example.com", role="viewer", method=method)
+        assert r.status_code == 400 and "Local sign-in is turned off" in r.text
+    assert app.state.users.by_email("local", "ann@example.com") is None
+    ann = local(app, "bob@example.com")
+    assert post(admin, f"/users/{ann.id}/invite").status_code == 400
+
+
+def _invite_path(app, admin, email="ann@example.com"):
+    r = post(admin, "/users/local", email=email, role="viewer", method="invite")
+    return secret_after(r.text, "Invite link").removeprefix("https://dash.example.com")
+
+
+def _dead(app, path):
+    with anonymous(app) as c:
+        return c.get(path).status_code == 410
+
+
+def test_new_invite_replaces_the_old_one(app, admin):
+    old = _invite_path(app, admin)
+    ann = app.state.users.by_email("local", "ann@example.com")
+    r = post(admin, f"/users/{ann.id}/invite")
+    assert r.status_code == 200 and "no-store" in r.headers["cache-control"]
+    new = secret_after(r.text, "Invite link").removeprefix("https://dash.example.com")
+    assert new != old and _dead(app, old)
+    with anonymous(app) as c:
+        assert c.get(new).status_code == 200
+
+
+def test_invite_route_is_local_only(app, admin):
+    rec = app.state.users.create("entra", "e@example.com", "E", "viewer")
+    assert post(admin, f"/users/{rec.id}/invite").status_code == 400
+    assert post(admin, "/users/999/invite").status_code == 404
+
+
+def test_outstanding_invites_die_on_reset_password_disable_and_delete(app, admin):
+    for action in ("reset-password", "disable", "delete"):
+        email = f"{action}@example.com"
+        path = _invite_path(app, admin, email)
+        rec = app.state.users.by_email("local", email)
+        data = {"confirm_email": email} if action == "delete" else {}
+        assert post(admin, f"/users/{rec.id}/{action}", **data).status_code in (200, 303)
+        assert _dead(app, path), action
+
+
+def test_clear_two_step_clears_everything_in_one_go(app):
+    ann = local(app)
+    users = app.state.users
+    users.set_totp(ann.id, "JBSWY3DPEHPK3PXP", True)
+    users.set_totp_last_step(ann.id, 5)
+    users.set_recovery_codes(ann.id, ["x", "y"])
+    users.clear_two_step(ann.id)
+    rec = users.get(ann.id)
+    assert (rec.totp_secret, rec.totp_enabled, rec.totp_last_step, rec.recovery_codes) == (
+        None, False, None, [])
+    with pytest.raises(KeyError):
+        users.clear_two_step(9999)

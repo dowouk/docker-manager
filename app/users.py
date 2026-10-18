@@ -238,6 +238,16 @@ class UserStore:
         self._update(user_id, _INTERNAL, dict(
             totp_secret=encrypted, totp_enabled=enabled, totp_last_step=None))
 
+    def clear_two_step(self, user_id: int) -> None:
+        """Forget the TOTP secret, its enabled flag and last step, and every recovery code
+        in one transaction."""
+        with self._store.write_tx() as db:
+            cur = db.execute(
+                "UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL, "
+                "recovery_codes = '[]' WHERE id = ?", (user_id,))
+            if cur.rowcount == 0:
+                raise KeyError(user_id)
+
     def totp_secret(self, user: UserRecord) -> str | None:
         if not user.totp_secret:
             return None
@@ -306,9 +316,14 @@ class UserStore:
     def create_invite(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)
         with self._store.write_tx() as db:
+            db.execute("DELETE FROM invites WHERE user_id = ?", (user_id,))  # newest only
             db.execute("INSERT INTO invites (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
                        (_hash(token), user_id, _to_iso(self._clock() + INVITE_TTL)))
         return token
+
+    def delete_invites(self, user_id: int) -> None:
+        with self._store.write_tx() as db:
+            db.execute("DELETE FROM invites WHERE user_id = ?", (user_id,))
 
     def peek_invite(self, token: str) -> UserRecord | None:
         """The user an unexpired invite is for, without using it up (for the form page)."""

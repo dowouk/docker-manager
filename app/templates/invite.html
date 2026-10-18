@@ -1,7 +1,10 @@
 {% extends "base_public.html" %}
 {% block title %}Accept invite{% endblock %}
 {% block content %}
-{% if not usable %}
+{% if off %}
+<h1 class="auth-title">Invite not available</h1>
+<p class="lede">Local sign-in is turned off.</p>
+{% elif not usable %}
 <h1 class="auth-title">Invite not valid</h1>
 <p class="lede">This invite link has expired or has already been used. Ask an Admin for a new one.</p>
 <a class="button button-quiet button-block" href="/auth/login">Go to sign in</a>
