@@ -121,3 +121,28 @@ def test_registry_logins_round_trip_encrypted(settings, tmp_path):
 
 def test_key_path_defaults_to_data_dir(settings, tmp_path):
     assert key_path(settings) == str(tmp_path / "secret.key")
+
+
+def test_empty_env_value_does_not_lock(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("ACS_CONNECTION_STRING", "")
+    monkeypatch.setenv("DIGEST_FROM", "")
+    monkeypatch.setenv("DIGEST_TO", "")
+    base = Settings(_env_file=None)
+    s = svc(base, tmp_path)
+    for name in ("acs_connection_string", "digest_from", "digest_to"):
+        assert s.locked(name) is None
+    s.save("email", {"acs_connection_string": "endpoint=x", "digest_from": "d@x.com",
+                     "digest_to": "a@b.c", "digest_schedule": "0 8 * * MON",
+                     "digest_when_none": "on"}, "me")
+    eff = s.effective()
+    assert eff.acs_connection_string == "endpoint=x"
+    assert eff.digest_from == "d@x.com"
+    assert eff.digest_to == ["a@b.c"]
+
+
+def test_false_env_value_still_locks(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("DIGEST_WHEN_NONE", "false")
+    s = svc(Settings(_env_file=None), tmp_path)
+    assert s.locked("digest_when_none") == "DIGEST_WHEN_NONE"
+    s.save("email", {"digest_when_none": "on", "digest_schedule": "0 8 * * MON"}, "me")
+    assert s.effective().digest_when_none is False

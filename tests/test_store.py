@@ -165,3 +165,37 @@ def test_session_touch_and_update_never_create_rows(tmp_path):
     assert s.session_get("h") == ({"a": 2}, now, later)
     assert s.session_touch("h", now) is True
     assert s.session_get("h") == ({"a": 2}, now, now)
+
+
+def _make_0_1(path):
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+               "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
+               "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')")
+    db.commit(); db.close()
+
+
+def test_upgrade_flag_survives_a_failed_migration(tmp_path, monkeypatch):
+    import pytest
+
+    from app import store as store_mod
+
+    path = str(tmp_path / "d.db")
+    _make_0_1(path)
+
+    def boom(db):
+        raise RuntimeError("migration 2 failed")
+
+    monkeypatch.setattr(store_mod, "MIGRATIONS", [store_mod._migration_1, boom])
+    with pytest.raises(RuntimeError):
+        Store(path)
+    monkeypatch.undo()
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+
+
+def test_upgrade_flag_kept_across_restarts(tmp_path):
+    path = str(tmp_path / "d.db")
+    _make_0_1(path)
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"
+    assert Store(path).get_meta("upgraded_from_0_1") == "1"

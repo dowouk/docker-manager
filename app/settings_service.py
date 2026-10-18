@@ -168,6 +168,13 @@ def logins_from_stored(stored, box: SecretBox) -> list[dict]:
     return _logins_from_plain(plain)
 
 
+def _env_set(base: Settings, name: str) -> bool:
+    """True if the environment really sets this field. An empty value (0.1 compose files
+    passed `ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"` even when unset) does not
+    count; `false` and 0 do."""
+    return name in base.model_fields_set and getattr(base, name, None) not in (None, "", [])
+
+
 class SettingsService:
     def __init__(self, base: Settings, store: Store, box: SecretBox) -> None:
         self._base = base
@@ -193,7 +200,7 @@ class SettingsService:
         overlay: dict[str, object] = {}
         for name, stored in self._store.load_settings().items():
             field = _BY_NAME.get(name)
-            if (field is None or name in base.model_fields_set
+            if (field is None or _env_set(base, name)
                     or name not in type(base).model_fields):
                 continue
             if field.kind == "secret":
@@ -205,7 +212,7 @@ class SettingsService:
         return type(base).model_validate({**base.model_dump(), **overlay})
 
     def locked(self, name: str) -> str | None:
-        return name.upper() if name in self._base.model_fields_set else None
+        return name.upper() if _env_set(self._base, name) else None
 
     def has_secret(self, name: str) -> bool:
         return name in self._store.load_settings() and name not in self.unreadable \

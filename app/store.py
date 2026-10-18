@@ -102,14 +102,17 @@ class Store:
     def _migrate(self) -> None:
         # Judged before migration 1, which would create the 0.1 tables on a fresh database.
         upgraded = not self._table_exists("schema_version") and self._table_exists("jobs")
-        self._db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
-        row = self._db.execute("SELECT version FROM schema_version").fetchone()
-        current = row[0] if row else 0
-        for number, migration in enumerate(MIGRATIONS, start=1):
-            if number <= current:
-                continue
-            self._db.execute("BEGIN")
-            try:
+        # One transaction for creating schema_version and every pending migration, so a
+        # failure part-way leaves nothing behind and the next start judges "upgraded" again.
+        self._db.execute("BEGIN")
+        try:
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+            row = self._db.execute("SELECT version FROM schema_version").fetchone()
+            current = row[0] if row else 0
+            for number, migration in enumerate(MIGRATIONS, start=1):
+                if number <= current:
+                    continue
                 migration(self._db)
                 if number == len(MIGRATIONS) and upgraded:
                     self._db.execute(
@@ -117,10 +120,10 @@ class Store:
                     )
                 self._db.execute("DELETE FROM schema_version")
                 self._db.execute("INSERT INTO schema_version (version) VALUES (?)", (number,))
-                self._db.execute("COMMIT")
-            except BaseException:
-                self._db.execute("ROLLBACK")
-                raise
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
 
     def get_meta(self, key: str) -> str | None:
         with self._lock:
