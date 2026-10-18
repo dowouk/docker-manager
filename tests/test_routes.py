@@ -17,7 +17,7 @@ from app.config import Settings
 from app.main import apply_settings, create_app
 from app.store import Store
 from notify_fakes import FakeProvider, providers_for
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, sign_in
+from auth_helpers import CHECKING_FORM, CSRF, assert_all_routes_guarded, logged_in_client, sign_in
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
 
