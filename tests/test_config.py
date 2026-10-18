@@ -66,5 +66,23 @@ def test_entra_optional_and_enabled_property(monkeypatch):
     assert s.public_url is None and not s.entra_enabled
     assert s.local_sign_in and s.require_totp_admins and not s.hide_local_for_non_admins
     assert s.default_role == "viewer"
-    s = Settings(_env_file=None, azure_tenant_id="t", azure_client_id="c", azure_client_secret="s")
+    s = Settings(_env_file=None, public_url="https://x.example", azure_tenant_id="t",
+                 azure_client_id="c", azure_client_secret="s")
     assert s.entra_enabled
+
+
+def test_entra_needs_public_url(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("PUBLIC_URL", raising=False)
+    s = Settings(_env_file=None, azure_tenant_id="t", azure_client_id="c", azure_client_secret="s")
+    assert not s.entra_enabled
+    assert Settings(_env_file=None, public_url="https://x.example", azure_tenant_id="t",
+                    azure_client_id="c", azure_client_secret="s").entra_enabled
+
+
+def test_bad_default_role_falls_back(monkeypatch):
+    from app.config import Settings
+
+    assert Settings(_env_file=None, default_role="admin").default_role == "viewer"
+    assert Settings(_env_file=None, default_role="admin_legacy").default_role == "admin_legacy"

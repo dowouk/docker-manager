@@ -238,10 +238,6 @@ Settings can be environment variables in the compose file, and many can also be 
 | `TZ` | No | `Europe/London` | Yes | Time zone for the schedule and the times shown |
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | Yes | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
 | `REGISTRY_AUTH_FILE` | No | – | Logins can be added there instead | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
-| `LOCAL_SIGN_IN` | No | `true` | Yes | Allow local accounts (email and password kept on this server) |
-| `HIDE_LOCAL_FOR_NON_ADMINS` | No | `false` | Yes | Show local sign-in only behind an "Admin sign-in" link |
-| `REQUIRE_TOTP_ADMINS` | No | `true` | Yes | Require two-step sign-in for local Admin accounts |
-| `DEFAULT_ROLE` | No | `viewer` | Yes | Role given to new Microsoft sign-ins: `pending`, `viewer` or `operator` |
 | `DATA_DIR` | No | `/data` | No | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 | `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | No | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 

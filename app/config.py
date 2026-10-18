@@ -1,8 +1,11 @@
+import logging
 from functools import lru_cache
 from typing import Annotated
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -42,9 +45,19 @@ class Settings(BaseSettings):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
 
+    @field_validator("default_role", mode="after")
+    @classmethod
+    def _known_default_role(cls, value):
+        if value not in ("pending", "viewer", "operator", "admin_legacy"):
+            log.warning("Ignoring unknown default role %r; using viewer", value)
+            return "viewer"
+        return value
+
     @property
     def entra_enabled(self) -> bool:
-        return bool(self.azure_tenant_id and self.azure_client_id and self.azure_client_secret)
+        # No public address, no sign-in: the redirect URI is never taken from request headers.
+        return bool(self.public_url and self.azure_tenant_id and self.azure_client_id
+                    and self.azure_client_secret)
 
     @property
     def digest_enabled(self) -> bool:

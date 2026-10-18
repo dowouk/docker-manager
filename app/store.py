@@ -114,6 +114,10 @@ def _from_iso(value: str | None) -> datetime | None:
 
 
 class Store:
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
     def __init__(self, path: str) -> None:
         self.path = path
         parent = os.path.dirname(path)

@@ -14,16 +14,24 @@ class Role(str, Enum):
 
     # str's own ordering would compare the text; compare by rank instead.
     def __ge__(self, other):
-        return self.rank >= Role(other).rank
+        if not isinstance(other, Role):
+            return NotImplemented
+        return self.rank >= other.rank
 
     def __gt__(self, other):
-        return self.rank > Role(other).rank
+        if not isinstance(other, Role):
+            return NotImplemented
+        return self.rank > other.rank
 
     def __le__(self, other):
-        return self.rank <= Role(other).rank
+        if not isinstance(other, Role):
+            return NotImplemented
+        return self.rank <= other.rank
 
     def __lt__(self, other):
-        return self.rank < Role(other).rank
+        if not isinstance(other, Role):
+            return NotImplemented
+        return self.rank < other.rank
 
     __hash__ = str.__hash__
 

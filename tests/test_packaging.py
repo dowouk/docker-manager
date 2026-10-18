@@ -86,7 +86,11 @@ def test_env_example_covers_every_value_the_examples_read_from_it():
 
 def test_readme_documents_every_setting():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    from app.settings_service import UI_ONLY
+
     for name in Settings.model_fields:
+        if name in UI_ONLY:
+            continue  # set on the Settings page only
         assert f"`{name.upper()}`" in readme, f"README is missing {name.upper()}"
     assert "—" not in readme, "README must use en dashes, not em dashes"
 

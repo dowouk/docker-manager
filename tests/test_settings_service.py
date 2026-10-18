@@ -261,3 +261,34 @@ def test_group_mappings_validated(settings, tmp_path, bad):
     with pytest.raises(ValueError):
         s.save_group_mappings(bad, "me", "x")
     assert s.group_mappings() == []
+
+
+def test_env_default_role_and_local_sign_in_ignored(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEFAULT_ROLE", "admin")
+    monkeypatch.setenv("LOCAL_SIGN_IN", "false")
+    s = svc(Settings(_env_file=None), tmp_path)
+    assert s.locked("default_role") is None and s.locked("local_sign_in") is None
+    eff = s.effective()
+    assert eff.default_role == "viewer" and eff.local_sign_in is True
+
+
+def test_db_local_off_without_entra_is_forced_on(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    s._store.save_settings({"local_sign_in": False})
+    assert s.effective().local_sign_in is True
+
+
+@pytest.mark.parametrize("url", ["https://u:p@x.example", "https://x.example/?a=1",
+                                 "https://x.example/#f", "https://x.example@evil.com"])
+def test_public_url_rejects_credentials_query_fragment(settings, tmp_path, monkeypatch, url):
+    base = _unlocked(monkeypatch, "SERVER_NAME", "PUBLIC_URL")
+    with pytest.raises(SettingsError):
+        svc(base, tmp_path).save("general", {**GENERAL, "public_url": url}, "me")
+
+
+def test_duplicate_group_ids_rejected(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    with pytest.raises(ValueError):
+        s.save_group_mappings([{"group_id": GUID, "role": "admin"},
+                               {"group_id": GUID.upper(), "role": "viewer"}], "me", "x")

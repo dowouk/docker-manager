@@ -20,7 +20,7 @@ class FakeRunner:
 
 @pytest.fixture
 def app(settings, tmp_path):
-    return create_app(
+    app = create_app(
         settings,
         docker_client=object(),
         http=httpx.AsyncClient(),
@@ -28,6 +28,8 @@ def app(settings, tmp_path):
         runner=FakeRunner(),
         start_scheduler=False,
     )
+    yield app
+    app.state.store.close()
 
 
 @pytest.fixture
@@ -251,6 +253,33 @@ def test_signin_section_renders_choice_as_select(client):
 def test_signin_save_refuses_turning_off_local_without_entra(client, app):
     # AZURE_* come from the env in the fixture, so Entra counts as configured
     r = client.post("/settings/signin", data={"csrf_token": CSRF, "default_role": "operator"})
-    assert r.status_code == 303 or r.status_code == 302
+    assert r.status_code == 303
     assert app.state.settings.default_role == "operator"
     assert app.state.settings.local_sign_in is False
+
+
+def test_signin_refusal_shown_on_page(settings, tmp_path, monkeypatch):
+    for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+        monkeypatch.delenv(k)
+    from app.config import Settings
+
+    store = Store(str(tmp_path / "x" / "dashboard.db"))
+    app = create_app(Settings(_env_file=None), docker_client=object(), http=httpx.AsyncClient(),
+                     store=store, runner=FakeRunner(), start_scheduler=False)
+    try:
+        with logged_in_client(app, follow_redirects=False) as c:
+            r = c.post("/settings/signin", data={"csrf_token": CSRF, "default_role": "viewer"})
+            assert r.status_code == 400
+            assert "Turn on Microsoft sign-in first" in r.text
+    finally:
+        store.close()
+
+
+def test_admin_legacy_option_only_while_current(client, app):
+    assert "Admin (as in 0.1)" not in client.get("/settings").text
+    app.state.store.save_settings({"default_role": "admin_legacy"})
+    from app.main import apply_settings
+
+    apply_settings(app)
+    text = client.get("/settings").text
+    assert '<option value="admin_legacy" selected>Admin (as in 0.1)</option>' in text

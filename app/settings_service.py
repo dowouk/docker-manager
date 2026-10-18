@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 
 REGISTRY_LOGINS = "registry_logins"
 GROUP_MAPPINGS = "group_mappings"
+# Set on the page only: an environment value must not preset (or lock) these.
+UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins",
+                     "require_totp_admins", "default_role"})
 LOCAL_OFF_MESSAGE = "Turn on Microsoft sign-in first, or you won't be able to sign in"
 _GUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 MAPPABLE_ROLES = {"viewer": "Viewer", "operator": "Operator", "admin": "Admin"}
@@ -100,6 +103,8 @@ def _valid_email(value: str) -> bool:
 
 def _valid_public_url(value: str) -> bool:
     parts = urlsplit(value)
+    if "?" in value or "#" in value or parts.username or parts.password or "@" in parts.netloc:
+        return False
     if parts.path not in ("", "/") or parts.query or parts.fragment or not parts.hostname:
         return False
     if parts.scheme == "https":
@@ -107,10 +112,10 @@ def _valid_public_url(value: str) -> bool:
     return parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
 
 
-def _choices_for(field: Field, current) -> tuple[tuple[str, str], ...]:
+def choices_for(field: Field, current) -> tuple[tuple[str, str], ...]:
     """The choices on offer; the upgrade-only `admin_legacy` shows only while it is set."""
     if field.name == "default_role" and current == "admin_legacy":
-        return (*field.choices, ("admin_legacy", "Admin (set when upgrading – change this)"))
+        return (*field.choices, ("admin_legacy", "Admin (as in 0.1)"))
     return field.choices
 
 
@@ -121,7 +126,7 @@ def _parse(field: Field, raw: str, current=None):
     if kind == "bool":
         return raw == "on"
     if kind == "choice":
-        if raw not in {value for value, _ in _choices_for(field, current)}:
+        if raw not in {value for value, _ in choices_for(field, current)}:
             raise ValueError("Choose one of the options")
         return raw
     if kind == "text":
@@ -228,7 +233,7 @@ def _env_set(base: Settings, name: str) -> bool:
     """True if the environment really sets this field. An empty value (0.1 compose files
     passed `ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"` even when unset) does not
     count; `false` and 0 do."""
-    return name in base.model_fields_set and getattr(base, name, None) not in (None, "", [])
+    return name not in UI_ONLY and name in base.model_fields_set and getattr(base, name, None) not in (None, "", [])
 
 
 class SettingsService:
@@ -265,7 +270,15 @@ class SettingsService:
                     overlay[name] = plain
             else:
                 overlay[name] = stored
-        return type(base).model_validate({**base.model_dump(), **overlay})
+        defaults = {n: type(base).model_fields[n].default for n in UI_ONLY}
+        settings = type(base).model_validate({**base.model_dump(), **defaults, **overlay})
+        if not settings.local_sign_in and not settings.entra_enabled:
+            if "local_sign_in" not in self._warned:
+                self._warned.add("local_sign_in")
+                log.warning("Local sign-in is turned off but Microsoft sign-in isn't usable; "
+                            "keeping local sign-in on")
+            settings = settings.model_copy(update={"local_sign_in": True})
+        return settings
 
     def locked(self, name: str) -> str | None:
         return name.upper() if _env_set(self._base, name) else None
@@ -330,7 +343,8 @@ class SettingsService:
     def _entra_after(current: Settings, updates: dict) -> bool:
         def has(name):
             return bool(updates[name]) if name in updates else bool(getattr(current, name))
-        return all(has(n) for n in ("azure_tenant_id", "azure_client_id", "azure_client_secret"))
+        return all(has(n) for n in ("public_url", "azure_tenant_id", "azure_client_id",
+                                    "azure_client_secret"))
 
     def group_mappings(self) -> list[dict]:
         stored = self._store.load_settings().get(GROUP_MAPPINGS)
@@ -341,6 +355,7 @@ class SettingsService:
 
     def save_group_mappings(self, mappings: list[dict], user: str, summary: str) -> None:
         clean = []
+        seen: set[str] = set()
         for m in mappings:
             group_id = str(m.get("group_id", "")).strip()
             role = m.get("role")
@@ -348,6 +363,9 @@ class SettingsService:
                 raise ValueError("Enter the group's Object ID, which looks like a GUID")
             if role not in MAPPABLE_ROLES:
                 raise ValueError("Choose Viewer, Operator or Admin")
+            if group_id.lower() in seen:
+                raise ValueError("That group already has a role")
+            seen.add(group_id.lower())
             clean.append({"group_id": group_id.lower(), "role": role})
         self._store.save_settings({GROUP_MAPPINGS: clean})
         self._store.add_audit(user, "settings", summary)

@@ -467,9 +467,31 @@ def test_login_without_entra_is_503_page(settings, monkeypatch):
     from app.config import Settings
 
     app = make_app(Settings(_env_file=None))
-    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
-        r = c.get("/auth/login")
-        assert r.status_code == 503
-        assert "Microsoft sign-in isn't set up" in r.text
-        assert c.get("/auth/signed-out").status_code == 200
-        assert c.get("/").status_code == 401
+    try:
+        with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+            r = c.get("/auth/login")
+            assert r.status_code == 503
+            assert "Microsoft sign-in isn't set up" in r.text
+            assert c.get("/auth/signed-out").status_code == 200
+            assert c.get("/").status_code == 401
+    finally:
+        app.state.sessions._store.close()
+
+
+def test_no_public_url_means_not_set_up_and_headers_never_used(settings, monkeypatch):
+    monkeypatch.delenv("PUBLIC_URL")
+    from app.config import Settings
+
+    s = Settings(_env_file=None)
+    assert not s.entra_enabled
+    app = make_app(s)
+    try:
+        with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+            for path in ("/auth/login", "/auth/callback"):
+                r = c.get(path, headers={"X-Forwarded-Host": "evil.example",
+                                         "Host": "evil.example"})
+                assert r.status_code == 503
+                assert "Set the dashboard address on the Settings page first" in r.text
+                assert "evil.example" not in r.text and "location" not in r.headers
+    finally:
+        app.state.sessions._store.close()

@@ -34,3 +34,10 @@ def test_default_role_for_new():
     assert default_role_for_new("admin_legacy") == (Role.ADMIN, True)
     assert default_role_for_new("viewer") == (Role.VIEWER, False)
     assert default_role_for_new("pending") == (Role.PENDING, False)
+
+
+def test_comparison_with_non_roles_not_implemented():
+    import pytest
+
+    with pytest.raises(TypeError):
+        Role.ADMIN >= 3

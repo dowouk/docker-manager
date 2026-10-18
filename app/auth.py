@@ -166,6 +166,10 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
         @app.get("/auth/login", include_in_schema=False)
         @app.get("/auth/callback", include_in_schema=False)
         async def not_set_up():
+            if (settings.azure_tenant_id and settings.azure_client_id
+                    and settings.azure_client_secret):
+                return _page("Microsoft sign-in isn't set up",
+                             "Set the dashboard address on the Settings page first.", 503)
             return _page("Microsoft sign-in isn't set up",
                          "Ask the administrator to set up Microsoft sign-in.", 503)
 
@@ -182,12 +186,10 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
         client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
     )
     app.state.oauth = oauth
-    public = settings.public_url.rstrip("/") if settings.public_url else None
+    redirect_uri = settings.public_url.rstrip("/") + "/auth/callback"
 
     @app.get("/auth/login", include_in_schema=False)
     async def login(request: Request):
-        redirect_uri = (public + "/auth/callback" if public
-                        else str(request.url_for("callback")))
         return await oauth.entra.authorize_redirect(request, redirect_uri)
 
     @app.get("/auth/callback", include_in_schema=False)
