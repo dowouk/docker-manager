@@ -20,6 +20,8 @@ dependencies = [
     "python-multipart==0.0.*",
     "cryptography==50.*",
     "argon2-cffi==25.*",
+    "pyotp==2.*",
+    "segno==1.*",
 ]
 
 [project.scripts]
