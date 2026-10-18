@@ -17,7 +17,7 @@ MAX_PATTERNS = 10
 MAX_PATTERN_LENGTH = 200
 MATCH_TIMEOUT = 0.05
 MAX_URL_LENGTH = 500
-MATCH_BUDGET = 0.5  # seconds of pattern matching allowed per container per check
+MATCH_BUDGET = 0.5  # CPU seconds of matching per container per check, once a pattern timed out
 MAX_COUNT = 20
 
 _BOOLS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
@@ -59,8 +59,7 @@ def _parse_bool(text: str) -> bool:
         raise ValueError("use true or false") from None
 
 
-_COUNTED = re.compile(r"\{(\d*)(?:(,)(\d*))?\}")
-_FLAG_GROUP = re.compile(r"\(\?[a-zA-Z]+(?:-[a-zA-Z]+)?[:)]")
+_COUNTED = re.compile(r"\{(\d+)(?:,(\d+))?\}")
 
 
 def _check_syntax(pattern: str) -> None:
@@ -95,15 +94,14 @@ def _check_syntax(pattern: str) -> None:
             continue
         if ch == "(":
             if pattern.startswith("(?", i):
-                flag = _FLAG_GROUP.match(pattern, i)
-                if flag is None and not (
-                    pattern.startswith("(?:", i)
-                    or pattern.startswith("(?P<", i)
-                    or (pattern.startswith("(?<", i) and pattern[i + 3: i + 4] not in ("=", "!"))
-                ):
-                    raise ValueError("lookarounds, conditionals and recursion are not supported")
+                # Only a plain (?: group: no flags (x/verbose included), names, lookarounds,
+                # atomic groups, recursion, conditionals or comments.
+                if not pattern.startswith("(?:", i):
+                    raise ValueError("only plain (?: ) grouping is supported")
+                i += 3
+            else:
+                i += 1
             frames.append(False)
-            i += 1
             last_group_quantified = after_quant = False
             continue
         if ch == ")":
@@ -121,10 +119,11 @@ def _check_syntax(pattern: str) -> None:
             quant_end = i + 1
         elif ch == "{":
             m = _COUNTED.match(pattern, i)
-            if m and (m.group(1) or m.group(3)):
-                if any(g and int(g) > MAX_COUNT for g in (m.group(1), m.group(3))):
-                    raise ValueError(f"repeat counts can be at most {MAX_COUNT}")
-                quant_end = m.end()
+            if m is None:
+                raise ValueError("braces must be a repeat like {3} or {1,5} (or escaped as \\{)")
+            if any(g and int(g) > MAX_COUNT for g in m.groups()):
+                raise ValueError(f"repeat counts can be at most {MAX_COUNT}")
+            quant_end = m.end()
         if quant_end is not None:
             if after_quant or last_group_quantified:
                 raise ValueError("a repeated group can't contain another repeat")
@@ -212,6 +211,7 @@ class TagFilter:
         self.warnings = warnings if warnings is not None else []
         self._off: set[str] = set()
         self._spent = 0.0
+        self._timed_out = False
         self._over = False
 
     def _warn(self, message: str) -> None:
@@ -225,6 +225,7 @@ class TagFilter:
             return regex.fullmatch(pattern, tag, timeout=MATCH_TIMEOUT, concurrent=True) is not None
         except (TimeoutError, regex.error, ValueError, OverflowError) as exc:
             self._off.add(pattern)
+            self._timed_out = self._timed_out or isinstance(exc, TimeoutError)
             reason = "took too long" if isinstance(exc, TimeoutError) else "is not valid"
             self._warn(f"Tag pattern '{pattern}' {reason} and was treated as no match")
             return False
@@ -235,14 +236,15 @@ class TagFilter:
             return True
         if self._over:
             return False
-        started = time.monotonic()
+        started = time.thread_time()  # CPU time of this thread: other threads don't count
         try:
             if rules.include_tags and not any(self._matches(p, tag) for p in rules.include_tags):
                 return False
             return not any(self._matches(p, tag) for p in rules.exclude_tags)
         finally:
-            self._spent += time.monotonic() - started
-            if self._spent > MATCH_BUDGET and not self._over:
+            self._spent += time.thread_time() - started
+            # Cheap patterns never truncate: the budget only applies once one has timed out.
+            if self._timed_out and self._spent > MATCH_BUDGET and not self._over:
                 self._over = True
                 self._warn("Tag patterns took too long – the remaining tags were not considered")
 

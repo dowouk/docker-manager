@@ -206,9 +206,15 @@ async def test_not_watched_and_notify_false_in_views(tmp_path, settings):
 
 
 PROBES = ["((((a{50}){50}){50}){50})", "((((a{100}){100}){100}){100})", "(a+)+", "(a{2}){3}",
-          "a{21}", "a{1,21}", "(a)\\1", "(?=a)", "(?<!a)b", "(?P=x)", "a{2}{3}", "(?(1)a|b)"]
+          "a{21}", "a{1,21}", "(a)\\1", "(?=a)", "(?<!a)b", "(?P=x)", "a{2}{3}", "(?(1)a|b)",
+          "(?x)(?:(?:(?:(?:a{20}) {20}) {20}) {20}) {20}",
+          "(?x)(((((a{20}) {20}) {20}) {20}) {20}) {20}",
+          "(?x)#[\n((((a{20}){20}){20}){20}){20}\n]",
+          "(?xi)(?:(?:a{20}) {20})", "(?x:(?:a{20}) {20})", "(?R)", "(a{20}){,}", "(?:abc){e<=3}",
+          "a{,}", "a{3,}", "a{,3}", "a{b", "(?#c)a", "(?>a)", "(?i)a", "(?P<n>a)", "(?<n>a)"]
 GOOD = ["16\\..*", "^v?\\d+$", "(a|aa)+$", "(?:1|2)\\.\\d+", "a{20}", "[a-z]{1,20}", "x{2}y{3}",
-        "(?i)RC.*", "[(]{2}", "a+?b*", "(?P<n>a)b", "\\{3\\}"]
+        "[(]{2}", "a+?b*", "\\{3\\}", "(?:-alpine)?", "16\\.(?:1|2)?", "\\d+(?:-alpine)?",
+        "(?:a){20}", "(a|b)+", "[{]x"]
 
 
 @pytest.mark.parametrize("pattern", PROBES)
@@ -281,13 +287,27 @@ def test_pattern_that_times_out_is_switched_off(monkeypatch):
     assert len(calls) == 1
 
 
-def test_match_budget_stops_matching(monkeypatch):
+def test_budget_applies_only_after_a_timeout(monkeypatch):
     import app.rules as r
     monkeypatch.setattr(r, "MATCH_BUDGET", 0.0)
-    f = r.TagFilter(Rules(include_tags=("1.*",)))
-    assert f.allowed("1.1") is True  # first call spends the budget
+    cheap = r.TagFilter(Rules(include_tags=("1.*",)))
+    assert all(cheap.allowed(f"1.{i}") for i in range(50)) and cheap.warnings == []
+    f = r.TagFilter(Rules(exclude_tags=("(1|11)+$",)))
+    assert f.allowed("1" * 40 + "!")  # times out; the budget is now spent
     assert f.allowed("1.2") is False
     assert any("took too long" in w for w in f.warnings)
+
+
+async def test_cheap_patterns_never_truncate_big_tag_lists(tmp_path, settings):
+    tags = [f"1{i % 10}.{i // 10}.{i % 7}" for i in range(2000)]
+    reg = FakeRegistry({"pg:10.0.0": "sha256:old"}, {"pg:10.0.0": tags})
+    cs = [info(tmp_path, name=f"db{i}", image="pg:10.0.0", digests=["pg@sha256:old"])
+          for i in range(20)]
+    rules = Rules(include_tags=("1[0-9]\\.\\d+\\.\\d+",),
+                  exclude_tags=(".*-rc.*", ".*alpha.*", ".*-slim"))
+    result = await check_all(cs, reg, settings, None, rules_for=lambda _: rules)
+    assert all(c.rule_warnings == [] for c in result.containers)
+    assert all(c.minor_update is not None for c in result.containers)
 
 
 @pytest.mark.parametrize("bad", [5, None, [1], "abc", ["(a|b"], {"x": 1}])
@@ -295,8 +315,7 @@ def test_hand_edited_list_values_ignored(store, bad):
     store.save_settings({"container_rules": {"site/web": {"include_tags": bad}}})
     rules = RulesStore(store).effective(container())
     assert rules.include_tags == ()
-    if bad != ["(a|b"]:  # an unbalanced pattern is only found at match time
-        assert rules.warnings
+    assert rules.warnings
 
 
 @pytest.mark.parametrize("field,bad", [
