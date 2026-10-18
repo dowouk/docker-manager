@@ -45,6 +45,19 @@ def layout_lines(problems: list[LayoutProblem]) -> list[str]:
     return lines
 
 
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def layout_summary(problems: list[LayoutProblem]) -> str:
+    """"2 layout problems and 1 notice": notices (not started by compose) count separately."""
+    notices = sum(1 for p in problems if p.severity == "notice")
+    found = len(problems) - notices
+    parts = ([_plural(found, "layout problem")] if found else []) \
+        + ([_plural(notices, "notice")] if notices else [])
+    return " and ".join(parts)
+
+
 def _sha(digest: str | None) -> str:
     if not digest:
         return "unknown"
@@ -128,7 +141,9 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
     problems = bool(layout) or any(sec["heading"] == _COULDNT_CHECK for sec in sections)
     if count == 0 and not problems and not settings.digest_when_none:
         return None
-    if count == 0:
+    if count == 0 and layout:
+        headline = layout_summary(layout)
+    elif count == 0:
         headline = "all up to date"
     else:
         headline = f"{count} update{'s' if count != 1 else ''} available"
@@ -144,6 +159,7 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
         "skipped": f"{skipped} update{'s' if skipped != 1 else ''} skipped or snoozed"
         if skipped > 0 else None,
         "layout_count": len(layout),
+        "layout_summary": layout_summary(layout),
         "layout_lines": layout_lines(layout),
         "layout_link": settings.public_url.rstrip("/") + "/layout" if settings.public_url else None,
     }

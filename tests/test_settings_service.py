@@ -114,9 +114,9 @@ def test_no_change_no_audit(settings, tmp_path):
 def test_registry_logins_round_trip_encrypted(settings, tmp_path):
     s = svc(settings, tmp_path)
     assert s.registry_logins() == []
-    s.save_registry_logins([{"host": "ghcr.io", "password": "PW"}], "me", "Registries: added ghcr.io")
-    assert s.registry_logins() == [{"host": "ghcr.io", "password": "PW"}]
-    assert "PW" not in json.dumps(s._store.load_settings())
+    s.save_registry_logins([{"host": "ghcr.io", "password": "pw!s3cret#value"}], "me", "Registries: added ghcr.io")
+    assert s.registry_logins() == [{"host": "ghcr.io", "password": "pw!s3cret#value"}]
+    assert "pw!s3cret#value" not in json.dumps(s._store.load_settings())
     assert s._store.list_audit()[0].summary == "Registries: added ghcr.io"
     other = svc(settings, tmp_path, key=b"z" * 32)
     assert other.registry_logins() == []

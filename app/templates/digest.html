@@ -20,8 +20,8 @@
 <p style="margin:16px 0 0;font-size:13px;color:#5f6b7a;">{{ skipped }}</p>
 {% endif %}
 {% if layout_count %}
-<h2 style="font-size:16px;margin:20px 0 6px;">Layout problems</h2>
-<p style="margin:0 0 6px;font-size:14px;">{{ layout_count }} problem{{ "s" if layout_count != 1 }} with the server layout.</p>
+<h2 style="font-size:16px;margin:20px 0 6px;">Layout</h2>
+<p style="margin:0 0 6px;font-size:14px;">{{ layout_summary }} on the server.</p>
 <ul style="font-size:14px;margin:0;">
 {% for line in layout_lines %}
 <li>{{ line }}</li>

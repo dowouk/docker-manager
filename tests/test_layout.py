@@ -261,3 +261,9 @@ async def test_run_check_stores_layout(settings, tmp_path, monkeypatch):
     assert [p.kind for p in result.layout] == ["bind_outside"]
     stored = CheckResult.from_dict(app.state.store.latest_check()[1])
     assert stored.layout == result.layout
+
+
+def test_own_data_dir_with_a_trailing_slash_is_still_allowed():
+    me = make("dash", is_self=True, mounts=[bind("/home/me/dm", "/data")])
+    found = layout_problems([me], Settings(_env_file=None), lambda c: Rules(), "/data/", MAILCOW)
+    assert found == []

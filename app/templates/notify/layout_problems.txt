@@ -1,6 +1,9 @@
 {% extends "notify/_base.txt" %}
 {% block headline %}layout problems{% endblock %}
 {% block body %}
+{% if summary %}
+New on the server layout: {{ summary }}
+{% endif %}
 {% for p in problems %}
 - {{ p }}
 {% endfor %}

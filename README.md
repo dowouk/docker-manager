@@ -22,7 +22,7 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Settings](#settings)
 - [Configuration reference](#configuration-reference)
 - [Private images](#private-images)
-- [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03)
+- [Upgrading from an earlier version](#upgrading-from-an-earlier-version)
 - [Monitoring](#monitoring)
 - [Updating the dashboard itself](#updating-the-dashboard-itself)
 - [Docker Hub limits](#docker-hub-limits)
@@ -103,6 +103,8 @@ Use single quotes around a pattern with backslashes, as above, so YAML leaves th
 **On the dashboard.** An Operator or Admin can open **Watch settings** under a container's name and set the same rules there, with no file editing. They are kept in the dashboard's database and the change is recorded in **History → Changes**.
 
 **A label always wins.** If a rule is set by a label, the dashboard shows that field as "Set by a label on the container" and it can't be changed there; remove the label to manage it on the page. A label value that isn't valid (for example `docker-manager.notify: maybe`, or a pattern that isn't supported) is ignored, and a warning is shown on that container. Other labels on the same container still apply.
+
+Turning `notify` or `watch` back on for a container can notify you again about updates or layout problems it already has.
 
 Containers are identified by `<project>/<service>` (for example `shop/db`) when they were started by compose, otherwise by their name. Rules and skips belong to that identity, so they carry over when the container is recreated.
 
@@ -346,7 +348,7 @@ For each extra server, go to **Authentication → Web → Redirect URIs → Add 
 
 ### 6. Optional: app roles and groups
 
-See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03).
+See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from an earlier version](#upgrading-from-an-earlier-version).
 
 ## Notifications
 
@@ -365,7 +367,7 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 | **Update failed** | Yes | An update, rollback or Mailcow update ends in failure. Self-updates and jobs interrupted by a restart don't send a message |
 | **Update finished** | No | An update finishes successfully (self-updates and interrupted jobs don't send a message) |
 | **Check failing or recovered** | Yes | A check failed: it raised an error, Docker couldn't be reached, or every registry lookup failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
-| **Layout problems** | Yes | A check finds layout problems that weren't there before (see [Layout check](#layout-check)). The first check after you turn the layout check on, or upgrade, only records what is already there, so you aren't flooded. Containers with `docker-manager.notify: "false"` are left out |
+| **Layout problems** | Yes | A check finds layout problems that weren't there before (see [Layout check](#layout-check)). The first layout check ever (including the first after upgrading) only records what is already there, so you aren't flooded. Containers with `docker-manager.notify: "false"` are left out |
 | **User waiting for approval** | Yes | Someone signs in with Microsoft for the first time and is waiting for an Admin to approve them |
 
 Layout problems also count as something to report in the digest: they make it send even when "send when up to date" is off.
@@ -518,7 +520,7 @@ Settings can be environment variables in the compose file, and many can also be 
 | `AZURE_CLIENT_ID` | No | – | Yes | Application (client) ID. Optional: or set on the Settings page |
 | `AZURE_CLIENT_SECRET` | No | – | Yes | Client secret **Value** (keep in `.env`). Optional: or set on the Settings page |
 | `SESSION_SECRET` | No | – | – | No longer needed – ignored if set, so 0.1 `.env` files still work |
-| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-01-02-or-03) |
+| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-an-earlier-version) |
 | `ALLOWED_GROUP_ID` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: becomes a group mapping to Admin |
 | `INITIAL_ADMIN_EMAIL` | No | – | No | Creates the first Admin without the setup token. Needs `INITIAL_ADMIN_PASSWORD_FILE` and `PUBLIC_URL` |
 | `INITIAL_ADMIN_PASSWORD_FILE` | No | – | No | Path to a file (4 KiB or smaller) with that Admin's password; they must change it at first sign-in |
@@ -575,7 +577,7 @@ This still works exactly as before, and the logins in the file keep working alon
 
 The login must be stored in `config.json` itself. If `docker login` says it used a credential helper (`credsStore`), the dashboard can't read it.
 
-## Upgrading from 0.1, 0.2 or 0.3
+## Upgrading from an earlier version
 
 **From 0.4:** nothing to change. Your settings and stored results carry over. The layout check is on by default and its first run is recorded without sending a message, but it will list anything you keep outside `/docker`; allow it or use the `layout.ignore` label if that is intended.
 

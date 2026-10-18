@@ -13,7 +13,7 @@ Last checked {{ checked_at }}
 {% endif %}
 {% if layout_count %}
 
-Layout problems ({{ layout_count }})
+Layout: {{ layout_summary }}
 {% for line in layout_lines %}
 - {{ line }}
 {% endfor %}

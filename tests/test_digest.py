@@ -142,7 +142,7 @@ def test_layout_section_counts_caps_and_links(settings):
     r = result([cs("web")])
     r.layout = [prob(f"k{i}", detail=f"d{i}") for i in range(12)] + [prob("k0")]  # dup key
     _, html, plain = render_digest(r, settings)
-    assert "12 problems" in html and "Layout problems (12)" in plain
+    assert "12 layout problems" in html and "12 layout problems" in plain
     assert "web: d9" in plain and "web: d10" not in plain and "and 2 more" in plain
     assert 'href="https://dash.example.com/layout"' in html
     assert "Layout page: https://dash.example.com/layout" in plain
@@ -152,7 +152,7 @@ def test_layout_section_leaves_out_quiet_containers_and_absent_when_none(setting
     r = result([cs("web", notify=False), cs("db")])
     r.layout = [prob("a", "web"), prob("b", "db", "mine")]
     _, html, _ = render_digest(r, settings)
-    assert "1 problem " in html and "db: mine" in html and "web:" not in html
+    assert "1 layout problem" in html and "db: mine" in html and "web:" not in html
     r.layout = []
     assert "Layout problems" not in render_digest(r, settings)[1]
     r.layout = None
@@ -174,7 +174,8 @@ def test_layout_problems_alone_send_the_digest(settings):
     assert render_digest(r, s) is None
     r.layout = [prob("a")]
     out = render_digest(r, s)
-    assert out is not None and "Layout problems" in out[1] and "all up to date" in out[0]
+    assert out is not None and "1 layout problem" in out[1]
+    assert out[0] == "test-server: 1 layout problem" and "all up to date" not in out[0]
     quiet = result([cs("web", notify=False)])
     quiet.layout = [prob("a")]
     assert render_digest(quiet, s) is None
@@ -185,3 +186,18 @@ def test_layout_detail_is_escaped_in_digest(settings):
     r.layout = [prob("a", detail="<b>x</b> & y")]
     html = render_digest(r, settings)[1]
     assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in html and "<b>x</b>" not in html
+
+
+def test_layout_subject_counts_problems_and_notices_separately(settings):
+    r = result([cs("web")])
+    r.layout = [prob("a"), prob("b"), prob("c", detail="Not started by compose")]
+    r.layout[2] = LayoutProblem("c", "web", None, "not_compose", "Not started by compose", "h", "notice")
+    subject, html, plain = render_digest(r, settings)
+    assert subject.endswith("2 layout problems and 1 notice")
+    assert "2 layout problems and 1 notice" in html and "2 layout problems and 1 notice" in plain
+    r.layout = [r.layout[2]]
+    subject, html, _ = render_digest(r, settings)
+    assert subject.endswith(": 1 notice") and "layout problem" not in html
+    r.layout = [prob("a")]
+    r.containers[0].minor_update = "1.1"
+    assert render_digest(r, settings)[0].endswith("1 update available")

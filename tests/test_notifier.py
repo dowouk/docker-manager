@@ -490,3 +490,37 @@ async def test_only_quiet_layout_problems_send_nothing(rig2):
     rig2.notifier.after_check(layout_result(prob("q", "quiet"), containers=containers), False)
     await rig2.settle()
     assert rig2.subjects == []
+
+
+async def test_digest_leaves_out_layout_when_the_check_is_off(rig2, settings):
+    rig2.channel(events=("digest",))
+    r = layout_result(prob("a"), containers=[cs("web", minor_update="1.1")])
+    assert await rig2.notifier.digest(r) == "sent"
+    assert "layout problem" in rig2.provider.sent[-1][1].plain
+    rig2.notifier._settings = lambda: settings.model_copy(update={"layout_check": False})
+    assert await rig2.notifier.digest(r) == "sent"
+    assert "layout" not in rig2.provider.sent[-1][1].plain.lower()
+    only = layout_result(prob("a"), containers=[cs("web")])
+    rig2.notifier._settings = lambda: settings.model_copy(
+        update={"layout_check": False, "digest_when_none": False})
+    assert await rig2.notifier.digest(only) == "skipped – nothing to report"
+
+
+async def test_skipped_count_leaves_out_quiet_containers(rig2):
+    rig2.channel(events=("digest",))
+    rig2.skips.skip("site/web", "minor", "1.26", "me")
+    rig2.skips.skip("site/quiet", "minor", "1.26", "me")
+    r = result(cs("web", minor_update="1.26"), cs("quiet", minor_update="1.26", notify=False))
+    assert await rig2.notifier.digest(r) == "sent"
+    plain = rig2.provider.sent[-1][1].plain
+    assert "1 update skipped or snoozed" in plain and "2 updates" not in plain
+
+
+async def test_layout_notification_counts_problems_and_notices_separately(rig2):
+    rig2.channel(events=("layout_problems",))
+    n = rig2.notifier
+    n.after_check(layout_result(), False)  # baseline
+    notice = LayoutProblem("n", "web", None, "not_compose", "Not started by compose", "h", "notice")
+    n.after_check(layout_result(prob("a"), prob("b"), notice), False)
+    await rig2.settle()
+    assert "2 layout problems and 1 notice" in rig2.provider.sent[0][1].plain

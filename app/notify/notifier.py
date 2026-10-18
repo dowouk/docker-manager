@@ -5,6 +5,7 @@ failure is caught, recorded per channel (a fixed reason, never provider text) an
 channel name and exception type only.
 """
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import Callable
@@ -14,7 +15,7 @@ import httpx
 
 from app.checker import CheckResult, ContainerStatus, Status
 from app.config import Settings
-from app.digest import layout_lines, notifiable_layout
+from app.digest import layout_lines, layout_summary, notifiable_layout
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.links import release_notes_url
@@ -114,7 +115,8 @@ class Notifier:
         if skips is None:
             return result, 0
         shown, hidden = visible_result(result, skips)
-        return shown, len(hidden)
+        # A container left out of the digest by its `notify` rule doesn't count as skipped.
+        return shown, sum(1 for cs, _skip in hidden if cs is None or cs.notify)
 
     def _notes_for(self) -> Callable[[ContainerInfo], str | None] | None:
         if self._rules_snapshot is None:
@@ -212,7 +214,10 @@ class Notifier:
             return DIGEST_NO_CHANNEL
         try:
             shown, skipped = self._visible(result)
-            rendered = messages.digest_message(shown, self._settings(), skipped, self._notes_for())
+            settings = self._settings()
+            if not settings.layout_check:
+                shown = dataclasses.replace(shown, layout=None)  # switched off: nothing to report
+            rendered = messages.digest_message(shown, settings, skipped, self._notes_for())
         except Exception as exc:  # noqa: BLE001
             log.warning("Digest could not be rendered (%s)", type(exc).__name__)
             return DIGEST_FAILED
@@ -302,5 +307,6 @@ class Notifier:
             return
         new = [p for p in problems if p.key not in previous]
         if new and self._channels.subscribed("layout_problems"):
-            lines = layout_lines(new)
-            self._fire_message("layout_problems", lambda s: messages.layout_message(lines, s))
+            lines, summary = layout_lines(new), layout_summary(new)
+            self._fire_message("layout_problems",
+                               lambda s: messages.layout_message(lines, s, summary))

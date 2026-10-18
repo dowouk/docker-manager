@@ -99,7 +99,7 @@ def layout_problems(
 
 
 def _check_mount(c, m: Mount, folder, root, fine, data_dir, settings, add) -> None:
-    if c.is_self and m.destination == data_dir:
+    if c.is_self and _norm(m.destination) == _norm(data_dir):
         return
     if m.type == "bind":
         src = _norm(m.source)

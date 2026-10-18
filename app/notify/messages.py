@@ -95,9 +95,10 @@ def check_recovered_message(settings: Settings) -> Rendered:
                    settings, _link(settings))
 
 
-def layout_message(problems: list[str], settings: Settings) -> Rendered:
+def layout_message(problems: list[str], settings: Settings, summary: str | None = None) -> Rendered:
     return _render("layout_problems", f"{settings.server_name}: layout problems",
-                   settings, _link(settings, "/layout"), "Open the Layout page", problems=problems)
+                   settings, _link(settings, "/layout"), "Open the Layout page",
+                   problems=problems, summary=summary)
 
 
 def user_pending_message(name: str, upn: str, settings: Settings) -> Rendered:
