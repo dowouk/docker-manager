@@ -1,15 +1,19 @@
 """Periodic update check and weekly digest email."""
+import asyncio
 import logging
+import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+import httpx
 from fastapi import FastAPI
 
 from app.config import Settings
 from app.main import run_check
+from app.notify.notifier import check_failed
 
 log = logging.getLogger(__name__)
 
@@ -57,11 +61,33 @@ def digest_trigger(schedule: str, tz) -> CronTrigger:
     return CronTrigger.from_crontab(" ".join(fields), timezone=tz)
 
 
-async def scheduled_check(app: FastAPI) -> None:
+# Module-level hooks so tests can replace the real sleep and randomness.
+_sleep = asyncio.sleep
+_uniform = random.uniform
+HEARTBEAT_TIMEOUT = 10
+
+
+async def heartbeat(http, url: str | None, failed: bool) -> None:
+    """Ping the monitoring address after a scheduled check. Never raises."""
+    if not url:
+        return
+    target = url.rstrip("/") + "/fail" if failed else url
     try:
-        await run_check(app)
+        await http.get(target, timeout=HEARTBEAT_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 – a monitor being down must not matter
+        log.warning("Heartbeat failed (%s)", type(exc).__name__)
+
+
+async def scheduled_check(app: FastAPI) -> None:
+    failed = True
+    try:
+        minutes = app.state.settings.random_delay_minutes
+        if minutes > 0:  # sleep before run_check: the check lock isn't held while waiting
+            await _sleep(_uniform(0, minutes * 60))
+        failed = check_failed(await run_check(app))
     except Exception:  # noqa: BLE001 – keep the scheduler alive
         log.exception("Scheduled check failed")
+    await heartbeat(app.state.http, app.state.settings.heartbeat_url, failed)
 
 
 async def scheduled_digest(app: FastAPI) -> None:
@@ -101,12 +127,14 @@ def _add_digest_job(scheduler: AsyncIOScheduler, app: FastAPI, settings: Setting
 def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
     tz = ZoneInfo(settings.tz)
     scheduler = AsyncIOScheduler(timezone=tz)
+    now = datetime.now(tz)
+    first_run = now if settings.check_on_startup else now + timedelta(hours=settings.check_interval_hours)
     scheduler.add_job(
         scheduled_check,
         IntervalTrigger(hours=settings.check_interval_hours, timezone=tz),
         args=[app],
         id="check",
-        next_run_time=datetime.now(tz),
+        next_run_time=first_run,
         max_instances=1,
         coalesce=True,
     )

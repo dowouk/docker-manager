@@ -54,7 +54,7 @@ def test_save_requires_csrf(client):
 
 def test_save_applies_and_redirects(client, app):
     r = client.post("/settings/checking", data={
-        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300",
+        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on",
         "mailcow_dir": "/opt/mailcow-dockerized"})
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?msg=saved#checking"
@@ -184,7 +184,7 @@ def test_registry_bad_host(client):
 
 def test_history_changes_view(client):
     client.post("/settings/checking", data={
-        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300",
+        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on",
         "mailcow_dir": "/opt/mailcow-dockerized"})
     page = client.get("/history?view=changes").text
     assert "Checking: Check every (hours) 6 → 3" in page

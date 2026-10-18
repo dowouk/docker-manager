@@ -37,8 +37,15 @@ class Settings(BaseSettings):
     hide_local_for_non_admins: bool = False
     require_totp_admins: bool = True
     default_role: str = "viewer"
+    # Checking options: set from the settings page, not the environment
+    check_on_startup: bool = True
+    random_delay_minutes: int = 0
+    heartbeat_url: str | None = None
+    layout_check: bool = True
+    named_volumes_allowed: bool = False
+    layout_allowlist: Annotated[list[str], NoDecode] = []
 
-    @field_validator("allowed_emails", "digest_to", mode="before")
+    @field_validator("allowed_emails", "digest_to", "layout_allowlist", mode="before")
     @classmethod
     def _split_commas(cls, value):
         if isinstance(value, str):

@@ -756,7 +756,7 @@ def test_health_timeout_read_at_call_time(client_for, seeded, monkeypatch):
     c, app = client_for(result=seeded, runner=runner)
     app.state.settings_service.save(
         "checking",
-        {"check_interval_hours": "6", "health_timeout_seconds": "77", "mailcow_dir": "/opt/mailcow"},
+        {"check_interval_hours": "6", "health_timeout_seconds": "77", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on", "mailcow_dir": "/opt/mailcow"},
         "me",
     )
     apply_settings(app)

@@ -29,6 +29,8 @@
         <select class="input" id="f-{{ f.name }}" name="{{ f.name }}"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
           {% for val, text in f.choices %}<option value="{{ val }}"{% if val == f.value %} selected{% endif %}>{{ text }}</option>{% endfor %}
         </select>
+        {% elif f.kind == "path_list" %}
+        <textarea class="input" id="f-{{ f.name }}" name="{{ f.name }}" rows="4" autocomplete="off" spellcheck="false"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">{{ f.value }}</textarea>
         {% else %}
         <input class="input" id="f-{{ f.name }}" name="{{ f.name }}"
           {% if f.kind == "secret" %}type="password" autocomplete="new-password" value=""
