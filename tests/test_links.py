@@ -23,7 +23,9 @@ def test_http_rule_allowed():
 
 
 @pytest.mark.parametrize("bad", ["javascript:alert(1)", "data:text/html,x", "ftp://example.com/x",
-                                 "https://", "https://exa mple.com", "//example.com"])
+                                 "https://", "https://exa mple.com", "//example.com",
+                                 "https://github.com@evil.com/x", "https://evil.com\\@github.com",
+                                 "https:example.com", "https://user:pw@example.com/"])
 def test_unsafe_rule_is_rejected(bad):
     url = release_notes_url(make("ghcr.io/o/app:1"), Rules(release_notes=bad))
     assert url is None

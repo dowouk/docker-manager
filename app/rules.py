@@ -184,14 +184,25 @@ def _parse_list(text: str, dropped: list[str] | None = None) -> list[str]:
     return kept
 
 
-def _parse_url(text: str) -> str:
-    text = text.strip()
+_CONTROL = re.compile(r"[\s\x00-\x1f\x7f\\]")
+
+
+def is_plain_http_url(text: str) -> bool:
+    """True for `http(s)://host/...` only: no whitespace, control characters or backslashes,
+    no user info (`@` in the host part) and no scheme without slashes."""
+    if _CONTROL.search(text) or not re.match(r"https?://", text, re.I):
+        return False
     try:
         parts = urlsplit(text)
+        host = parts.hostname
     except ValueError:
-        raise ValueError("not a valid URL") from None
-    if (parts.scheme not in ("http", "https") or not parts.netloc
-            or len(text) > MAX_URL_LENGTH or any(ch.isspace() for ch in text)):
+        return False
+    return bool(host) and "@" not in parts.netloc
+
+
+def _parse_url(text: str) -> str:
+    text = text.strip()
+    if len(text) > MAX_URL_LENGTH or not is_plain_http_url(text):
         raise ValueError("use a link starting with https:// or http://")
     return text
 

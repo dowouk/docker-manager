@@ -934,7 +934,7 @@ def test_dashboard_chips_are_hidden_buttons(client_for, seeded):
     html = c.get("/").text
     tools = re.search(r'<div class="table-tools" id="table-tools"[^>]*>', html).group(0)
     assert " hidden" in tools
-    for label in ("Needs update", "Major only", "Stopped", "Not checkable", "Skipped"):
+    for label in ("Needs update", "Major only", "Errors", "Stopped", "Not checkable", "Skipped"):
         assert re.search(r'<button type="button"[^>]*aria-pressed="false"[^>]*>\s*' + label, html)
     assert "Layout problems" not in html  # no layout data until the layout check exists
     assert 'id="container-search"' in html

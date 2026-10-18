@@ -371,3 +371,13 @@ def test_snapshot_reads_the_row_once(store, monkeypatch):
     for _ in range(5):
         assert not fn(container()).watch
     assert len(reads) == 1
+
+
+@pytest.mark.parametrize("bad", ["https://github.com@evil.com/x", "https://evil.com\\@github.com",
+                                 "https:example.com", "https://user:pw@example.com/", "https://"])
+def test_release_notes_rejects_tricky_urls(store, bad):
+    with pytest.raises(RulesError):
+        RulesStore(store).save("site/web", {"release_notes": bad}, "me@x")
+    store.save_settings({"container_rules": {"site/web": {"release_notes": bad}}})
+    rules = RulesStore(store).effective(container())
+    assert rules.release_notes is None and rules.warnings
