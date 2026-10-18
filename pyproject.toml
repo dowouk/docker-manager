@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings==2.16.*",
     "python-multipart==0.0.*",
     "cryptography==50.*",
+    "argon2-cffi==25.*",
 ]
 
 [project.scripts]
@@ -39,7 +40,7 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["templates/*", "static/*"]
+app = ["templates/*", "static/*", "data/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
