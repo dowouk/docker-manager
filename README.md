@@ -206,7 +206,10 @@ What this does and doesn't do:
 - It protects a copy of the database file on its own – for example one that ends up in a backup or is sent to someone for help.
 - It does **not** protect against someone who has all of the `data` folder, because the key is in it.
 - For stronger protection, keep the key somewhere else: put `secret.key` in a separate folder, mount that folder in the container, and point `SECRET_KEY_FILE` at it (for example `SECRET_KEY_FILE: "/run/dm-key/secret.key"`). Then back up the database and the key separately.
-- Back the key up. If it is lost or replaced, the saved secrets can't be read: the dashboard still starts, the fields say "The saved value can't be read – enter it again", and you enter them again.
+- Back the key up. If the key file is missing, a new one is created when the dashboard starts, so anything saved with the old key can't be read: the dashboard still starts, the fields say "The saved value can't be read – enter it again", and you enter them again. If the file is there but can't be used (it is not 32 bytes long, or can't be read), the dashboard still starts and logs one error, but it never overwrites the file; saved secrets can't be read and new ones can't be saved until you restore the original key or fix the file.
+- The folder for `SECRET_KEY_FILE` must be writable by the dashboard. When moving the key there from the default place, **move the existing `secret.key` into that folder first** – if you only set the variable, a new key is created and the secrets you saved can no longer be read.
+
+**Upgrading from 0.1.** If you copy the new example compose file over your old one, the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or enter the email settings on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=` to switch email off) no longer locks the Email section; only a variable with a value does.
 
 Everything the dashboard needs to start – `PUBLIC_URL`, the `AZURE_*` values, `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` – is still set with environment variables. The Entra values move to the Settings page in a later release.
 
