@@ -113,3 +113,55 @@ def test_no_public_url_means_no_link(settings):
     _, html, text = render_digest(result([cs("web")]), s)
     assert "Open the dashboard" not in html and "Dashboard:" not in text
     assert "None" not in html and "None" not in text
+
+
+# ---- skips, notify rule, layout, release notes (0.5) ----
+
+from app.layout import LayoutProblem
+
+
+def prob(key, container="web", detail="Bind mount outside /srv"):
+    return LayoutProblem(key, container, "site", "bind_outside", detail, "hint", "problem")
+
+
+def test_skipped_note_only_when_something_was_skipped(settings):
+    r = result([cs("a", minor_update="1.1")])
+    _, html, plain = render_digest(r, settings, skipped=2)
+    assert "2 updates skipped or snoozed" in html and "2 updates skipped or snoozed" in plain
+    assert "1 update skipped or snoozed" in render_digest(r, settings, skipped=1)[2]
+    assert "skipped" not in render_digest(r, settings)[2]
+
+
+def test_notify_false_container_absent_from_digest(settings):
+    r = result([cs("quiet", minor_update="1.1", notify=False), cs("loud", minor_update="1.2")])
+    subject, html, _ = render_digest(r, settings)
+    assert "quiet" not in html and "loud" in html and "1 update available" in subject
+
+
+def test_layout_section_counts_caps_and_links(settings):
+    r = result([cs("web")])
+    r.layout = [prob(f"k{i}", detail=f"d{i}") for i in range(12)] + [prob("k0")]  # dup key
+    _, html, plain = render_digest(r, settings)
+    assert "12 problems" in html and "Layout problems (12)" in plain
+    assert "web: d9" in plain and "web: d10" not in plain and "and 2 more" in plain
+    assert 'href="https://dash.example.com/layout"' in html
+    assert "Layout page: https://dash.example.com/layout" in plain
+
+
+def test_layout_section_leaves_out_quiet_containers_and_absent_when_none(settings):
+    r = result([cs("web", notify=False), cs("db")])
+    r.layout = [prob("a", "web"), prob("b", "db", "mine")]
+    _, html, _ = render_digest(r, settings)
+    assert "1 problem " in html and "db: mine" in html and "web:" not in html
+    r.layout = []
+    assert "Layout problems" not in render_digest(r, settings)[1]
+    r.layout = None
+    assert "Layout problems" not in render_digest(r, settings)[1]
+
+
+def test_release_notes_link_is_escaped_and_safe(settings):
+    r = result([cs("a", minor_update="1.1")])
+    _, html, plain = render_digest(r, settings, notes_for=lambda info: 'https://x.test/?a=1&b="2"')
+    assert 'rel="noopener noreferrer"' in html and "a=1&amp;b=&#34;2&#34;" in html
+    assert "release notes: https://x.test/" in plain
+    assert "Release notes" not in render_digest(r, settings)[1]

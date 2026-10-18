@@ -4,9 +4,23 @@ Last checked {{ checked_at }}
 
 {{ section.heading }}
 {% for row in section.rows %}
-- {{ row.name }}{% if row.image %} ({{ row.image }}){% endif %}: {{ row.change }}
+- {{ row.name }}{% if row.image %} ({{ row.image }}){% endif %}: {{ row.change }}{% if row.notes %} – release notes: {{ row.notes }}{% endif +%}
 {% endfor %}
 {% endfor %}
+{% if skipped %}
+
+{{ skipped }}
+{% endif %}
+{% if layout_count %}
+
+Layout problems ({{ layout_count }})
+{% for line in layout_lines %}
+- {{ line }}
+{% endfor %}
+{% if layout_link %}
+Layout page: {{ layout_link }}
+{% endif %}
+{% endif %}
 
 {% if public_url %}
 Dashboard: {{ public_url }}

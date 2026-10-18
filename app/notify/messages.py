@@ -28,6 +28,7 @@ class UpdateItem:
     name: str
     image: str
     change: str
+    release_notes: str | None = None
 
 
 def _env(autoescape: bool) -> jinja2.Environment:
@@ -58,8 +59,9 @@ def _render(template: str, subject: str, settings: Settings, link: str | None = 
     return Rendered(_one_line(subject), plain, html)
 
 
-def digest_message(result: CheckResult, settings: Settings) -> Rendered | None:
-    rendered = render_digest(result, settings)
+def digest_message(result: CheckResult, settings: Settings, skipped: int = 0,
+                   notes_for=None) -> Rendered | None:
+    rendered = render_digest(result, settings, skipped, notes_for)
     if rendered is None:
         return None
     subject, html, plain = rendered
@@ -95,7 +97,7 @@ def check_recovered_message(settings: Settings) -> Rendered:
 
 def layout_message(problems: list[str], settings: Settings) -> Rendered:
     return _render("layout_problems", f"{settings.server_name}: layout problems",
-                   settings, _link(settings), problems=problems)
+                   settings, _link(settings, "/layout"), "Open the Layout page", problems=problems)
 
 
 def user_pending_message(name: str, upn: str, settings: Settings) -> Rendered:

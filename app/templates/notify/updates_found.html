@@ -6,7 +6,7 @@
 <tr style="border-top:1px solid #e4e7eb;">
 <td style="vertical-align:top;font-weight:bold;">{{ u.name }}</td>
 <td style="vertical-align:top;color:#5f6b7a;">{{ u.image }}</td>
-<td style="vertical-align:top;">{{ u.change }}</td>
+<td style="vertical-align:top;">{{ u.change }}{% if u.release_notes %} <a href="{{ u.release_notes }}" rel="noopener noreferrer" target="_blank" style="color:#1d4ed8;">Release notes</a>{% endif %}</td>
 </tr>
 {% endfor %}
 </table>

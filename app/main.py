@@ -377,7 +377,8 @@ def create_app(
     app.state.notifier = Notifier(
         store, app.state.channels, lambda: app.state.settings, http,
         providers if providers is not None else PROVIDERS,
-        background=app.state.background, kind_labels=JOB_KIND_LABELS)
+        background=app.state.background, kind_labels=JOB_KIND_LABELS,
+        skips_getter=lambda: app.state.skips, rules_snapshot=lambda: app.state.rules.snapshot())
     app.state.settings = settings_service.effective()  # the migrations may have changed it
     app.state.entra_setup_hook = app.state.setup.complete_with_entra
     app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
