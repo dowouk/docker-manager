@@ -256,6 +256,7 @@ async def test_heartbeat_uses_ten_second_timeout():
     http = AsyncMock()
     await sched_mod.heartbeat(http, "https://hc.example/p", False)
     assert http.get.await_args.kwargs["timeout"] == 10
+    assert http.get.await_args.kwargs["follow_redirects"] is False
 
 
 async def _heartbeat_after(monkeypatch, run, failed_rule=None):
@@ -295,7 +296,42 @@ async def test_scheduled_check_survives_heartbeat_errors(monkeypatch):
 
 
 async def test_run_check_alone_sends_no_heartbeat(monkeypatch):
-    # Check now calls run_check directly, so only scheduled_check pings.
-    import inspect
+    # Check now calls run_check directly: no heartbeat request may be made.
+    import asyncio
     from app import main
-    assert "heartbeat" not in inspect.getsource(main.run_check)
+
+    monkeypatch.setattr(main, "remove_finished_helpers", lambda docker: None)
+    monkeypatch.setattr(main, "list_containers", lambda docker, self_id: [])
+    monkeypatch.setattr(main, "detect_self_id", lambda: None)
+    monkeypatch.setattr(main, "check_all", AsyncMock(return_value=MagicMock()))
+    app = fake_app()
+    app.state.settings = Settings(_env_file=None).model_copy(
+        update={"heartbeat_url": "https://hc.example/p"})
+    app.state.check_lock = asyncio.Lock()
+    await main.run_check(app)
+    app.state.http.get.assert_not_awaited()
+
+
+@respx.mock
+@pytest.mark.parametrize("url,expected", [
+    ("https://hc.example/ping/abc?status=up&msg=OK", "https://hc.example/ping/abc/fail?status=up&msg=OK"),
+    ("https://hc.example/ping/abc/", "https://hc.example/ping/abc/fail"),
+    ("https://hc.example/ping/abc/?status=up", "https://hc.example/ping/abc/fail?status=up"),
+    ("https://hc.example/ping/abc#frag", "https://hc.example/ping/abc/fail"),
+    ("https://hc.example", "https://hc.example/fail"),
+])
+async def test_fail_url_goes_on_the_path_not_after_the_query(url, expected):
+    route = respx.get(expected).mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient() as http:
+        await sched_mod.heartbeat(http, url, True)
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_heartbeat_does_not_follow_redirects():
+    respx.get("https://hc.example/p").mock(
+        return_value=httpx.Response(302, headers={"location": "https://elsewhere.example/"}))
+    other = respx.get("https://elsewhere.example/").mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient(follow_redirects=True) as http:
+        await sched_mod.heartbeat(http, "https://hc.example/p", False)
+    assert other.call_count == 0

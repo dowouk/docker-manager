@@ -146,3 +146,9 @@ def assert_all_routes_guarded(app: FastAPI, expected_auth: set | None = None) ->
         checked += 1
     assert auth_routes == (EXPECTED_AUTH_ROUTES if expected_auth is None else expected_auth), f"unexpected /auth routes: {auth_routes}"
     assert checked, "no routes were checked"
+
+
+# A complete Checking form as the settings page posts it (bools "on" = ticked).
+CHECKING_FORM = {"check_interval_hours": "6", "health_timeout_seconds": "300",
+                 "mailcow_dir": "/opt/mailcow-dockerized", "random_delay_minutes": "0",
+                 "check_on_startup": "on", "layout_check": "on"}

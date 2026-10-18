@@ -6,6 +6,7 @@ from app.config import Settings
 from app.keys import SecretBox
 from app.settings_service import SettingsError, SettingsService, key_path
 from app.store import Store
+from auth_helpers import CHECKING_FORM
 
 
 TENANT = "33333333-3333-3333-3333-333333333333"
@@ -17,8 +18,7 @@ def svc(settings, tmp_path, key=b"k" * 32):
 
 def test_db_value_used_when_env_not_set(settings, tmp_path):
     s = svc(settings, tmp_path)
-    s.save("checking", {"check_interval_hours": "3", "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on",
-                        "mailcow_dir": "/opt/mailcow-dockerized"}, "me@x.com")
+    s.save("checking", {**CHECKING_FORM, "check_interval_hours": "3"}, "me@x.com")
     assert s.effective().check_interval_hours == 3
 
 
@@ -27,8 +27,7 @@ def test_env_wins_and_locked_field_ignored(settings, tmp_path, monkeypatch):
     base = Settings(_env_file=None)
     s = SettingsService(base, Store(str(tmp_path / "d.db")), SecretBox(b"k" * 32))
     assert s.locked("check_interval_hours") == "CHECK_INTERVAL_HOURS"
-    s.save("checking", {"check_interval_hours": "1", "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on",
-                        "mailcow_dir": "/opt/mailcow-dockerized"}, "me@x.com")
+    s.save("checking", {**CHECKING_FORM, "check_interval_hours": "1"}, "me@x.com")
     assert s.effective().check_interval_hours == 12
     assert "check_interval_hours" not in s._store.load_settings()
 
@@ -63,8 +62,7 @@ def test_unknown_section_raises(settings, tmp_path):
 
 def test_interval_must_be_positive(settings, tmp_path):
     with pytest.raises(SettingsError):
-        svc(settings, tmp_path).save("checking", {"check_interval_hours": "0",
-            "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on", "mailcow_dir": "/opt/m"}, "me")
+        svc(settings, tmp_path).save("checking", {**CHECKING_FORM, "check_interval_hours": "0", "mailcow_dir": "/opt/m"}, "me")
 
 
 SIGNIN = {"local_sign_in": "on", "default_role": "pending", "azure_client_secret": "endpoint=SECRET"}
@@ -108,7 +106,7 @@ def test_audit_records_change_without_secret_value(open_settings, tmp_path):
 
 def test_no_change_no_audit(settings, tmp_path):
     s = svc(settings, tmp_path)
-    form = {"check_interval_hours": "6", "health_timeout_seconds": "300", "random_delay_minutes": "0", "check_on_startup": "on", "layout_check": "on", "mailcow_dir": "/opt/mailcow-dockerized"}
+    form = dict(CHECKING_FORM)
     assert s.save("checking", form, "me") == []
     assert s._store.list_audit() == []
 
@@ -307,9 +305,7 @@ def test_tenant_id_must_be_a_guid(settings, tmp_path, monkeypatch):
     assert s.effective().azure_tenant_id == TENANT
 
 
-CHECKING = {"check_interval_hours": "6", "health_timeout_seconds": "300",
-            "mailcow_dir": "/opt/mailcow-dockerized", "random_delay_minutes": "0",
-            "check_on_startup": "on", "layout_check": "on"}
+CHECKING = CHECKING_FORM
 
 
 @pytest.mark.parametrize("name,value", [
@@ -365,3 +361,16 @@ def test_environment_cannot_set_checking_options(settings, tmp_path, monkeypatch
     for n in ("check_on_startup", "random_delay_minutes", "heartbeat_url",
               "layout_check", "named_volumes_allowed", "layout_allowlist"):
         assert s.locked(n) is None
+
+
+def test_audit_never_contains_heartbeat_url(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    url = "https://hc.example/ping/SECRET-TOKEN"
+    s.save("checking", {**CHECKING, "heartbeat_url": url}, "me")
+    s.save("checking", {**CHECKING, "heartbeat_url": url + "2"}, "me")
+    s.save("checking", {**CHECKING, "heartbeat_url": ""}, "me")
+    texts = [row["detail"] if isinstance(row, dict) else str(row) for row in s._store.list_audit()]
+    joined = " ".join(texts)
+    assert "SECRET-TOKEN" not in joined
+    for word in ("set", "changed", "cleared"):
+        assert f"Heartbeat address {word}" in joined

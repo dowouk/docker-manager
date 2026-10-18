@@ -3,6 +3,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -71,9 +72,18 @@ async def heartbeat(http, url: str | None, failed: bool) -> None:
     """Ping the monitoring address after a scheduled check. Never raises."""
     if not url:
         return
-    target = url.rstrip("/") + "/fail" if failed else url
+    target = url
+    if failed:
+        try:
+            parts = urlsplit(url)
+            # "/fail" goes on the path, ahead of any query string; the fragment is dropped.
+            target = urlunsplit((parts.scheme, parts.netloc,
+                                 parts.path.rstrip("/") + "/fail", parts.query, ""))
+        except ValueError as exc:
+            log.warning("Heartbeat failed (%s)", type(exc).__name__)
+            return
     try:
-        await http.get(target, timeout=HEARTBEAT_TIMEOUT)
+        await http.get(target, timeout=HEARTBEAT_TIMEOUT, follow_redirects=False)
     except Exception as exc:  # noqa: BLE001 – a monitor being down must not matter
         log.warning("Heartbeat failed (%s)", type(exc).__name__)
 

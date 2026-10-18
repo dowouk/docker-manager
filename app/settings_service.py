@@ -354,7 +354,11 @@ class SettingsService:
             old = getattr(current, field.name)
             if value != old:
                 updates[field.name] = value
-                parts.append(f"{field.label} {_show(field, old)} → {_show(field, value)}")
+                if field.name == "heartbeat_url":  # may carry a token: never audit the address
+                    what = "cleared" if value is None else "set" if old is None else "changed"
+                    parts.append(f"{field.label} {what}")
+                else:
+                    parts.append(f"{field.label} {_show(field, old)} → {_show(field, value)}")
                 changed.append(field.name)
         if (section == "signin" and not self.locked("local_sign_in") and "local_sign_in" not in errors
                 and updates.get("local_sign_in", current.local_sign_in) is False
