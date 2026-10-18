@@ -1,0 +1,28 @@
+{% extends "base_public.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<h1 class="auth-title">Sign in</h1>
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+{% if not entra and not local %}
+<p class="lede">Sign-in isn't set up – see the README (reset-admin).</p>
+{% endif %}
+{% if entra %}
+<a class="button button-accent button-block" href="/auth/entra">Sign in with Microsoft</a>
+{% endif %}
+{% if local %}
+{% if disclosure %}<details class="auth-disclosure"{% if error %} open{% endif %}><summary>Admin sign-in</summary>{% endif %}
+<form method="post" action="/auth/login" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="field">
+    <label for="email">Email</label>
+    <input class="input" id="email" name="email" type="email" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+  </div>
+  <div class="field">
+    <label for="password">Password</label>
+    <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+  </div>
+  <button type="submit" class="button {% if entra %}button-quiet{% else %}button-accent{% endif %} button-block">Sign in</button>
+</form>
+{% if disclosure %}</details>{% endif %}
+{% endif %}
+{% endblock %}

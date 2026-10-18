@@ -2,6 +2,16 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.3.0] - 18th October 2026
+
+- Local Accounts with a One-Time Setup Token on First Start
+- Two-Step Sign-In for Local Accounts
+- Microsoft Sign-In Set Up on the Settings Page
+- Viewer, Operator and Admin Roles, with Entra App Role and Group Mappings
+- Users and Account Pages
+- reset-admin Command for Lost Access
+- /healthz Endpoint and Docker Health Check
+
 ## [0.2.0] - 18th October 2026
 
 - Settings Page – Most Settings Can Now Be Changed in the Dashboard

@@ -44,7 +44,7 @@ class SessionStore:
         if now - self._last_purge >= PURGE_EVERY:
             # Anonymous /auth/login creates rows; don't wait for the hourly job.
             self.purge_expired()
-        self._store.session_put(_hash(token), data, now, now)
+        self._store.session_put(_hash(token), data, now, now, data.get("user_id"))
         return token
 
     def load(self, token: str) -> dict | None:
@@ -63,10 +63,15 @@ class SessionStore:
 
     def save(self, token: str, data: dict) -> bool:
         """Update an existing session; False (nothing written) if it no longer exists."""
-        return self._store.session_update(_hash(token), data, self._clock())
+        return self._store.session_update(_hash(token), data, self._clock(),
+                                          data.get("user_id"))
 
     def delete(self, token: str) -> None:
         self._store.session_delete(_hash(token))
+
+    @staticmethod
+    def token_hash(token: str) -> str:
+        return _hash(token)
 
     def purge_expired(self) -> int:
         now = self._clock()
@@ -115,7 +120,7 @@ class ServerSessionMiddleware:
         """Write the session back; return a Set-Cookie value if the cookie changes."""
         if session == original:
             return None
-        if session.get("user") != original.get("user"):
+        if session.get("user_id") != original.get("user_id"):
             # Sign-in or sign-out: never carry a token across it (fixation defence).
             if token:
                 self.sessions.delete(token)

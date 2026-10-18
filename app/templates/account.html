@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Account</h1>
+  </div>
+</section>
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+{% if notice %}<p class="notice notice-ok" role="status">{{ notice }}</p>{% endif %}
+
+{% if codes %}
+<section class="card form-card">
+  <h2>Your new recovery codes</h2>
+  <p class="card-text">Keep these somewhere safe. Each works once if you lose your authenticator app. Any older codes no longer work, and these won't be shown again.</p>
+  <ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  <div class="card-actions"><a class="button button-accent" href="/account">Done</a></div>
+</section>
+{% else %}
+<section class="card form-card">
+  <dl class="details">
+    <dt>Name</dt><dd>{{ user.name }}</dd>
+    <dt>Email</dt><dd>{{ user.email }}</dd>
+    <dt>Role</dt><dd>{{ role_label }}</dd>
+    <dt>Sign-in</dt><dd>{{ "Microsoft" if user.kind == "entra" else "Local" }}</dd>
+  </dl>
+</section>
+
+{% if user.kind == "local" %}
+<section class="card form-card">
+  <h2>Password</h2>
+  <div class="card-actions"><a class="button button-quiet" href="/account/password">Change password</a></div>
+</section>
+
+<section class="card form-card">
+  <h2>Two-step sign-in</h2>
+  {% if rec.totp_enabled %}
+  <p class="card-text">Turned on.</p>
+  <form method="post" action="/account/recovery-codes" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="rc_password">Current password</label>
+      <input class="input" id="rc_password" name="current_password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="card-actions"><button type="submit" class="button button-quiet">New recovery codes</button></div>
+  </form>
+  {% if two_step_required %}
+  <p class="meta">Admins must keep two-step sign-in turned on.</p>
+  {% else %}
+  <form method="post" action="/account/two-step/off" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="off_password">Current password</label>
+      <input class="input" id="off_password" name="current_password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="card-actions"><button type="submit" class="button button-quiet">Turn off two-step sign-in</button></div>
+  </form>
+  {% endif %}
+  {% else %}
+  <p class="card-text">Turned off.</p>
+  <div class="card-actions"><a class="button button-quiet" href="/account/two-step">Turn on two-step sign-in</a></div>
+  {% endif %}
+</section>
+{% else %}
+<section class="card form-card">
+  <p class="card-text">You sign in with Microsoft, so your password and two-step sign-in are managed there.</p>
+</section>
+{% endif %}
+
+<section class="card form-card">
+  <h2>Sessions</h2>
+  <form method="post" action="/account/sign-out-everywhere">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="card-actions"><button type="submit" class="button button-quiet">Sign out everywhere</button></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

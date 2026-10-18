@@ -13,11 +13,12 @@ import docker.errors
 import httpx
 import jinja2
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.auth import User, csrf_token, current_user, setup_auth, verify_csrf
+from app.auth import RoleDenied, User, csrf_token, require_role, setup_auth, verify_csrf
+from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
@@ -34,9 +35,14 @@ from app.registry_logins import (
     test_login,
     write_docker_config,
 )
-from app.sessions import SessionStore
+from app.roles import Role
+from app.sessions import COOKIE, SessionStore
+from app.setup import Setup, setup_routes
+from app.admin_pages import setup_admin_pages
+from app.signin import setup_signin
+from app.users import UserStore
 from app.settings_service import (
-    FIELDS, KEY_UNUSABLE_MESSAGE, SECTIONS, SettingsError, SettingsService, key_path,
+    FIELDS, KEY_UNUSABLE_MESSAGE, MAPPABLE_ROLES, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
 )
 from app.store import Store
 from app import view
@@ -53,6 +59,9 @@ from app.updaters import (
 log = logging.getLogger(__name__)
 _HERE = os.path.dirname(__file__)
 _END = "__END__:"
+CHANGE_KINDS = {"settings": "Settings", "signin": "Sign-in", "account": "Account",
+                "users": "Users"}
+STREAM_RECHECK = 5.0  # seconds between access re-checks on an idle job-log stream
 
 # Flash messages: only these fixed strings are ever shown (no reflected text).
 # Each is (text, level); "ok" shows as a status note, "error" as an alert.
@@ -75,6 +84,10 @@ SETTINGS_FLASH = {
     "email_unconfigured": ("Save a connection string, sender and recipient before sending a test", "error"),
     "registry_saved": ("Registry login saved", "ok"),
     "registry_removed": ("Registry login removed", "ok"),
+    "entra_ok": ("Microsoft sign-in settings look right", "ok"),
+    "entra_failed": ("Couldn't reach Microsoft with these settings – check the tenant ID", "error"),
+    "group_saved": ("Group role saved", "ok"),
+    "group_removed": ("Group role removed", "ok"),
 }
 
 STATUS_LABELS = {
@@ -200,6 +213,7 @@ def apply_registry_logins(app: FastAPI) -> None:
 def apply_settings(app: FastAPI) -> None:
     """Make a saved settings change take effect in the running app."""
     app.state.settings = app.state.settings_service.effective()
+    app.state.oauth = build_oauth(app.state.settings)
     apply_registry_logins(app)
     app.state.templates.env.globals["server_name"] = app.state.settings.server_name
     if app.state.scheduler is not None:
@@ -269,9 +283,19 @@ def create_app(
     app.state.email_client_factory = email_client_factory
     backup_dir = os.path.join(settings.data_dir, "backups")
 
+    app.state.users = UserStore(store, settings_service._box)
     app.state.sessions = SessionStore(store)
     app.state.sessions.purge_expired()  # dead rows would otherwise pile up
-    setup_auth(app, settings, app.state.sessions)
+    # Before anything is served: migrate old allow rules, or open first-start setup.
+    app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
+    app.state.setup.prepare(settings)
+    app.state.settings = settings_service.effective()  # the migration may have changed it
+    app.state.entra_setup_hook = app.state.setup.complete_with_entra
+    app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
+    if not app.state.setup.is_open():
+        app.state.entra_setup_hook = None
+    setup_auth(app, settings, app.state.sessions, setup_open=app.state.setup.is_open)
+    setup_entra(app)
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
 
     env = jinja2.Environment(
@@ -297,9 +321,17 @@ def create_app(
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
+        Role=Role,
+        can=lambda user, role: user is not None and user.role >= role,
+        legacy_banner=lambda user: bool(
+            user is not None and user.role == Role.ADMIN
+            and app.state.settings.default_role == "admin_legacy"),
     )
     templates = Jinja2Templates(env=env)
     app.state.templates = templates
+    setup_signin(app)
+    setup_admin_pages(app)
+    setup_routes(app)
 
     def render(request: Request, name: str, user: User, status_code: int = 200, **ctx):
         return templates.TemplateResponse(
@@ -332,7 +364,7 @@ def create_app(
         return _redirect(f"/jobs/{job_id}")
 
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request, msg: str = "", user: User = Depends(current_user)):
+    async def dashboard(request: Request, msg: str = "", user: User = Depends(require_role(Role.VIEWER))):
         result = _latest(app)
         error = None
         if result is None:
@@ -356,7 +388,7 @@ def create_app(
         )
 
     @app.post("/check", dependencies=[Depends(verify_csrf)])
-    async def check_now(user: User = Depends(current_user)):
+    async def check_now(user: User = Depends(require_role(Role.OPERATOR))):
         try:
             await run_check(app)
         except Exception:  # noqa: BLE001
@@ -365,7 +397,7 @@ def create_app(
         return _redirect("/")
 
     @app.post("/digest/send", dependencies=[Depends(verify_csrf)])
-    async def digest_send(user: User = Depends(current_user)):
+    async def digest_send(user: User = Depends(require_role(Role.ADMIN))):
         try:
             result = _latest(app) or await run_check(app)
         except Exception:  # noqa: BLE001
@@ -388,7 +420,7 @@ def create_app(
 
     @app.post("/containers/{container_id}/update", dependencies=[Depends(verify_csrf)])
     async def update_container(
-        container_id: str, mode: str = Form(...), user: User = Depends(current_user)
+        container_id: str, mode: str = Form(...), user: User = Depends(require_role(Role.OPERATOR))
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -403,7 +435,7 @@ def create_app(
 
     @app.get("/containers/{container_id}/version-preview", response_class=HTMLResponse)
     async def version_preview(
-        request: Request, container_id: str, tag: str = "", user: User = Depends(current_user)
+        request: Request, container_id: str, tag: str = "", user: User = Depends(require_role(Role.OPERATOR))
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -429,7 +461,7 @@ def create_app(
         container_id: str,
         tag: str = Form(...),
         sha: str = Form(...),
-        user: User = Depends(current_user),
+        user: User = Depends(require_role(Role.OPERATOR)),
     ):
         cs = _find(app, container_id)
         _require_updatable(cs)
@@ -460,7 +492,7 @@ def create_app(
         )
 
     @app.post("/mailcow/update", dependencies=[Depends(verify_csrf)])
-    async def mailcow_update(user: User = Depends(current_user)):
+    async def mailcow_update(user: User = Depends(require_role(Role.ADMIN))):
         result = _latest(app)
         if result is None or result.mailcow is None:
             raise HTTPException(status_code=404, detail="Mailcow not found")
@@ -469,7 +501,7 @@ def create_app(
         )
 
     @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
-    async def self_update(request: Request, user: User = Depends(current_user)):
+    async def self_update(request: Request, user: User = Depends(require_role(Role.ADMIN))):
         result = _latest(app)
         me = next((cs for cs in result.containers if cs.container.is_self), None) if result else None
         if me is None:
@@ -509,16 +541,37 @@ def create_app(
         )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
-    async def job_page(request: Request, job_id: int, user: User = Depends(current_user)):
+    async def job_page(request: Request, job_id: int, user: User = Depends(require_role(Role.OPERATOR))):
         job = store.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job")
         return render(request, "job.html", user, job=job)
 
     @app.get("/jobs/{job_id}/stream")
-    async def job_stream(job_id: int, user: User = Depends(current_user)):
+    async def job_stream(request: Request, job_id: int,
+                         user: User = Depends(require_role(Role.OPERATOR))):
+        cookie = request.cookies.get(COOKIE)
+        session_hash = SessionStore.token_hash(cookie) if cookie else None
+
+        def still_allowed() -> bool:
+            """The stream outlives the request that opened it, so re-check the account
+            and the session whenever something is about to be sent."""
+            rec = app.state.users.get(user.id)
+            if rec is None or rec.disabled or session_hash is None:
+                return False
+            try:
+                if Role(rec.role) < Role.OPERATOR:
+                    return False
+            except ValueError:
+                return False
+            return store.session_get(session_hash) is not None
+
         async def events() -> AsyncIterator[str]:
-            async for chunk in runner.subscribe(job_id):
+            async for chunk in runner.subscribe(job_id, idle=STREAM_RECHECK):
+                if not still_allowed():
+                    return
+                if chunk is None:  # idle: nothing to send, the check above was the point
+                    continue
                 if chunk.startswith(_END):
                     yield f"event: end\ndata: {chunk[len(_END):]}\n\n"
                     return
@@ -545,6 +598,7 @@ def create_app(
             out.append({
                 "name": f.name, "label": f.label, "kind": f.kind, "help": f.help,
                 "minimum": f.minimum, "maximum": f.maximum,
+                "choices": choices_for(f, value) if f.kind == "choice" else (),
                 "value": value, "locked": locked,
                 "error": (errors or {}).get(f.name),
                 "has_secret": f.kind == "secret" and service.has_secret(f.name),
@@ -555,7 +609,7 @@ def create_app(
     def render_settings(
         request: Request, user: User, status_code: int = 200, *, msg: str = "",
         section: str | None = None, submitted=None, errors=None,
-        registry_form=None, registry_error=None,
+        registry_form=None, registry_error=None, group_form=None, group_error=None,
     ):
         service = app.state.settings_service
         fields = {key: settings_fields(
@@ -570,16 +624,21 @@ def create_app(
             registry_unreadable="registry_logins" in service.unreadable,
             registry_form=registry_form or {"host": "", "username": ""},
             registry_error=registry_error,
+            redirect_uri=redirect_uri(app.state.settings),
+            group_mappings=service.group_mappings(),
+            group_roles=MAPPABLE_ROLES,
+            group_form=group_form or {"group_id": "", "role": "viewer"},
+            group_error=group_error,
             flash=SETTINGS_FLASH.get(msg),
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    async def settings_page(request: Request, msg: str = "", user: User = Depends(current_user)):
+    async def settings_page(request: Request, msg: str = "", user: User = Depends(require_role(Role.ADMIN))):
         return render_settings(request, user, msg=msg)
 
     # The fixed paths below are declared before /settings/{section} so they win.
     @app.post("/settings/email/test", dependencies=[Depends(verify_csrf)])
-    async def settings_email_test(user: User = Depends(current_user)):
+    async def settings_email_test(user: User = Depends(require_role(Role.ADMIN))):
         try:
             await asyncio.to_thread(
                 send_test_email, app.state.settings, app.state.email_client_factory
@@ -597,7 +656,7 @@ def create_app(
         host: str = Form(""),
         username: str = Form(""),
         password: str = Form(""),
-        user: User = Depends(current_user),
+        user: User = Depends(require_role(Role.ADMIN)),
     ):
         def refuse(message: str):
             return render_settings(
@@ -627,7 +686,7 @@ def create_app(
         return _redirect("/settings?msg=registry_saved#registries")
 
     @app.post("/settings/registries/{host:path}/delete", dependencies=[Depends(verify_csrf)])
-    async def settings_registry_delete(host: str, user: User = Depends(current_user)):
+    async def settings_registry_delete(host: str, user: User = Depends(require_role(Role.ADMIN))):
         try:
             registry = normalise_host(host)
         except ValueError:
@@ -640,9 +699,44 @@ def create_app(
             apply_settings(app)
         return _redirect("/settings?msg=registry_removed#registries")
 
+    @app.post("/settings/signin/test", dependencies=[Depends(verify_csrf)])
+    async def settings_signin_test(user: User = Depends(require_role(Role.ADMIN))):
+        ok = await check_settings(app.state.http, app.state.settings)
+        return _redirect(f"/settings?msg={'entra_ok' if ok else 'entra_failed'}#signin")
+
+    @app.post("/settings/group-mappings", dependencies=[Depends(verify_csrf)])
+    async def settings_group_add(
+        request: Request,
+        group_id: str = Form(""),
+        role: str = Form(""),
+        user: User = Depends(require_role(Role.ADMIN)),
+    ):
+        service = app.state.settings_service
+        gid = group_id.strip().lower()
+        mappings = [m for m in service.group_mappings() if m["group_id"].lower() != gid]
+        mappings.append({"group_id": gid, "role": role})
+        try:
+            service.save_group_mappings(
+                mappings, user.email, f"Group {gid} mapped to {MAPPABLE_ROLES.get(role, role)}")
+        except ValueError as exc:  # fixed messages only
+            return render_settings(
+                request, user, 400, group_error=str(exc),
+                group_form={"group_id": group_id.strip(), "role": role})
+        return _redirect("/settings?msg=group_saved#signin")
+
+    @app.post("/settings/group-mappings/{group_id}/delete", dependencies=[Depends(verify_csrf)])
+    async def settings_group_delete(group_id: str, user: User = Depends(require_role(Role.ADMIN))):
+        service = app.state.settings_service
+        gid = group_id.strip().lower()
+        mappings = service.group_mappings()
+        kept = [m for m in mappings if m["group_id"].lower() != gid]
+        if len(kept) != len(mappings):
+            service.save_group_mappings(kept, user.email, f"Group {gid} role removed")
+        return _redirect("/settings?msg=group_removed#signin")
+
     @app.post("/settings/{section}", dependencies=[Depends(verify_csrf)])
     async def settings_save(
-        request: Request, section: str, user: User = Depends(current_user)
+        request: Request, section: str, user: User = Depends(require_role(Role.ADMIN))
     ):
         if section not in SECTIONS:
             raise HTTPException(status_code=404, detail="Unknown settings section")
@@ -657,16 +751,46 @@ def create_app(
         return _redirect(f"/settings?msg=saved#{section}")
 
     @app.get("/history", response_class=HTMLResponse)
-    async def history(request: Request, view: str = "", user: User = Depends(current_user)):
+    async def history(request: Request, view: str = "", kind: str = "",
+                      user: User = Depends(require_role(Role.VIEWER))):
         if view == "changes":
-            return render(request, "history.html", user, view="changes",
-                          changes=store.list_audit())
+            if user.role < Role.ADMIN:
+                raise RoleDenied()
+            kind = kind if kind in CHANGE_KINDS else ""  # unknown: show everything
+            return render(request, "history.html", user, view="changes", kind=kind,
+                          change_kinds=CHANGE_KINDS, changes=store.list_audit(kind=kind or None))
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
+
+    @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+    async def healthz():
+        """Liveness for the container HEALTHCHECK: public, no detail, never cached."""
+        if app.state.store.ping():
+            body, status = {"status": "ok"}, 200
+        else:
+            body, status = {"status": "unavailable"}, 503
+        return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
     return app
 
 
+class HealthzAccessFilter(logging.Filter):
+    """Drop uvicorn access-log lines for /healthz so the 30-second probe doesn't fill the log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            return args[2].split("?", 1)[0] != "/healthz"
+        return True
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO)
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, HealthzAccessFilter) for f in access.filters):
+        access.addFilter(HealthzAccessFilter())
+
+
 def build_app() -> FastAPI:
     """Factory for `uvicorn --factory app.main:build_app`."""
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     return create_app(get_settings())

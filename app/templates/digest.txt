@@ -8,4 +8,6 @@ Last checked {{ checked_at }}
 {% endfor %}
 {% endfor %}
 
+{% if public_url %}
 Dashboard: {{ public_url }}
+{% endif %}

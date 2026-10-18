@@ -8,6 +8,9 @@ from app.settings_service import SettingsError, SettingsService, key_path
 from app.store import Store
 
 
+TENANT = "33333333-3333-3333-3333-333333333333"
+
+
 def svc(settings, tmp_path, key=b"k" * 32):
     return SettingsService(settings, Store(str(tmp_path / "d.db")), SecretBox(key))
 
@@ -155,3 +158,153 @@ def test_locked_secret_field_in_form_is_skipped(settings, tmp_path, monkeypatch)
     s.save("email", {"acs_connection_string": "endpoint=posted", "digest_schedule": "0 8 * * MON"}, "me")
     assert "acs_connection_string" not in s._store.load_settings()
     assert s.effective().acs_connection_string == "endpoint=from-env"
+
+
+GUID = "22222222-2222-2222-2222-222222222222"
+
+
+def _unlocked(monkeypatch, *names):
+    for n in names:
+        monkeypatch.delenv(n, raising=False)
+    return Settings(_env_file=None)
+
+
+GENERAL = {"server_name": "web1", "tz": "Europe/London"}
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://dash.example.com", True), ("https://dash.example.com/", True),
+    ("http://localhost:8080", True), ("http://127.0.0.1:8000", True),
+    ("http://example.com", False), ("https://x/path", False), ("", True),
+])
+def test_public_url_validation(settings, tmp_path, monkeypatch, url, ok):
+    base = _unlocked(monkeypatch, "SERVER_NAME", "PUBLIC_URL")
+    s = svc(base, tmp_path)
+    form = {**GENERAL, "public_url": url}
+    if ok:
+        s.save("general", form, "me")
+    else:
+        with pytest.raises(SettingsError) as exc:
+            s.save("general", form, "me")
+        assert "public_url" in exc.value.errors
+
+
+def test_choice_rejects_admin_and_legacy_only_when_current(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    for bad in ("admin", "admin_legacy"):
+        with pytest.raises(SettingsError) as exc:
+            s.save("signin", {"local_sign_in": "on", "default_role": bad}, "me")
+        assert "default_role" in exc.value.errors
+    s._store.save_settings({"default_role": "admin_legacy"})
+    s.save("signin", {"local_sign_in": "on", "default_role": "admin_legacy"}, "me")
+    assert s.effective().default_role == "admin_legacy"
+    s.save("signin", {"local_sign_in": "on", "default_role": "operator"}, "me")
+    with pytest.raises(SettingsError):
+        s.save("signin", {"local_sign_in": "on", "default_role": "admin_legacy"}, "me")
+
+
+def test_cannot_turn_off_local_without_entra(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    with pytest.raises(SettingsError) as exc:
+        s.save("signin", {"default_role": "viewer"}, "me")  # local_sign_in unticked
+    assert "Turn on Microsoft sign-in first" in exc.value.errors["local_sign_in"]
+    assert s._store.load_settings() == {}
+
+
+def test_can_turn_off_local_with_entra_configured(settings, tmp_path):
+    s = svc(settings, tmp_path)  # AZURE_* from env
+    s.save("signin", {"default_role": "viewer"}, "me")
+    assert s.effective().local_sign_in is False
+
+
+def test_can_turn_off_local_when_entra_saved_in_same_form(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    s.save("signin", {"default_role": "viewer", "azure_tenant_id": TENANT,
+                      "azure_client_id": "c", "azure_client_secret": "s"}, "me")
+    assert s.effective().entra_enabled and not s.effective().local_sign_in
+
+
+def test_env_locks_azure_fields(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    assert s.locked("azure_tenant_id") == "AZURE_TENANT_ID"
+    s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                      "azure_tenant_id": "other"}, "me")
+    assert s.effective().azure_tenant_id == "tenant"
+
+
+def test_azure_secret_never_audited(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                      "azure_client_secret": "hunter2"}, "me")
+    assert "hunter2" not in str(s._store.list_audit())
+    assert s.effective().azure_client_secret == "hunter2"
+
+
+def test_group_mappings_roundtrip_and_audit(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    assert s.group_mappings() == []
+    s.save_group_mappings([{"group_id": GUID, "role": "admin"}], "me",
+                          f"Group mapping {GUID} → Admin added")
+    assert s.group_mappings() == [{"group_id": GUID, "role": "admin"}]
+    assert any(f"Group mapping {GUID} → Admin added" in str(a) for a in s._store.list_audit())
+
+
+@pytest.mark.parametrize("bad", [
+    [{"group_id": "nope", "role": "admin"}],
+    [{"group_id": GUID, "role": "pending"}],
+    [{"group_id": GUID, "role": "root"}],
+    [{"group_id": GUID}],
+])
+def test_group_mappings_validated(settings, tmp_path, bad):
+    s = svc(settings, tmp_path)
+    with pytest.raises(ValueError):
+        s.save_group_mappings(bad, "me", "x")
+    assert s.group_mappings() == []
+
+
+def test_env_default_role_and_local_sign_in_ignored(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEFAULT_ROLE", "admin")
+    monkeypatch.setenv("LOCAL_SIGN_IN", "false")
+    s = svc(Settings(_env_file=None), tmp_path)
+    assert s.locked("default_role") is None and s.locked("local_sign_in") is None
+    eff = s.effective()
+    assert eff.default_role == "viewer" and eff.local_sign_in is True
+
+
+def test_db_local_off_without_entra_is_forced_on(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+    s = svc(base, tmp_path)
+    s._store.save_settings({"local_sign_in": False})
+    assert s.effective().local_sign_in is True
+
+
+@pytest.mark.parametrize("url", ["https://u:p@x.example", "https://x.example/?a=1",
+                                 "https://x.example/#f", "https://x.example@evil.com"])
+def test_public_url_rejects_credentials_query_fragment(settings, tmp_path, monkeypatch, url):
+    base = _unlocked(monkeypatch, "SERVER_NAME", "PUBLIC_URL")
+    with pytest.raises(SettingsError):
+        svc(base, tmp_path).save("general", {**GENERAL, "public_url": url}, "me")
+
+
+def test_duplicate_group_ids_rejected(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    with pytest.raises(ValueError):
+        s.save_group_mappings([{"group_id": GUID, "role": "admin"},
+                               {"group_id": GUID.upper(), "role": "viewer"}], "me", "x")
+
+
+def test_tenant_id_must_be_a_guid(settings, tmp_path, monkeypatch):
+    base = _unlocked(monkeypatch, "AZURE_TENANT_ID")
+    s = svc(base, tmp_path)
+    with pytest.raises(SettingsError) as exc:
+        s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                          "azure_tenant_id": "contoso.onmicrosoft.com"}, "me")
+    assert exc.value.errors["azure_tenant_id"] == (
+        "Use the Directory (tenant) ID – the long code, not your domain name")
+    s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
+                      "azure_tenant_id": TENANT}, "me")
+    assert s.effective().azure_tenant_id == TENANT

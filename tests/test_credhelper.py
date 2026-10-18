@@ -25,7 +25,8 @@ def env(settings, tmp_path, monkeypatch):
     db = str(tmp_path / "dashboard.db")
     key = tmp_path / "secret.key"
     key.write_bytes(KEY)
-    svc = SettingsService(settings, Store(db), SecretBox(KEY))
+    store = Store(db)
+    svc = SettingsService(settings, store, SecretBox(KEY))
     svc.save_registry_logins(
         [{"host": "ghcr.io", "username": "me", "password": "tok"},
          {"host": "docker.io", "username": "hubuser", "password": "hubpw"}], "me", "x")
@@ -33,6 +34,7 @@ def env(settings, tmp_path, monkeypatch):
     auth.write_text(json.dumps({"auths": {"quay.io": {"auth": base64.b64encode(b"q:pw").decode()}}}))
     dc = write_docker_config(str(tmp_path / "dc"), ["ghcr.io", "docker.io"], db, str(key), str(auth))
     monkeypatch.setenv("DOCKER_CONFIG", dc)
+    store.close()  # an open connection would share the WAL index with a corrupted file
     return tmp_path
 
 

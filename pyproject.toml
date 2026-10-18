@@ -19,10 +19,14 @@ dependencies = [
     "pydantic-settings==2.16.*",
     "python-multipart==0.0.*",
     "cryptography==50.*",
+    "argon2-cffi==25.*",
+    "pyotp==2.*",
+    "segno==1.*",
 ]
 
 [project.scripts]
 docker-credential-docker-manager = "app.credhelper:main_cli"
+docker-manager = "app.cli:main"
 
 [project.urls]
 Repository = "https://github.com/dowouk/docker-manager"
@@ -39,11 +43,12 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["templates/*", "static/*"]
+app = ["templates/*", "static/*", "data/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["fresh_install: leave the database as a brand-new install (first-start setup open)"]
 filterwarnings = [
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",
     "ignore:The httpx module is deprecated; please use httpx2 instead.:authlib.deprecate.AuthlibDeprecationWarning",

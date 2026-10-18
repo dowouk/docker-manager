@@ -199,3 +199,79 @@ def test_upgrade_flag_kept_across_restarts(tmp_path):
     assert Store(path).get_meta("upgraded_from_0_1") == "1"
     assert Store(path).get_meta("upgraded_from_0_1") == "1"
     assert Store(path).get_meta("upgraded_from_0_1") == "1"
+
+
+def _make_0_2(path):
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    db.execute("INSERT INTO schema_version VALUES (2)")
+    db.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+               "target TEXT NOT NULL, user TEXT NOT NULL, status TEXT NOT NULL, "
+               "started_at TEXT, finished_at TEXT, log TEXT NOT NULL DEFAULT '')")
+    db.execute("CREATE TABLE check_results (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+               "checked_at TEXT NOT NULL, payload TEXT NOT NULL)")
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute("CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute("CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, data TEXT NOT NULL, "
+               "created_at TEXT NOT NULL, last_seen TEXT NOT NULL)")
+    db.execute("CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, "
+               "user TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL)")
+    db.execute("INSERT INTO sessions VALUES ('h', '{}', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+    db.commit(); db.close()
+
+
+def test_fresh_database_is_not_an_existing_install(tmp_path):
+    assert Store(str(tmp_path / "d.db")).get_meta("existing_install") is None
+
+
+def test_0_2_database_is_an_existing_install_without_upgrade_flag(tmp_path):
+    path = str(tmp_path / "d.db")
+    _make_0_2(path)
+    s = Store(path)
+    assert s.get_meta("existing_install") == "1"
+    assert s.get_meta("upgraded_from_0_1") is None
+    assert s.session_get("h") is not None
+
+
+def test_0_1_database_is_an_existing_install(tmp_path):
+    path = str(tmp_path / "d.db")
+    _make_0_1(path)
+    s = Store(path)
+    assert s.get_meta("existing_install") == "1"
+    assert s.get_meta("upgraded_from_0_1") == "1"
+
+
+def test_session_user_id_and_delete_for_user(tmp_path):
+    s = Store(str(tmp_path / "d.db"))
+    now = datetime.now(timezone.utc)
+    s.session_put("a", {}, now, now, user_id=1)
+    s.session_put("b", {}, now, now)
+    assert s.session_update("b", {"x": 1}, now, user_id=1) is True
+    assert s.session_delete_for_user(1) == 2
+    assert s.session_get("a") is None
+
+
+def test_failed_migration_3_leaves_0_2_untouched_then_keeps_flag(tmp_path, monkeypatch):
+    import pytest
+
+    from app import store as store_mod
+
+    path = str(tmp_path / "d.db")
+    _make_0_2(path)
+
+    def boom(db):
+        db.execute("CREATE TABLE users (id INTEGER)")
+        raise RuntimeError("migration 3 failed")
+
+    monkeypatch.setattr(store_mod, "MIGRATIONS",
+                        [store_mod._migration_1, store_mod._migration_2, boom])
+    with pytest.raises(RuntimeError):
+        Store(path)
+    monkeypatch.undo()
+    db = sqlite3.connect(path)
+    assert db.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert db.execute("SELECT value FROM meta WHERE key='existing_install'").fetchone() is None
+    assert db.execute("SELECT 1 FROM sqlite_master WHERE name='users'").fetchone() is None
+    db.close()
+    assert Store(path).get_meta("existing_install") == "1"
+    assert Store(path).get_meta("existing_install") == "1"

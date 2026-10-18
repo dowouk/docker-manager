@@ -1,7 +1,9 @@
 import json
+import logging
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Literal
@@ -60,7 +62,37 @@ def _migration_2(db: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migration_1, _migration_2]
+def _migration_3(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "kind TEXT NOT NULL CHECK(kind IN ('local','entra')), "
+        "email TEXT NOT NULL, name TEXT NOT NULL, password_hash TEXT, totp_secret TEXT, "
+        "totp_enabled INTEGER NOT NULL DEFAULT 0, totp_last_step INTEGER, "
+        "recovery_codes TEXT NOT NULL DEFAULT '[]', role TEXT NOT NULL, "
+        "role_pinned INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, "
+        "must_change_password INTEGER NOT NULL DEFAULT 0, entra_tid TEXT, entra_oid TEXT, "
+        "created_at TEXT NOT NULL, last_sign_in TEXT)"
+    )
+    db.execute("CREATE UNIQUE INDEX users_kind_email ON users (kind, lower(email))")
+    db.execute(
+        "CREATE UNIQUE INDEX users_entra ON users (entra_tid, entra_oid) "
+        "WHERE entra_oid IS NOT NULL"
+    )
+    db.execute(
+        "CREATE TABLE invites (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
+        "expires_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE auth_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "scope TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL)"
+    )
+    db.execute("CREATE INDEX auth_failures_lookup ON auth_failures (scope, key, at)")
+    db.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+    db.execute("CREATE INDEX sessions_user ON sessions (user_id)")
+
+
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migration_1, _migration_2, _migration_3]
 
 
 def _now() -> str:
@@ -82,7 +114,24 @@ def _from_iso(value: str | None) -> datetime | None:
     return dt
 
 
+log = logging.getLogger(__name__)
+
+
 class Store:
+    def ping(self) -> bool:
+        """True if the database answers a trivial query."""
+        try:
+            with self._lock:
+                self._db.execute("SELECT 1").fetchone()
+            return True
+        except Exception as exc:
+            log.warning("Health check: the database didn't answer (%s)", type(exc).__name__)
+            return False
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
     def __init__(self, path: str) -> None:
         self.path = path
         parent = os.path.dirname(path)
@@ -113,6 +162,12 @@ class Store:
             for number, migration in enumerate(MIGRATIONS, start=1):
                 if number <= current:
                     continue
+                if number == 3 and (current >= 2 or upgraded):
+                    # Accounts arrive on a database that predates them: the first-run
+                    # setup page must not open on an install that already has data.
+                    self._db.execute(
+                        "INSERT OR REPLACE INTO meta (key, value) VALUES ('existing_install', '1')"
+                    )
                 migration(self._db)
                 if number == len(MIGRATIONS) and upgraded:
                     self._db.execute(
@@ -124,6 +179,19 @@ class Store:
         except BaseException:
             self._db.execute("ROLLBACK")
             raise
+
+    @contextmanager
+    def write_tx(self):
+        """Hold the lock and run one BEGIN IMMEDIATE transaction (write lock taken up
+        front, so check-then-write is atomic across threads and processes)."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._db
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
 
     def get_meta(self, key: str) -> str | None:
         with self._lock:
@@ -162,11 +230,12 @@ class Store:
                 (_now(), user, kind, summary),
             )
 
-    def list_audit(self, limit: int = 100) -> list[AuditEntry]:
+    def list_audit(self, limit: int = 100, kind: str | None = None) -> list[AuditEntry]:
+        where, args = ("WHERE kind = ? ", (kind,)) if kind else ("", ())
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, at, user, kind, summary FROM audit ORDER BY id DESC LIMIT ?",
-                (limit,),
+                f"SELECT id, at, user, kind, summary FROM audit {where}ORDER BY id DESC LIMIT ?",
+                (*args, limit),
             ).fetchall()
         return [AuditEntry(r[0], _from_iso(r[1]), r[2], r[3], r[4]) for r in rows]
 
@@ -181,14 +250,16 @@ class Store:
         return json.loads(row[0]), _from_iso(row[1]), _from_iso(row[2])
 
     def session_put(self, token_hash: str, data: dict,
-                    created_at: datetime, last_seen: datetime) -> None:
+                    created_at: datetime, last_seen: datetime,
+                    user_id: int | None = None) -> None:
         with self._lock, self._db:
             self._db.execute(
-                "INSERT INTO sessions (token_hash, data, created_at, last_seen) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET "
+                "INSERT INTO sessions (token_hash, data, created_at, last_seen, user_id) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET "
                 "data = excluded.data, created_at = excluded.created_at, "
-                "last_seen = excluded.last_seen",
-                (token_hash, json.dumps(data), _to_iso(created_at), _to_iso(last_seen)),
+                "last_seen = excluded.last_seen, user_id = excluded.user_id",
+                (token_hash, json.dumps(data), _to_iso(created_at), _to_iso(last_seen),
+                 user_id),
             )
 
     def session_touch(self, token_hash: str, last_seen: datetime) -> bool:
@@ -200,14 +271,30 @@ class Store:
             )
             return cur.rowcount > 0
 
-    def session_update(self, token_hash: str, data: dict, last_seen: datetime) -> bool:
-        """Rewrite data and last_seen of an existing row; False if the row is gone."""
+    def session_update(self, token_hash: str, data: dict, last_seen: datetime,
+                       user_id: int | None = None) -> bool:
+        """Rewrite data and last_seen of an existing row; False if the row is gone.
+        user_id, when given, is rewritten too; None leaves it unchanged."""
+        with self._lock, self._db:
+            if user_id is None:
+                cur = self._db.execute(
+                    "UPDATE sessions SET data = ?, last_seen = ? WHERE token_hash = ?",
+                    (json.dumps(data), _to_iso(last_seen), token_hash),
+                )
+            else:
+                cur = self._db.execute(
+                    "UPDATE sessions SET data = ?, last_seen = ?, user_id = ? "
+                    "WHERE token_hash = ?",
+                    (json.dumps(data), _to_iso(last_seen), user_id, token_hash),
+                )
+            return cur.rowcount > 0
+
+    def session_delete_for_user(self, user_id: int, keep_hash: str | None = None) -> int:
         with self._lock, self._db:
             cur = self._db.execute(
-                "UPDATE sessions SET data = ?, last_seen = ? WHERE token_hash = ?",
-                (json.dumps(data), _to_iso(last_seen), token_hash),
-            )
-            return cur.rowcount > 0
+                "DELETE FROM sessions WHERE user_id = ? AND token_hash IS NOT ?",
+                (user_id, keep_hash))
+            return cur.rowcount
 
     def session_delete(self, token_hash: str) -> None:
         with self._lock, self._db:

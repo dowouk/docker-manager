@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Two-step sign-in{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Two-step sign-in</h1>
+    {% if stage == "setup" %}<p class="lede">{% if forced %}Admin accounts need an authenticator app before you can carry on. {% endif %}Scan the code with an authenticator app, then enter the 6-digit code it shows.</p>{% endif %}
+  </div>
+</section>
+{% if stage == "on" %}
+<p class="notice notice-ok" role="status">Two-step sign-in is turned on for your account.</p>
+{% elif stage == "codes" %}
+<section class="card form-card">
+  <p class="notice notice-ok" role="status">Two-step sign-in is turned on.</p>
+  <h2>Your recovery codes</h2>
+  <p class="card-text">Keep these somewhere safe. Each works once if you lose your authenticator app. They won't be shown again.</p>
+  <ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  <div class="card-actions"><a class="button button-accent" href="/">Done</a></div>
+</section>
+{% elif stage == "password" %}
+<section class="card form-card">
+  <p class="card-text">Confirm your password to set up two-step sign-in.</p>
+  {% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/account/two-step" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="current_password">Current password</label>
+      <input class="input" id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="card-actions"><button type="submit" class="button button-accent">Continue</button></div>
+  </form>
+</section>
+{% else %}
+<section class="card form-card">
+  {% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+  <div class="qr" role="img" aria-label="QR code for your authenticator app">{{ qr | safe }}</div>
+  <p class="card-text">Can't scan it? Enter this key instead:</p>
+  <p><code class="secret-key">{{ secret }}</code></p>
+  <form method="post" action="/account/two-step" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field">
+      <label for="code">6-digit code</label>
+      <input class="input" id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" required>
+    </div>
+    <div class="card-actions"><button type="submit" class="button button-accent">Turn on two-step sign-in</button></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

@@ -147,6 +147,7 @@ def test_sessions_purge_job_registered(settings):
     assert job.trigger.interval.total_seconds() == 3600
     job.func(*job.args)
     app.state.sessions.purge_expired.assert_called_once_with()
+    app.state.users.purge_failures.assert_called_once_with(timedelta(days=1))
 
 
 async def test_reschedule_keeps_check_timing_unless_interval_or_tz_changed(settings):

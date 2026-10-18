@@ -1,7 +1,7 @@
 """Periodic update check and weekly digest email."""
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -87,6 +87,10 @@ def purge_sessions(app: FastAPI) -> None:
         app.state.sessions.purge_expired()
     except Exception:  # noqa: BLE001 – keep the scheduler alive
         log.exception("Session purge failed")
+    try:
+        app.state.users.purge_failures(timedelta(days=1))
+    except Exception:  # noqa: BLE001
+        log.exception("Sign-in failure purge failed")
 
 
 def _add_digest_job(scheduler: AsyncIOScheduler, app: FastAPI, settings: Settings, tz) -> None:

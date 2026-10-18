@@ -9,12 +9,13 @@
 {% endblock %}
 
 {% block header_actions %}
-{% if digest_enabled %}
+{% if digest_enabled and can(user, Role.ADMIN) %}
 <form method="post" action="/digest/send">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <button type="submit" class="button button-quiet">Send digest now</button>
 </form>
 {% endif %}
+{% if can(user, Role.OPERATOR) %}
 <form method="post" action="/check">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <button type="submit" class="button button-accent">
@@ -22,6 +23,7 @@
     Check now
   </button>
 </form>
+{% endif %}
 {% endblock %}
 
 {# Update buttons for one container – shared by the attention cards and the table. #}
@@ -29,13 +31,14 @@
 {% set c = cs.container %}
 {% if not cs.updatable %}
   <span class="meta">{{ cs.not_updatable_reason }}</span>
+{% elif not can(user, Role.OPERATOR) %}
 {% elif row_state(cs) == "error" %}
   <form method="post" action="/check">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <button type="submit" class="button button-quiet {{ size }}">Check again</button>
   </form>
 {% elif c.is_self %}
-  {% if cs.status in BUILD_UPDATE %}
+  {% if cs.status in BUILD_UPDATE and can(user, Role.ADMIN) %}
   <form method="post" action="/self/update">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <button type="submit" class="button button-update {{ size }}">Update dashboard</button>
@@ -57,10 +60,12 @@
 {% endmacro %}
 
 {% macro mailcow_action(size="") %}
+{% if can(user, Role.ADMIN) %}
 <form method="post" action="/mailcow/update">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <button type="submit" class="button button-update {{ size }}">Update Mailcow</button>
 </form>
+{% endif %}
 {% endmacro %}
 
 {% macro status_badge(state, label) %}
@@ -173,7 +178,7 @@
             {% elif mc.update_available is sameas false %}{{ status_badge("current", "Up to date") }}
             {% else %}{{ status_badge("muted", "Unknown") }}{% endif %}
           </td>
-          <td data-label="Action" class="col-action{% if not mc.update_available %} no-action{% endif %}">{% if mc.update_available %}{{ mailcow_action("button-small") }}{% else %}<span class="faint">–</span>{% endif %}</td>
+          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.ADMIN)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}{{ mailcow_action("button-small") }}{% else %}<span class="faint">–</span>{% endif %}</td>
         </tr>
         {% endif %}
         {% for cs in rows %}
@@ -198,7 +203,7 @@
             {{ status_badge("muted" if state == "unchecked" else state, STATUS_LABELS[cs.status]) }}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
-          {% set has_action = (not cs.updatable and state != "unchecked") or state == "error" or cs.status in BUILD_UPDATE or cs.minor_update %}
+          {% set has_action = (not cs.updatable and state != "unchecked") or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update)) %}
           <td data-label="Action" class="col-action{% if not has_action %} no-action{% endif %}">
             {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}</div>{% else %}<span class="faint">–</span>{% endif %}
           </td>

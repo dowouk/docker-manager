@@ -30,7 +30,7 @@ def env(tmp_path):
     sessions = SessionStore(store, clock)
 
     async def set_user(request: Request):
-        request.session["user"] = {"email": "a@example.com"}
+        request.session["user_id"] = 7
         return JSONResponse({})
 
     async def touch(request: Request):
@@ -72,7 +72,7 @@ def test_sign_in_sets_cookie_and_stores_only_hash(env):
         assert attr.lower() in header.lower()
     assert "max-age=604800" in header.lower()  # the 7 day absolute lifetime
     assert all(token not in "".join(map(str, row)) for row in _rows(store))
-    assert client.get("/read").json() == {"user": {"email": "a@example.com"}}
+    assert client.get("/read").json() == {"user_id": 7}
 
 
 def test_rotation_on_user_change(env):

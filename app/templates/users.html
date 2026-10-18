@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+{% if flash %}<p class="notice notice-ok" role="status">{{ flash }}</p>{% endif %}
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+
+{% if result %}
+<section class="card form-card">
+  {% if result.kind == "password" %}
+  <h1>One-time password for {{ result.email }}</h1>
+  <p class="card-text">Give them this password. It is shown once, works once and they'll be asked to choose their own when they sign in.</p>
+  <p><code class="secret-key">{{ result.password }}</code></p>
+  {% else %}
+  <h1>Invite link for {{ result.email }}</h1>
+  <p class="card-text">Send them this link. It is shown once and works once, for 72 hours.</p>
+  {% if result.url %}
+  <p><code class="secret-key">{{ result.url }}</code></p>
+  {% else %}
+  <p><code class="secret-key">{{ result.path }}</code></p>
+  <p class="notice notice-error" role="alert">The dashboard address isn't set, so this is only the path. Set the dashboard address in Settings, then put it in front of this path.</p>
+  {% endif %}
+  {% endif %}
+  <div class="card-actions"><a class="button button-accent" href="/users">Done</a></div>
+</section>
+{% else %}
+<section class="intro">
+  <div>
+    <h1>Users</h1>
+    <p class="lede">Roles you set by hand are pinned: Microsoft sign-in won't change them.</p>
+  </div>
+</section>
+
+<div class="table-wrap">
+<table class="data">
+  <thead><tr><th>Name</th><th>Email</th><th>Kind</th><th>Role</th><th>Two-step</th><th>Last sign-in</th><th>Status</th><th class="col-action">Actions</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td><span class="who-name">{{ r.name }}</span></td>
+    <td>{{ r.email }}</td>
+    <td>{{ "Microsoft" if r.kind == "entra" else "Local" }}</td>
+    <td>{{ role_labels[r.role] }}{% if r.role != "pending" %} <span class="meta">{{ "Pinned" if r.role_pinned else "From Entra" }}</span>{% endif %}</td>
+    <td>{% if r.kind == "local" %}{{ "On" if r.totp_enabled else "Off" }}{% else %}–{% endif %}</td>
+    <td>{{ r.last_sign_in | uk_date }}</td>
+    <td>{% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% elif r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>{% else %}<span class="badge badge-current">Active</span>{% endif %}</td>
+    <td class="col-action">
+      <div class="row-actions">
+        {% if r.role == "pending" %}
+        {% for role in assignable %}
+        <form method="post" action="/users/{{ r.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="role" value="{{ role }}"><button type="submit" class="button button-accent button-small">Approve as {{ role_labels[role] }}</button></form>
+        {% endfor %}
+        {% else %}
+        <form method="post" action="/users/{{ r.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <select class="input" name="role" aria-label="Role for {{ r.email }}">{% for role in assignable %}<option value="{{ role }}"{% if role == r.role %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select>
+          <button type="submit" class="button button-quiet button-small">Set role</button></form>
+        {% endif %}
+        <details>
+          <summary class="button button-quiet button-small">More</summary>
+          {% if r.kind == "entra" and r.role_pinned %}
+          <form method="post" action="/users/{{ r.id }}/unpin"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Let Entra decide</button></form>
+          {% endif %}
+          {% if r.disabled %}
+          <form method="post" action="/users/{{ r.id }}/enable"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Enable</button></form>
+          {% else %}
+          <form method="post" action="/users/{{ r.id }}/disable"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Disable</button></form>
+          {% endif %}
+          {% if r.kind == "local" %}
+          <form method="post" action="/users/{{ r.id }}/reset-password"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset password</button></form>
+          <form method="post" action="/users/{{ r.id }}/invite"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">New invite link</button></form>
+          <form method="post" action="/users/{{ r.id }}/reset-two-step"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset two-step</button></form>
+          {% endif %}
+          <form method="post" action="/users/{{ r.id }}/sign-out"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Sign out everywhere</button></form>
+          <form method="post" action="/users/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input class="input" name="confirm_email" type="text" autocomplete="off" placeholder="Type their email to delete" aria-label="Type {{ r.email }} to delete this user" required>
+            <button type="submit" class="button button-quiet button-small">Delete</button></form>
+        </details>
+      </div>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<section class="card form-card">
+  <h2>Add a local user</h2>
+  <form method="post" action="/users/local" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field"><label for="lu_name">Name</label><input class="input" id="lu_name" name="name" type="text" autocomplete="off"></div>
+    <div class="field"><label for="lu_email">Email</label><input class="input" id="lu_email" name="email" type="email" autocomplete="off" required></div>
+    <div class="field"><label for="lu_role">Role</label><select class="input" id="lu_role" name="role">{% for role in assignable %}<option value="{{ role }}"{% if role == "viewer" %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="lu_method">How do they start?</label><select class="input" id="lu_method" name="method"><option value="invite">Invite link</option><option value="password">One-time password</option></select>
+      {% if not public_url %}<p class="field-help">The dashboard address isn't set in Settings, so an invite link will show only its path.</p>{% endif %}</div>
+    <div class="card-actions"><button type="submit" class="button button-accent">Add user</button></div>
+  </form>
+</section>
+
+<section class="card form-card">
+  <h2>Add a Microsoft user</h2>
+  <p class="card-text">Pre-create an account so they have this role the first time they sign in with Microsoft.</p>
+  <form method="post" action="/users/entra" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="field"><label for="eu_upn">Sign-in name (UPN)</label><input class="input" id="eu_upn" name="upn" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required></div>
+    <div class="field"><label for="eu_role">Role</label><select class="input" id="eu_role" name="role">{% for role in assignable %}<option value="{{ role }}"{% if role == "viewer" %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select></div>
+    <div class="card-actions"><button type="submit" class="button button-accent">Add user</button></div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

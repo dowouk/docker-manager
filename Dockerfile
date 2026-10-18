@@ -41,5 +41,9 @@ EXPOSE 8000
 # The self-update helper container sets its own entrypoint, so it isn't affected.
 # --timeout-graceful-shutdown keeps open live-log streams from delaying a stop
 # (a running job is left as "running" and classified on the next start).
+# Liveness only (/healthz is public and checks the database). The self-update helper
+# runs the same image with its healthcheck disabled.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"]
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "--factory", "app.main:build_app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "5"]

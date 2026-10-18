@@ -1,0 +1,55 @@
+{% extends "base_public.html" %}
+{% block title %}Set up{% endblock %}
+{% block content %}
+{% if stage == "closed" %}
+<h1 class="auth-title">Not found</h1>
+<p class="lede">There is nothing to set up here. <a href="/auth/login">Sign in</a>.</p>
+{% elif stage == "lost" %}
+<h1 class="auth-title">Setup finished</h1>
+<p class="lede">{{ message }}. <a href="/auth/login">Sign in</a></p>
+{% elif stage == "token" %}
+<h1 class="auth-title">Set up</h1>
+<p class="lede">Enter the setup token from the file <code>setup-token</code> in the data folder, or from the container's log.</p>
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/setup/token" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="field">
+    <label for="token">Setup token</label>
+    <input class="input" id="token" name="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  </div>
+  <button type="submit" class="button button-accent button-block">Continue</button>
+</form>
+{% else %}
+<h1 class="auth-title">Create the first Admin</h1>
+{% if entra %}
+<form method="post" action="/setup/entra" class="auth-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <button type="submit" class="button button-accent button-block">Sign in with Microsoft</button>
+</form>
+<p class="lede">Or create a local account:</p>
+{% endif %}
+<form method="post" action="/setup/admin" class="auth-form" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="field">
+    <label for="name">Name</label>
+    <input class="input" id="name" name="name" type="text" autocomplete="name" value="{{ form.name if form else '' }}">
+  </div>
+  <div class="field{% if errors and errors.email %} field-invalid{% endif %}">
+    <label for="email">Email</label>
+    <input class="input" id="email" name="email" type="email" autocomplete="username" autocapitalize="none" spellcheck="false" value="{{ form.email if form else '' }}" required>
+    {% if errors and errors.email %}<p class="field-error" role="alert">{{ errors.email }}</p>{% endif %}
+  </div>
+  <div class="field{% if errors and errors.password %} field-invalid{% endif %}">
+    <label for="password">Password</label>
+    <input class="input" id="password" name="password" type="password" autocomplete="new-password" required>
+    {% if errors and errors.password %}<p class="field-error" role="alert">{{ errors.password }}</p>{% else %}<p class="field-help">At least 12 characters.</p>{% endif %}
+  </div>
+  <div class="field{% if errors and errors.confirm_password %} field-invalid{% endif %}">
+    <label for="confirm_password">Confirm password</label>
+    <input class="input" id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" required>
+    {% if errors and errors.confirm_password %}<p class="field-error" role="alert">{{ errors.confirm_password }}</p>{% endif %}
+  </div>
+  <button type="submit" class="button {% if entra %}button-quiet{% else %}button-accent{% endif %} button-block">Create Admin</button>
+</form>
+{% endif %}
+{% endblock %}

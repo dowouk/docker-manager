@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal, Mapping
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import Settings
@@ -13,6 +15,13 @@ from app.store import Store
 log = logging.getLogger(__name__)
 
 REGISTRY_LOGINS = "registry_logins"
+GROUP_MAPPINGS = "group_mappings"
+# Set on the page only: an environment value must not preset (or lock) these.
+UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins",
+                     "require_totp_admins", "default_role"})
+LOCAL_OFF_MESSAGE = "Turn on Microsoft sign-in first, or you won't be able to sign in"
+_GUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+MAPPABLE_ROLES = {"viewer": "Viewer", "operator": "Operator", "admin": "Admin"}
 KEY_UNUSABLE_MESSAGE = "The key file for saved secrets can't be used, so nothing can be saved here. See the logs."
 
 
@@ -22,19 +31,41 @@ class Field:
     label: str
     section: str
     kind: Literal["text", "int", "float", "bool", "email", "email_list",
-                  "cron", "tz", "path", "secret"]
+                  "cron", "tz", "path", "secret", "choice"]
     help: str = ""
     minimum: float | None = None
     maximum: float | None = None
+    choices: tuple[tuple[str, str], ...] = ()
+    optional: bool = False  # text only: blank clears the value instead of being an error
 
 
-SECTIONS = {"general": "General", "checking": "Checking", "email": "Email"}
+SECTIONS = {"general": "General", "signin": "Sign-in", "checking": "Checking", "email": "Email"}
 
 FIELDS: list[Field] = [
     Field("server_name", "Server name", "general", "text",
           "Shown at the top of the dashboard and in email subjects."),
     Field("tz", "Timezone", "general", "tz",
           "Used for the weekly digest schedule, for example Europe/London."),
+    Field("public_url", "Dashboard address", "general", "text",
+          "Where people reach this dashboard, for example https://dash.example.com. "
+          "Used for Microsoft sign-in and links in emails.", optional=True),
+    Field("local_sign_in", "Allow local accounts", "signin", "bool",
+          "People can sign in with an email address and password kept on this server."),
+    Field("hide_local_for_non_admins",
+          "Show local sign-in only behind an \"Admin sign-in\" link", "signin", "bool",
+          "Keeps the sign-in page to Microsoft for everyone else."),
+    Field("require_totp_admins", "Require two-step sign-in for local Admin accounts",
+          "signin", "bool", "Local Admins must set up an authenticator app."),
+    Field("default_role", "Role for new Microsoft sign-ins", "signin", "choice",
+          "What someone can do the first time they sign in with Microsoft.",
+          choices=(("pending", "Waiting for approval"), ("viewer", "Viewer"),
+                   ("operator", "Operator"))),
+    Field("azure_tenant_id", "Directory (tenant) ID", "signin", "text",
+          "From your Microsoft Entra app registration.", optional=True),
+    Field("azure_client_id", "Application (client) ID", "signin", "text",
+          "From your Microsoft Entra app registration.", optional=True),
+    Field("azure_client_secret", "Client secret", "signin", "secret",
+          "Leave blank to keep the saved one."),
     Field("check_interval_hours", "Check every (hours)", "checking", "float",
           "How often the dashboard looks for newer images.", 0.25, 168),
     Field("health_timeout_seconds", "Health check timeout (seconds)", "checking", "float",
@@ -70,15 +101,46 @@ def _valid_email(value: str) -> bool:
     return bool(at and local and domain and "@" not in domain and not any(c.isspace() for c in value))
 
 
-def _parse(field: Field, raw: str):
+def _valid_public_url(value: str) -> bool:
+    parts = urlsplit(value)
+    if "?" in value or "#" in value or parts.username or parts.password or "@" in parts.netloc:
+        return False
+    if parts.path not in ("", "/") or parts.query or parts.fragment or not parts.hostname:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
+
+
+def choices_for(field: Field, current) -> tuple[tuple[str, str], ...]:
+    """The choices on offer; the upgrade-only `admin_legacy` shows only while it is set."""
+    if field.name == "default_role" and current == "admin_legacy":
+        return (*field.choices, ("admin_legacy", "Admin (as in 0.1)"))
+    return field.choices
+
+
+def _parse(field: Field, raw: str, current=None):
     """Turn a form string into a stored value; raise ValueError with a user-facing message."""
     raw = (raw or "").strip()
     kind = field.kind
     if kind == "bool":
         return raw == "on"
+    if kind == "choice":
+        if raw not in {value for value, _ in choices_for(field, current)}:
+            raise ValueError("Choose one of the options")
+        return raw
     if kind == "text":
         if not raw:
+            if field.optional:
+                return None
             raise ValueError("Enter a value")
+        if field.name == "public_url":
+            if not _valid_public_url(raw):
+                raise ValueError("Start with https:// and give only the address, "
+                                 "for example https://dash.example.com")
+            return raw.rstrip("/")
+        if field.name == "azure_tenant_id" and not _GUID.fullmatch(raw):
+            raise ValueError("Use the Directory (tenant) ID – the long code, not your domain name")
         return raw
     if kind in ("int", "float"):
         try:
@@ -173,7 +235,7 @@ def _env_set(base: Settings, name: str) -> bool:
     """True if the environment really sets this field. An empty value (0.1 compose files
     passed `ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"` even when unset) does not
     count; `false` and 0 do."""
-    return name in base.model_fields_set and getattr(base, name, None) not in (None, "", [])
+    return name not in UI_ONLY and name in base.model_fields_set and getattr(base, name, None) not in (None, "", [])
 
 
 class SettingsService:
@@ -210,7 +272,15 @@ class SettingsService:
                     overlay[name] = plain
             else:
                 overlay[name] = stored
-        return type(base).model_validate({**base.model_dump(), **overlay})
+        defaults = {n: type(base).model_fields[n].default for n in UI_ONLY}
+        settings = type(base).model_validate({**base.model_dump(), **defaults, **overlay})
+        if not settings.local_sign_in and not settings.entra_enabled:
+            if "local_sign_in" not in self._warned:
+                self._warned.add("local_sign_in")
+                log.warning("Local sign-in is turned off but Microsoft sign-in isn't usable; "
+                            "keeping local sign-in on")
+            settings = settings.model_copy(update={"local_sign_in": True})
+        return settings
 
     def locked(self, name: str) -> str | None:
         return name.upper() if _env_set(self._base, name) else None
@@ -250,7 +320,7 @@ class SettingsService:
                 changed.append(field.name)
                 continue
             try:
-                value = _parse(field, raw)
+                value = _parse(field, raw, getattr(current, field.name))
             except ValueError as exc:
                 errors[field.name] = str(exc)
                 continue
@@ -259,6 +329,10 @@ class SettingsService:
                 updates[field.name] = value
                 parts.append(f"{field.label} {_show(field, old)} → {_show(field, value)}")
                 changed.append(field.name)
+        if (section == "signin" and not self.locked("local_sign_in") and "local_sign_in" not in errors
+                and updates.get("local_sign_in", current.local_sign_in) is False
+                and not self._entra_after(current, updates)):
+            errors["local_sign_in"] = LOCAL_OFF_MESSAGE
         if errors:
             raise SettingsError(errors)
         if updates:
@@ -266,6 +340,37 @@ class SettingsService:
             self.unreadable.difference_update(n for n in updates if n in self.unreadable)
             self._store.add_audit(user, "settings", f"{SECTIONS[section]}: {', '.join(parts)}")
         return changed
+
+    @staticmethod
+    def _entra_after(current: Settings, updates: dict) -> bool:
+        def has(name):
+            return bool(updates[name]) if name in updates else bool(getattr(current, name))
+        return all(has(n) for n in ("public_url", "azure_tenant_id", "azure_client_id",
+                                    "azure_client_secret"))
+
+    def group_mappings(self) -> list[dict]:
+        stored = self._store.load_settings().get(GROUP_MAPPINGS)
+        if not isinstance(stored, list):
+            return []
+        return [m for m in stored if isinstance(m, dict) and isinstance(m.get("group_id"), str)
+                and m.get("role") in MAPPABLE_ROLES]
+
+    def save_group_mappings(self, mappings: list[dict], user: str, summary: str) -> None:
+        clean = []
+        seen: set[str] = set()
+        for m in mappings:
+            group_id = str(m.get("group_id", "")).strip()
+            role = m.get("role")
+            if not _GUID.fullmatch(group_id):
+                raise ValueError("Enter the group's Object ID, which looks like a GUID")
+            if role not in MAPPABLE_ROLES:
+                raise ValueError("Choose Viewer, Operator or Admin")
+            if group_id.lower() in seen:
+                raise ValueError("That group already has a role")
+            seen.add(group_id.lower())
+            clean.append({"group_id": group_id.lower(), "role": role})
+        self._store.save_settings({GROUP_MAPPINGS: clean})
+        self._store.add_audit(user, "settings", summary)
 
     def save_registry_logins(self, logins: list[dict], user: str, summary: str) -> None:
         token = self._box.encrypt(json.dumps(logins))

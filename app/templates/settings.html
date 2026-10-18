@@ -25,12 +25,18 @@
         </label>
         {% else %}
         <label for="f-{{ f.name }}">{{ f.label }}</label>
+        {% if f.kind == "choice" %}
+        <select class="input" id="f-{{ f.name }}" name="{{ f.name }}"{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+          {% for val, text in f.choices %}<option value="{{ val }}"{% if val == f.value %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+        {% else %}
         <input class="input" id="f-{{ f.name }}" name="{{ f.name }}"
           {% if f.kind == "secret" %}type="password" autocomplete="new-password" value=""
           {% elif f.kind in ("int", "float") %}type="number" step="any" inputmode="decimal"{% if f.minimum is not none %} min="{{ f.minimum }}"{% endif %}{% if f.maximum is not none %} max="{{ f.maximum }}"{% endif %} value="{{ f.value }}"
           {% elif f.kind == "email" %}type="email" autocomplete="off" value="{{ f.value }}"
           {% else %}type="text" autocomplete="off" spellcheck="false" value="{{ f.value }}"{% endif %}
           {% if f.locked %}disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+        {% endif %}
         {% endif %}
         {% if f.error %}<p class="field-error" role="alert">{{ f.error }}</p>{% endif %}
         <p class="field-help" id="h-{{ f.name }}">
@@ -50,6 +56,67 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <button type="submit" class="button button-quiet button-small">Send test email</button>
       <span class="meta">Sends to the saved recipients using the saved settings.</span>
+    </form>
+    {% endif %}
+    {% if key == "signin" %}
+    <div class="field">
+      <label for="redirect-uri">Redirect URI for your Microsoft Entra app</label>
+      {% if redirect_uri %}
+      <div class="settings-test">
+        <input class="input mono" id="redirect-uri" type="text" readonly value="{{ redirect_uri }}" aria-describedby="h-redirect-uri">
+        <button type="button" class="button button-quiet button-small" data-copy="redirect-uri" hidden>Copy</button>
+      </div>
+      <p class="field-help" id="h-redirect-uri">Add this as a Web redirect URI in the app registration.</p>
+      {% else %}
+      <p class="field-help" id="h-redirect-uri">Set the dashboard address first (under General) – the redirect URI is built from it.</p>
+      {% endif %}
+    </div>
+    <form method="post" action="/settings/signin/test" class="settings-test">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="button button-quiet button-small">Test Microsoft sign-in settings</button>
+      <span class="meta">Checks the saved tenant ID with Microsoft.</span>
+    </form>
+    <h3 class="subhead" id="group-roles-title">Roles from Microsoft groups</h3>
+    <p class="card-text">People in a mapped group get that role when they sign in with Microsoft (the highest of their groups and app roles). Use the group's Object ID. Roles you set by hand are never changed.</p>
+    {% if group_mappings %}
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th scope="col">Group Object ID</th><th scope="col">Role</th><th scope="col" class="col-action">Remove</th></tr></thead>
+        <tbody>
+        {% for m in group_mappings %}
+          <tr>
+            <td data-label="Group"><span class="mono">{{ m.group_id }}</span></td>
+            <td data-label="Role">{{ group_roles[m.role] }}</td>
+            <td data-label="Remove" class="col-action">
+              <form method="post" action="/settings/group-mappings/{{ m.group_id | urlencode }}/delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button type="submit" class="button button-quiet button-small">Remove</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">No groups mapped to roles.</p>
+    {% endif %}
+    <form method="post" action="/settings/group-mappings" class="settings-form" novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      {% if group_error %}<p class="field-error" role="alert">{{ group_error }}</p>{% endif %}
+      <div class="field">
+        <label for="grp-id">Group Object ID</label>
+        <input class="input mono" id="grp-id" name="group_id" type="text" autocomplete="off" spellcheck="false" value="{{ group_form.group_id }}">
+      </div>
+      <div class="field">
+        <label for="grp-role">Role</label>
+        <select class="input" id="grp-role" name="role">
+          {% for val, text in group_roles.items() %}<option value="{{ val }}"{% if val == group_form.role %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="card-actions">
+        <button type="submit" class="button button-accent">Add or change group role</button>
+      </div>
     </form>
     {% endif %}
   </section>

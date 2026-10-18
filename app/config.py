@@ -1,18 +1,21 @@
+import logging
 from functools import lru_cache
 from typing import Annotated
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+log = logging.getLogger(__name__)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     server_name: str = "Docker Manager"
-    public_url: str
-    azure_tenant_id: str
-    azure_client_id: str
-    azure_client_secret: str
+    public_url: str | None = None
+    azure_tenant_id: str | None = None
+    azure_client_id: str | None = None
+    azure_client_secret: str | None = None
     session_secret: str | None = None  # accepted so 0.1 .env files validate; unused
     allowed_group_id: str | None = None
     allowed_emails: Annotated[list[str], NoDecode] = []
@@ -29,6 +32,11 @@ class Settings(BaseSettings):
     health_timeout_seconds: float = 300
     data_dir: str = "/data"
     secret_key_file: str | None = None
+    # Sign-in options: set from the settings page, not the environment
+    local_sign_in: bool = True
+    hide_local_for_non_admins: bool = False
+    require_totp_admins: bool = True
+    default_role: str = "viewer"
 
     @field_validator("allowed_emails", "digest_to", mode="before")
     @classmethod
@@ -36,6 +44,20 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
+
+    @field_validator("default_role", mode="after")
+    @classmethod
+    def _known_default_role(cls, value):
+        if value not in ("pending", "viewer", "operator", "admin_legacy"):
+            log.warning("Ignoring unknown default role %r; using viewer", value)
+            return "viewer"
+        return value
+
+    @property
+    def entra_enabled(self) -> bool:
+        # No public address, no sign-in: the redirect URI is never taken from request headers.
+        return bool(self.public_url and self.azure_tenant_id and self.azure_client_id
+                    and self.azure_client_secret)
 
     @property
     def digest_enabled(self) -> bool:

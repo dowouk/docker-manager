@@ -3,6 +3,7 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.roles import Role
 from app.store import Store
 from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client
 
@@ -20,7 +21,7 @@ class FakeRunner:
 
 @pytest.fixture
 def app(settings, tmp_path):
-    return create_app(
+    app = create_app(
         settings,
         docker_client=object(),
         http=httpx.AsyncClient(),
@@ -28,6 +29,8 @@ def app(settings, tmp_path):
         runner=FakeRunner(),
         start_scheduler=False,
     )
+    yield app
+    app.state.store.close()
 
 
 @pytest.fixture
@@ -219,6 +222,29 @@ def test_history_changes_view(client):
     assert "Updates" in default and "Changes" in default
 
 
+def test_history_changes_lede_and_kind_filter(app, client):
+    store = app.state.store
+    store.add_audit("a@x.com", "settings", "Checking: changed A")
+    store.add_audit("b@x.com", "signin", "Sign-in failed: SIGNINROW")
+    store.add_audit("c@x.com", "account", "Password changed ACCOUNTROW")
+    store.add_audit("d@x.com", "users", "Added USERSROW")
+    page = client.get("/history?view=changes").text
+    assert "Every settings, sign-in and account change, newest first." in page
+    assert all(m in page for m in ("SIGNINROW", "ACCOUNTROW", "USERSROW", "changed A"))
+    only = client.get("/history?view=changes&kind=signin").text
+    assert "SIGNINROW" in only and "ACCOUNTROW" not in only and "USERSROW" not in only
+    assert "changed A" not in only
+    # an unknown kind is ignored, not an error (and not a SQL filter)
+    unknown = client.get("/history?view=changes&kind=setup").text
+    assert all(m in unknown for m in ("SIGNINROW", "ACCOUNTROW", "USERSROW"))
+
+
+def test_history_kind_filter_is_admin_only(app):
+    with logged_in_client(app, Role.OPERATOR, follow_redirects=False) as c:
+        r = c.get("/history?view=changes&kind=signin", headers={"accept": "text/html"})
+        assert r.status_code in (302, 403)
+
+
 def test_all_routes_still_guarded(app):
     assert_all_routes_guarded(app)
 
@@ -238,3 +264,46 @@ def test_app_starts_with_a_bad_key_file_and_leaves_it_alone(settings, tmp_path, 
         r = c.post("/settings/email", data=GOOD_EMAIL)
         assert r.status_code == 400 and "TOPSECRET" not in r.text
     assert key.read_bytes() == b"too short"
+
+
+def test_signin_section_renders_choice_as_select(client):
+    r = client.get("/settings")
+    assert "Sign-in" in r.text
+    assert '<select class="input" id="f-default_role"' in r.text
+    assert 'value="viewer" selected' in r.text
+    assert "admin_legacy" not in r.text
+
+
+def test_signin_save_refuses_turning_off_local_without_entra(client, app):
+    # AZURE_* come from the env in the fixture, so Entra counts as configured
+    r = client.post("/settings/signin", data={"csrf_token": CSRF, "default_role": "operator"})
+    assert r.status_code == 303
+    assert app.state.settings.default_role == "operator"
+    assert app.state.settings.local_sign_in is False
+
+
+def test_signin_refusal_shown_on_page(settings, tmp_path, monkeypatch):
+    for k in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+        monkeypatch.delenv(k)
+    from app.config import Settings
+
+    store = Store(str(tmp_path / "x" / "dashboard.db"))
+    app = create_app(Settings(_env_file=None), docker_client=object(), http=httpx.AsyncClient(),
+                     store=store, runner=FakeRunner(), start_scheduler=False)
+    try:
+        with logged_in_client(app, follow_redirects=False) as c:
+            r = c.post("/settings/signin", data={"csrf_token": CSRF, "default_role": "viewer"})
+            assert r.status_code == 400
+            assert "Turn on Microsoft sign-in first" in r.text
+    finally:
+        store.close()
+
+
+def test_admin_legacy_option_only_while_current(client, app):
+    assert "Admin (as in 0.1)" not in client.get("/settings").text
+    app.state.store.save_settings({"default_role": "admin_legacy"})
+    from app.main import apply_settings
+
+    apply_settings(app)
+    text = client.get("/settings").text
+    assert '<option value="admin_legacy" selected>Admin (as in 0.1)</option>' in text

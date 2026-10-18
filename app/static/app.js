@@ -144,7 +144,26 @@
     });
   }
 
+  // Copy buttons (data-copy = id of a read-only input). Hidden until the browser can copy.
+  function initCopy() {
+    var buttons = document.querySelectorAll("button[data-copy]");
+    for (var i = 0; i < buttons.length; i++) {
+      (function (button) {
+        var source = document.getElementById(button.getAttribute("data-copy"));
+        if (!source || !navigator.clipboard) return;
+        button.hidden = false;
+        button.addEventListener("click", function () {
+          navigator.clipboard.writeText(source.value).then(function () {
+            button.textContent = "Copied";
+            setTimeout(function () { button.textContent = "Copy"; }, 2000);
+          }, function () { source.select(); });
+        });
+      })(buttons[i]);
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
+    initCopy();
     initTheme();
     initAccountMenu();
     initFilter();

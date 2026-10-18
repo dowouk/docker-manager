@@ -177,3 +177,10 @@ def test_send_test_email(digest_settings):
 def test_send_test_email_unconfigured_raises(settings):
     with pytest.raises(ValueError, match="Email is not configured"):
         send_test_email(settings, lambda conn: FakeClient())
+
+
+def test_no_public_url_means_no_link(settings):
+    s = settings.model_copy(update={"public_url": None})
+    _, html, text = render_digest(result([cs("web")]), s)
+    assert "Open the dashboard" not in html and "Dashboard:" not in text
+    assert "None" not in html and "None" not in text

@@ -16,7 +16,9 @@
 {% endfor %}
 </table>
 {% endfor %}
+{% if public_url %}
 <p style="margin:24px 0 0;font-size:13px;"><a href="{{ public_url }}" style="color:#1d4ed8;">Open the dashboard</a></p>
+{% endif %}
 </div>
 </body>
 </html>

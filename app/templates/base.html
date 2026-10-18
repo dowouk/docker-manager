@@ -30,7 +30,10 @@
       <nav class="site-nav" aria-label="Main">
         <a href="/"{% if path == "/" %} aria-current="page"{% endif %}>Containers</a>
         <a href="/history"{% if path.startswith("/history") or path.startswith("/jobs") %} aria-current="page"{% endif %}>History</a>
+        {% if can(user, Role.ADMIN) %}
+        <a href="/users"{% if path.startswith("/users") %} aria-current="page"{% endif %}>Users</a>
         <a href="/settings"{% if path.startswith("/settings") %} aria-current="page"{% endif %}>Settings</a>
+        {% endif %}
       </nav>
       <div class="header-spacer"></div>
       {% block header_meta %}{% endblock %}
@@ -45,6 +48,7 @@
           <div class="account-menu">
             <div class="account-name">{{ user.name }}</div>
             <div class="account-email">{{ user.email }}</div>
+            <a href="/account" class="button button-quiet button-block">Account</a>
             <form method="post" action="/auth/logout">
               <input type="hidden" name="csrf_token" value="{{ csrf }}">
               <button type="submit" class="button button-quiet button-block">Sign out</button>
@@ -55,6 +59,7 @@
     </div>
   </header>
   <main class="page">
+    {% if legacy_banner(user) %}<p class="notice notice-error" role="alert">Everyone who can sign in is an Admin, as in 0.1 – review Users and the default role in Settings. <a href="/settings">Open Settings</a></p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>
