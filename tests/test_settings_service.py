@@ -36,8 +36,7 @@ def test_env_wins_and_locked_field_ignored(settings, tmp_path, monkeypatch):
 def test_invalid_value_saves_nothing(settings, tmp_path):
     s = svc(settings, tmp_path)
     with pytest.raises(SettingsError) as exc:
-        s.save("email", {"digest_from": "a@x.com", "digest_to": "b@x.com",
-                         "digest_schedule": "not cron", "digest_when_none": "on"}, "me")
+        s.save("digest", {"digest_schedule": "not cron", "digest_when_none": "on"}, "me")
     assert "digest_schedule" in exc.value.errors
     assert s._store.load_settings() == {}
 
@@ -68,40 +67,43 @@ def test_interval_must_be_positive(settings, tmp_path):
             "health_timeout_seconds": "300", "mailcow_dir": "/opt/m"}, "me")
 
 
-def test_secret_encrypted_blank_keeps_and_never_returned(settings, tmp_path):
-    s = svc(settings, tmp_path)
-    form = {"acs_connection_string": "endpoint=https://x;accesskey=SECRET", "digest_from": "a@x.com",
-            "digest_to": "b@x.com, c@x.com", "digest_schedule": "0 8 * * MON", "digest_when_none": "on"}
-    s.save("email", form, "me")
+SIGNIN = {"local_sign_in": "on", "default_role": "pending", "azure_client_secret": "endpoint=SECRET"}
+
+
+@pytest.fixture
+def open_settings(settings, monkeypatch):
+    monkeypatch.delenv("AZURE_CLIENT_SECRET")
+    return Settings(_env_file=None)
+
+
+def test_secret_encrypted_blank_keeps_and_never_returned(open_settings, tmp_path):
+    s = svc(open_settings, tmp_path)
+    s.save("signin", SIGNIN, "me")
     assert "SECRET" not in json.dumps(s._store.load_settings())
-    s.save("email", {**form, "acs_connection_string": ""}, "me")
-    assert s.effective().acs_connection_string.endswith("SECRET")
-    assert s.form_values("email")["acs_connection_string"] == ""
-    assert s.has_secret("acs_connection_string")
-    assert s.effective().digest_to == ["b@x.com", "c@x.com"]
+    s.save("signin", {**SIGNIN, "azure_client_secret": ""}, "me")
+    assert s.effective().azure_client_secret.endswith("SECRET")
+    assert s.form_values("signin")["azure_client_secret"] == ""
+    assert s.has_secret("azure_client_secret")
 
 
-def test_unreadable_secret_is_unset_not_crash(settings, tmp_path):
+def test_unreadable_secret_is_unset_not_crash(open_settings, tmp_path):
+    settings = open_settings
     store = Store(str(tmp_path / "d.db"))
-    SettingsService(settings, store, SecretBox(b"k" * 32)).save("email", {
-        "acs_connection_string": "endpoint=x", "digest_from": "a@x.com", "digest_to": "b@x.com",
-        "digest_schedule": "0 8 * * MON", "digest_when_none": "on"}, "me")
+    SettingsService(settings, store, SecretBox(b"k" * 32)).save("signin", SIGNIN, "me")
     other = SettingsService(settings, store, SecretBox(b"z" * 32))
-    assert other.effective().acs_connection_string is None
-    assert "acs_connection_string" in other.unreadable
+    assert other.effective().azure_client_secret is None
+    assert "azure_client_secret" in other.unreadable
 
 
-def test_audit_records_change_without_secret_value(settings, tmp_path):
-    s = svc(settings, tmp_path)
-    s.save("email", {"acs_connection_string": "endpoint=SECRET", "digest_from": "a@x.com",
-                     "digest_to": "b@x.com", "digest_schedule": "0 8 * * MON",
-                     "digest_when_none": ""}, "me@x.com")
+def test_audit_records_change_without_secret_value(open_settings, tmp_path):
+    s = svc(open_settings, tmp_path)
+    s.save("signin", SIGNIN, "me@x.com")
     s.save("general", {"server_name": "ignored", "tz": "Europe/Paris"}, "me@x.com")  # SERVER_NAME is env-locked
     entries = s._store.list_audit()
     assert entries[0].summary == "General: Timezone Europe/London → Europe/Paris"
     assert entries[0].user == "me@x.com"
     assert all("SECRET" not in e.summary for e in entries)
-    assert any("Connection string replaced" in e.summary for e in entries)
+    assert any("Client secret replaced" in e.summary for e in entries)
 
 
 def test_no_change_no_audit(settings, tmp_path):
@@ -134,20 +136,16 @@ def test_empty_env_value_does_not_lock(settings, tmp_path, monkeypatch):
     s = svc(base, tmp_path)
     for name in ("acs_connection_string", "digest_from", "digest_to"):
         assert s.locked(name) is None
-    s.save("email", {"acs_connection_string": "endpoint=x", "digest_from": "d@x.com",
-                     "digest_to": "a@b.c", "digest_schedule": "0 8 * * MON",
-                     "digest_when_none": "on"}, "me")
-    eff = s.effective()
-    assert eff.acs_connection_string == "endpoint=x"
-    assert eff.digest_from == "d@x.com"
-    assert eff.digest_to == ["a@b.c"]
+    s.save("digest", {"digest_schedule": "0 9 * * MON"}, "me")
+    assert s.effective().digest_schedule == "0 9 * * MON"
+    assert not s.effective().acs_connection_string
 
 
 def test_false_env_value_still_locks(settings, tmp_path, monkeypatch):
     monkeypatch.setenv("DIGEST_WHEN_NONE", "false")
     s = svc(Settings(_env_file=None), tmp_path)
     assert s.locked("digest_when_none") == "DIGEST_WHEN_NONE"
-    s.save("email", {"digest_when_none": "on", "digest_schedule": "0 8 * * MON"}, "me")
+    s.save("digest", {"digest_when_none": "on", "digest_schedule": "0 8 * * MON"}, "me")
     assert s.effective().digest_when_none is False
 
 
@@ -155,8 +153,7 @@ def test_locked_secret_field_in_form_is_skipped(settings, tmp_path, monkeypatch)
     monkeypatch.setenv("ACS_CONNECTION_STRING", "endpoint=from-env")
     s = svc(Settings(_env_file=None), tmp_path)
     assert s.locked("acs_connection_string") == "ACS_CONNECTION_STRING"
-    s.save("email", {"acs_connection_string": "endpoint=posted", "digest_schedule": "0 8 * * MON"}, "me")
-    assert "acs_connection_string" not in s._store.load_settings()
+    s._store.save_settings({"acs_connection_string": {"enc": s._box.encrypt("endpoint=db")}})
     assert s.effective().acs_connection_string == "endpoint=from-env"
 
 

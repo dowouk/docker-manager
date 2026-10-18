@@ -39,7 +39,8 @@ class Field:
     optional: bool = False  # text only: blank clears the value instead of being an error
 
 
-SECTIONS = {"general": "General", "signin": "Sign-in", "checking": "Checking", "email": "Email"}
+SECTIONS = {"general": "General", "signin": "Sign-in", "checking": "Checking",
+            "digest": "Weekly digest"}
 
 FIELDS: list[Field] = [
     Field("server_name", "Server name", "general", "text",
@@ -72,15 +73,9 @@ FIELDS: list[Field] = [
           "How long to wait for a container to become healthy after an update.", 30, 3600),
     Field("mailcow_dir", "Mailcow folder", "checking", "path",
           "Full path to the Mailcow folder on this server."),
-    Field("acs_connection_string", "Connection string", "email", "secret",
-          "From your Azure Communication Services resource. Leave blank to keep the saved one."),
-    Field("digest_from", "Sender address", "email", "email",
-          "The address the digest is sent from."),
-    Field("digest_to", "Recipients", "email", "email_list",
-          "Separate several addresses with commas."),
-    Field("digest_schedule", "Weekly digest schedule", "email", "cron",
+    Field("digest_schedule", "Weekly digest schedule", "digest", "cron",
           "Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am."),
-    Field("digest_when_none", "Send the digest when everything is up to date", "email", "bool",
+    Field("digest_when_none", "Send the digest when everything is up to date", "digest", "bool",
           "Tick to get an email even when there are no updates."),
 ]
 _BY_NAME = {f.name: f for f in FIELDS}
@@ -231,7 +226,7 @@ def logins_from_stored(stored, box: SecretBox) -> list[dict]:
     return _logins_from_plain(plain)
 
 
-def _env_set(base: Settings, name: str) -> bool:
+def env_set(base: Settings, name: str) -> bool:
     """True if the environment really sets this field. An empty value (0.1 compose files
     passed `ACS_CONNECTION_STRING: "${ACS_CONNECTION_STRING}"` even when unset) does not
     count; `false` and 0 do."""
@@ -263,7 +258,7 @@ class SettingsService:
         overlay: dict[str, object] = {}
         for name, stored in self._store.load_settings().items():
             field = _BY_NAME.get(name)
-            if (field is None or _env_set(base, name)
+            if (field is None or env_set(base, name)
                     or name not in type(base).model_fields):
                 continue
             if field.kind == "secret":
@@ -283,7 +278,7 @@ class SettingsService:
         return settings
 
     def locked(self, name: str) -> str | None:
-        return name.upper() if _env_set(self._base, name) else None
+        return name.upper() if env_set(self._base, name) else None
 
     def has_secret(self, name: str) -> bool:
         return name in self._store.load_settings() and name not in self.unreadable \

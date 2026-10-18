@@ -578,3 +578,35 @@ def test_login_metadata_failure_is_502_page(client, response, caplog):
     r = client.get("/auth/entra")
     assert r.status_code == 502 and "Sign-in failed" in r.text
     assert "secret" not in caplog.text
+
+
+# ---- user_pending notification ----
+
+def test_on_pending_called_only_for_a_new_pending_user(app, settings):
+    seen = []
+    s = settings.model_copy(update={"default_role": "pending"})
+    sign_in_entra(app.state.users, ident(s), s, [], on_pending=lambda n, u: seen.append((n, u)))
+    assert len(seen) == 1 and seen[0][1] == "alice@example.com"
+    sign_in_entra(app.state.users, ident(s), s, [], on_pending=lambda n, u: seen.append((n, u)))
+    assert len(seen) == 1  # signing in again isn't a new user
+    other = ident(s, oid="o2", preferred_username="v@example.com", name="V")
+    viewer = settings.model_copy(update={"default_role": "viewer"})
+    sign_in_entra(app.state.users, other, viewer, [], on_pending=lambda n, u: seen.append(1))
+    assert len(seen) == 1  # a viewer isn't waiting for approval
+
+
+def test_on_pending_failure_does_not_break_sign_in(app, settings):
+    s = settings.model_copy(update={"default_role": "pending"})
+
+    def boom(name, upn):
+        raise RuntimeError("nope")
+
+    assert sign_in_entra(app.state.users, ident(s), s, [], on_pending=boom).role == "pending"
+
+
+def test_callback_notifies_a_new_pending_user(app, client, settings):
+    calls = []
+    app.state.notifier.user_pending = lambda name, upn: calls.append((name, upn))
+    set_default(app, "pending")
+    callback(client, app, settings)
+    assert len(calls) == 1 and calls[0][1] == "alice@example.com"

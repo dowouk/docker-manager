@@ -51,13 +51,6 @@
         <button type="submit" class="button button-accent">Save {{ title | lower }} settings</button>
       </div>
     </form>
-    {% if key == "email" %}
-    <form method="post" action="/settings/email/test" class="settings-test">
-      <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <button type="submit" class="button button-quiet button-small">Send test email</button>
-      <span class="meta">Sends to the saved recipients using the saved settings.</span>
-    </form>
-    {% endif %}
     {% if key == "signin" %}
     <div class="field">
       <label for="redirect-uri">Redirect URI for your Microsoft Entra app</label>
@@ -121,6 +114,59 @@
     {% endif %}
   </section>
 {% endfor %}
+
+  <section class="card settings-card" id="notifications" aria-labelledby="notifications-title">
+    <h2 id="notifications-title">Notifications</h2>
+    <p class="card-text">Channels are where messages go. Each one chooses which events it carries, including the weekly digest above.</p>
+    {% if channels_unreadable %}
+    <div class="notice notice-error" role="alert">
+      <p>The saved notification channels can't be read with the current key. Restore the original key file, or remove them and add them again.</p>
+      <form method="post" action="/settings/channels/reset-unreadable">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <label class="check" for="reset-confirm"><input type="checkbox" id="reset-confirm" name="confirm" value="1" required><span>Yes, remove the unreadable channels</span></label>
+        <button type="submit" class="button button-quiet button-small">Remove them</button>
+      </form>
+    </div>
+    {% endif %}
+    {% if channels %}
+    <ul class="channel-list">
+    {% for c in channels %}
+      <li class="channel">
+        <div class="channel-head">
+          <span class="who-name">{{ c.name }}</span>
+          <span class="meta">{{ c.provider }}</span>
+          {% if c.readonly %}<span class="meta">Set by the server's environment</span>{% elif not c.enabled %}<span class="meta">Turned off</span>{% endif %}
+        </div>
+        <p class="channel-line"><span class="meta">To</span> {{ c.recipients }}</p>
+        <p class="channel-line"><span class="meta">Sends</span> {{ c.events | join(", ") if c.events else "Nothing" }}</p>
+        <p class="channel-line">{% if c.failed %}<span class="badge badge-failed">{{ c.status }}</span>{% elif c.at %}<span class="badge badge-succeeded">Last sent {{ c.at | uk_date }}</span>{% else %}<span class="badge badge-muted">{{ c.status }}</span>{% endif %}</p>
+        <div class="channel-actions">
+          {% if not c.readonly %}<a class="button button-quiet button-small" href="/settings/channels/{{ c.id }}">Edit</a>{% endif %}
+          <form method="post" action="/settings/channels/{{ c.id }}/test">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="button button-quiet button-small">Test</button>
+          </form>
+          {% if not c.readonly %}
+          <form method="post" action="/settings/channels/{{ c.id }}/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="button button-quiet button-small">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">No notification channels yet.</p>
+    {% endif %}
+    <form method="get" action="/settings/channels/new" class="settings-test">
+      <label for="new-provider" class="subhead">Add a channel</label>
+      <select class="input" id="new-provider" name="provider">
+        {% for key, p in providers.items() %}<option value="{{ key }}">{{ p.label }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="button button-accent">Add</button>
+    </form>
+  </section>
 
   <section class="card settings-card" id="registries" aria-labelledby="registries-title">
     <h2 id="registries-title">Registry logins</h2>

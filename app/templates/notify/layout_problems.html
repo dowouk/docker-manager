@@ -1,0 +1,10 @@
+{% extends "notify/_base.html" %}
+{% block headline %}layout problems{% endblock %}
+{% block body %}
+<p style="margin:12px 0 0;font-size:14px;">The dashboard found problems with the server layout:</p>
+<ul style="font-size:14px;">
+{% for p in problems %}
+<li>{{ p }}</li>
+{% endfor %}
+</ul>
+{% endblock %}

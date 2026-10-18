@@ -1,0 +1,6 @@
+{{ server_name }}: {% block headline %}{% endblock %}
+{% block body %}{% endblock %}
+{% if link %}
+
+{{ link_text }}: {{ link }}
+{% endif %}

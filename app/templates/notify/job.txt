@@ -1,0 +1,5 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}{{ headline }}{% endblock %}
+{% block body %}
+{{ kind_label }} of {{ target }} {{ status }}. Started by {{ user }}.
+{% endblock %}

@@ -59,10 +59,6 @@ class Settings(BaseSettings):
         return bool(self.public_url and self.azure_tenant_id and self.azure_client_id
                     and self.azure_client_secret)
 
-    @property
-    def digest_enabled(self) -> bool:
-        return bool(self.acs_connection_string and self.digest_from and self.digest_to)
-
 
 @lru_cache
 def get_settings() -> Settings:

@@ -2,6 +2,13 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.4.0] - 18th October 2026
+
+- Notification Channels – Azure Communication Services, SMTP2GO and SMTP
+- Choose Which Events Each Channel Gets
+- Alerts for Failed Updates, Failing Checks, New Updates and Users Waiting for Approval
+- Test Button for Each Channel
+
 ## [0.3.0] - 18th October 2026
 
 - Local Accounts with a One-Time Setup Token on First Start

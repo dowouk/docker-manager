@@ -1,0 +1,5 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}test notification{% endblock %}
+{% block body %}
+This is a test from Docker Manager on {{ server_name }}. If you can read this, the {{ channel }} channel works.
+{% endblock %}

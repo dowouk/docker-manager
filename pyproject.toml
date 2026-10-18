@@ -43,7 +43,7 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["templates/*", "static/*", "data/*"]
+app = ["templates/*", "templates/notify/*", "static/*", "data/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

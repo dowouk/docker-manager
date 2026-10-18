@@ -1,0 +1,5 @@
+{% extends "notify/_base.txt" %}
+{% block headline %}update check recovered{% endblock %}
+{% block body %}
+Update checks are working again.
+{% endblock %}

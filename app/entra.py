@@ -6,6 +6,7 @@ are saved, so values entered on the Settings page work without a restart. The re
 URI always comes from the configured public URL, never from the request.
 """
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -132,7 +133,8 @@ def _pre_created(users: UserStore, identity: EntraIdentity) -> UserRecord | None
 
 
 def sign_in_entra(users: UserStore, identity: EntraIdentity, settings: Settings,
-                  group_mappings: list[dict], setup_open: bool = False) -> UserRecord | None:
+                  group_mappings: list[dict], setup_open: bool = False,
+                  on_pending: Callable[[str, str], None] | None = None) -> UserRecord | None:
     """Find or create the account for a verified identity and apply its mapped role.
     None means the person may not sign in (disabled, or the address belongs to someone else),
     or first-start setup is still open (only the token holder may create the first user)."""
@@ -163,6 +165,11 @@ def sign_in_entra(users: UserStore, identity: EntraIdentity, settings: Settings,
             else:
                 audit(identity.upn, "users",
                       f"User created from Microsoft sign-in: {identity.upn} ({role.value})")
+                if on_pending is not None and rec.role == Role.PENDING.value:
+                    try:
+                        on_pending(identity.name, identity.upn)
+                    except Exception as exc:  # noqa: BLE001 – never break the sign-in
+                        log.warning("Pending-user notification failed (%s)", type(exc).__name__)
                 return rec
     if rec is None or rec.disabled:
         return None
@@ -267,7 +274,8 @@ def setup_entra(app: FastAPI) -> None:
                 return RedirectResponse("/setup", status_code=303)
             else:
                 record = sign_in_entra(app.state.users, identity, settings,
-                                       app.state.settings_service.group_mappings())
+                                       app.state.settings_service.group_mappings(),
+                                       on_pending=app.state.notifier.user_pending)
         if record is None and setup_flow:
             setup = getattr(app.state, "setup", None)
             if setup is not None and not setup.is_open():

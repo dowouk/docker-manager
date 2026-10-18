@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
-from app.digest import render_digest, send_digest, send_test_email
+from app.digest import render_digest
 from app.inventory import ContainerInfo
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
@@ -21,15 +21,6 @@ def cs(name, st=Status.UP_TO_DATE, image="nginx:1.25", **kw):
 
 def result(containers=(), mailcow=None):
     return CheckResult(CHECKED_AT, list(containers), mailcow)
-
-
-@pytest.fixture
-def digest_settings(settings):
-    return settings.model_copy(update={
-        "acs_connection_string": "endpoint=https://x;accesskey=k",
-        "digest_from": "dash@example.com",
-        "digest_to": ["a@example.com", "b@example.com"],
-    })
 
 
 def test_subject_all_up_to_date(settings):
@@ -90,53 +81,6 @@ def test_none_when_nothing_and_disabled(settings):
     assert render_digest(result([cs("web", Status.NEWER_BUILD)]), s) is not None
 
 
-class FakeClient:
-    def __init__(self):
-        self.messages = []
-
-    def begin_send(self, message):
-        self.messages.append(message)
-
-        class Poller:
-            def result(self_inner):
-                return {"status": "Succeeded"}
-
-        return Poller()
-
-
-def test_send_uses_factory_and_recipients(digest_settings):
-    client, seen = FakeClient(), []
-
-    def factory(conn):
-        seen.append(conn)
-        return client
-
-    out = send_digest(digest_settings, result([cs("a", Status.NEWER_BUILD)]), factory)
-    assert out == "sent"
-    assert seen == ["endpoint=https://x;accesskey=k"]
-    (msg,) = client.messages
-    assert msg["senderAddress"] == "dash@example.com"
-    assert msg["recipients"] == {"to": [{"address": "a@example.com"}, {"address": "b@example.com"}]}
-    assert msg["content"]["subject"] == "test-server: 1 update available"
-    assert msg["content"]["html"] and msg["content"]["plainText"]
-
-
-def test_send_not_configured(settings):
-    def factory(conn):
-        raise AssertionError("must not be called")
-
-    assert send_digest(settings, result(), factory) == "skipped – email not configured"
-
-
-def test_send_skipped_nothing_to_report(digest_settings):
-    s = digest_settings.model_copy(update={"digest_when_none": False})
-
-    def factory(conn):
-        raise AssertionError("must not be called")
-
-    assert send_digest(s, result([cs("a")]), factory) == "skipped – nothing to report"
-
-
 def test_tag_listing_failure_listed_under_couldnt_check(settings):
     r = result([cs("web", Status.UP_TO_DATE, message="Could not list tags: Docker Hub said no")])
     _, html, plain = render_digest(r, settings)
@@ -162,21 +106,6 @@ def test_when_none_disabled_still_sends_problems(settings, problem):
     s = settings.model_copy(update={"digest_when_none": False})
     assert render_digest(result([cs("web"), problem]), s) is not None
     assert render_digest(result([cs("web")], MailcowStatus(error="x")), s) is not None
-
-
-def test_send_test_email(digest_settings):
-    client = FakeClient()
-    send_test_email(digest_settings, lambda conn: client)
-    (msg,) = client.messages
-    assert msg["content"]["subject"] == "test-server: test email"
-    assert msg["recipients"] == {"to": [{"address": "a@example.com"}, {"address": "b@example.com"}]}
-    assert "email is working" in msg["content"]["plainText"]
-    assert "test-server" in msg["content"]["html"]
-
-
-def test_send_test_email_unconfigured_raises(settings):
-    with pytest.raises(ValueError, match="Email is not configured"):
-        send_test_email(settings, lambda conn: FakeClient())
 
 
 def test_no_public_url_means_no_link(settings):

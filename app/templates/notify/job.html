@@ -1,0 +1,5 @@
+{% extends "notify/_base.html" %}
+{% block headline %}{{ headline }}{% endblock %}
+{% block body %}
+<p style="margin:12px 0 0;font-size:14px;">{{ kind_label }} of <strong>{{ target }}</strong> {{ status }}. Started by {{ user }}.</p>
+{% endblock %}

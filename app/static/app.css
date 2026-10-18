@@ -204,7 +204,7 @@ table.data { width: 100%; border-collapse: collapse; }
 .data .col-action { text-align: right; }
 .containers .image { color: var(--mono-fg); word-break: break-all; }
 .who { display: flex; align-items: center; gap: 12px; }
-.who-name { font-weight: 600; color: var(--fg-strong); }
+.who-name { font-weight: 600; color: var(--fg-strong); overflow-wrap: anywhere; min-width: 0; }
 .tile { width: 36px; height: 36px; border-radius: 10px; background: var(--tile); display: flex; align-items: center;
   justify-content: center; color: var(--link); flex: none; }
 .row-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; }
@@ -223,6 +223,19 @@ table.data { width: 100%; border-collapse: collapse; }
 .settings-form { display: flex; flex-direction: column; gap: 16px; }
 .settings-form .card-actions, .settings-test { margin: 0; }
 .settings-test { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.channel-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.channel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.channel-title { overflow-wrap: anywhere; min-width: 0; }
+.channel-head { overflow-wrap: anywhere; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.channel-line { margin: 0; overflow-wrap: anywhere; }
+.channel-line .meta { margin-right: 6px; }
+.channel-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.channel-actions form { margin: 0; }
+.choices { border: 0; padding: 0; margin: 0; min-width: 0; gap: 10px; }
+.choices legend { padding: 0; margin-bottom: 8px; font-weight: 500; color: var(--fg-strong); }
+.preset-label { font-weight: 500; color: var(--fg-strong); }
+.settings-test select.input { width: auto; flex: 1 1 200px; }
 .subhead { margin: 0; font-size: 15px; font-weight: 600; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > label { font-weight: 500; color: var(--fg-strong); }
