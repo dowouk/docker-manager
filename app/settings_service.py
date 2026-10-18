@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -39,7 +39,8 @@ class Field:
     optional: bool = False  # text only: blank clears the value instead of being an error
 
 
-SECTIONS = {"general": "General", "signin": "Sign-in", "checking": "Checking", "email": "Email"}
+SECTIONS = {"general": "General", "signin": "Sign-in", "checking": "Checking",
+            "digest": "Weekly digest"}
 
 FIELDS: list[Field] = [
     Field("server_name", "Server name", "general", "text",
@@ -72,15 +73,9 @@ FIELDS: list[Field] = [
           "How long to wait for a container to become healthy after an update.", 30, 3600),
     Field("mailcow_dir", "Mailcow folder", "checking", "path",
           "Full path to the Mailcow folder on this server."),
-    Field("acs_connection_string", "Connection string", "email", "secret",
-          "From your Azure Communication Services resource. Leave blank to keep the saved one."),
-    Field("digest_from", "Sender address", "email", "email",
-          "The address the digest is sent from."),
-    Field("digest_to", "Recipients", "email", "email_list",
-          "Separate several addresses with commas."),
-    Field("digest_schedule", "Weekly digest schedule", "email", "cron",
+    Field("digest_schedule", "Weekly digest schedule", "digest", "cron",
           "Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am."),
-    Field("digest_when_none", "Send the digest when everything is up to date", "email", "bool",
+    Field("digest_when_none", "Send the digest when everything is up to date", "digest", "bool",
           "Tick to get an email even when there are no updates."),
 ]
 _BY_NAME = {f.name: f for f in FIELDS}
@@ -244,6 +239,8 @@ class SettingsService:
         self._store = store
         self._box = box
         self.unreadable: set[str] = set()
+        # Until channels replace the 0.3 digest: email values from a saved channel.
+        self.email_fallback: Callable[[], dict] | None = None
         self._warned: set[str] = set()
 
     def _decrypt(self, name: str, stored) -> str | None:
@@ -272,6 +269,9 @@ class SettingsService:
                     overlay[name] = plain
             else:
                 overlay[name] = stored
+        if self.email_fallback is not None:
+            overlay.update({n: v for n, v in self.email_fallback().items()
+                            if not _env_set(base, n)})
         defaults = {n: type(base).model_fields[n].default for n in UI_ONLY}
         settings = type(base).model_validate({**base.model_dump(), **defaults, **overlay})
         if not settings.local_sign_in and not settings.entra_enabled:

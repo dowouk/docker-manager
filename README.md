@@ -202,7 +202,7 @@ See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles
 
 ## Set up Azure Communication Services email
 
-This is only needed for the weekly email. Skip it if you don't want emails. You can enter the values below either in your `.env` file or on the dashboard's [Settings page](#settings).
+This is only needed for the weekly email. Skip it if you don't want emails. Put the values below in your `.env` file; they appear on the dashboard as a read-only "Email (from environment)" channel. Email settings saved on the 0.2 Settings page are moved into a notification channel called "Email" the first time 0.4 starts.
 
 1. In the [Azure portal](https://portal.azure.com), create an **Email Communication Services** resource (search for "Email Communication Services" → **Create**). Choose a resource group and a data location (for example **UK** or **Europe**).
 2. Open it and go to **Provision domains**. Either:
@@ -211,7 +211,7 @@ This is only needed for the weekly email. Skip it if you don't want emails. You 
 3. Create a **Communication Services** resource (search for "Communication Services" → **Create**), in the same data location.
 4. Open the Communication Services resource and go to **Email → Domains → Connect domain**, and pick the domain from step 2.
 5. Check the sender address: in the Email Communication Services resource, open the domain → **MailFrom addresses**. The default is `DoNotReply@<your domain>`. This is the sender (`DIGEST_FROM`).
-6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string** → `ACS_CONNECTION_STRING`. Enter it on the Settings page (it is encrypted when saved), or put it in your `.env` file.
+6. In the Communication Services resource, go to **Settings → Keys** and copy the **Connection string** → `ACS_CONNECTION_STRING`. Put it in your `.env` file.
 7. Put the people who should get the email in the recipients (`DIGEST_TO`, comma-separated).
 
 Use **Send test email** on the Settings page to check it works, or **Send digest now** on the dashboard.
@@ -280,7 +280,7 @@ Open **Settings** from the top of the dashboard. Most options can be changed the
 - **General** – server name, time zone and the dashboard's address.
 - **Sign-in** – Microsoft sign-in (tenant ID, client ID, client secret and the redirect URI to copy), roles from Microsoft groups, local sign-in, two-step sign-in for Admins and the default role. See [Accounts and sign-in](#accounts-and-sign-in).
 - **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, and the Mailcow folder.
-- **Email** – the Azure Communication Services connection string, sender, recipients, the schedule, and whether to email when everything is up to date. **Send test email** sends a message straight away so you can check it works.
+- **Weekly digest** – the schedule, and whether to email when everything is up to date. **Send test email** sends a message straight away so you can check it works.
 - **Registry logins** – logins for private images (see [Private images](#private-images)). Each one is checked against the registry before it is saved.
 
 Each section is saved on its own. If one value in a section is invalid (for example a schedule that isn't valid, or an unknown time zone) nothing in that section is saved, and the form shows the problem with your other entries still in place. Changes appear in **History → Changes** – the old and new values, but never secrets.
@@ -331,7 +331,7 @@ Settings can be environment variables in the compose file, and many can also be 
 | `DATA_DIR` | No | `/data` | No | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 | `SECRET_KEY_FILE` | No | `<DATA_DIR>/secret.key` | No | Where the key that encrypts saved secrets is kept. Created on first start; leave as it is |
 
-The email is only sent when the connection string, sender and recipients are all set – by `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO`, or on the Settings page.
+The email is only sent when the connection string, sender and recipients are all set – by `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO`, or by a notification channel.
 
 `SECRET_KEY_FILE`, `DATA_DIR`, `COMPOSE_ROOT`, `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD_FILE` are only ever set with environment variables.
 

@@ -22,6 +22,7 @@ from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
+from app.notify.channels import ChannelStore
 from app.digest import EmailNotConfigured, send_digest, send_test_email
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
@@ -289,7 +290,10 @@ def create_app(
     # Before anything is served: migrate old allow rules, or open first-start setup.
     app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
     app.state.setup.prepare(settings)
-    app.state.settings = settings_service.effective()  # the migration may have changed it
+    app.state.channels = ChannelStore(store, settings_service._box, lambda: settings)
+    settings_service.email_fallback = app.state.channels.legacy_email
+    app.state.channels.migrate_0_2_email()
+    app.state.settings = settings_service.effective()  # the migrations may have changed it
     app.state.entra_setup_hook = app.state.setup.complete_with_entra
     app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
     if not app.state.setup.is_open():
@@ -644,11 +648,11 @@ def create_app(
                 send_test_email, app.state.settings, app.state.email_client_factory
             )
         except EmailNotConfigured:
-            return _redirect("/settings?msg=email_unconfigured#email")
+            return _redirect("/settings?msg=email_unconfigured#digest")
         except Exception as exc:  # noqa: BLE001 – the text can hold the connection string: log the type only
             log.error("Sending the test email failed (%s)", type(exc).__name__)
-            return _redirect("/settings?msg=email_failed#email")
-        return _redirect("/settings?msg=email_sent#email")
+            return _redirect("/settings?msg=email_failed#digest")
+        return _redirect("/settings?msg=email_sent#digest")
 
     @app.post("/settings/registries", dependencies=[Depends(verify_csrf)])
     async def settings_registry_add(

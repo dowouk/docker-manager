@@ -51,7 +51,7 @@
         <button type="submit" class="button button-accent">Save {{ title | lower }} settings</button>
       </div>
     </form>
-    {% if key == "email" %}
+    {% if key == "digest" %}
     <form method="post" action="/settings/email/test" class="settings-test">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <button type="submit" class="button button-quiet button-small">Send test email</button>
