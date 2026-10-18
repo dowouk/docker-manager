@@ -69,6 +69,10 @@ async def scheduled_check(app: FastAPI) -> None:
 async def scheduled_digest(app: FastAPI) -> None:
     try:
         result = await run_check(app)
+    except Exception:  # noqa: BLE001 – keep the scheduler alive
+        log.exception("Scheduled digest: the check failed")
+        return
+    try:
         outcome = await asyncio.to_thread(
             send_digest, app.state.settings, result, app.state.email_client_factory
         )

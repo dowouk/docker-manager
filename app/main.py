@@ -366,6 +366,10 @@ def create_app(
     async def digest_send(user: User = Depends(current_user)):
         try:
             result = _latest(app) or await run_check(app)
+        except Exception:  # noqa: BLE001
+            log.exception("The check before sending the digest failed")
+            return _redirect("/?msg=digest_failed")
+        try:
             outcome = await asyncio.to_thread(
                 send_digest, app.state.settings, result, app.state.email_client_factory
             )

@@ -63,12 +63,26 @@ async def test_digest_job_runs_check_then_sends(monkeypatch, settings):
     sent.assert_called_once_with(settings, result, app.state.email_client_factory)
 
 
-async def test_digest_job_swallows_errors(monkeypatch, settings, caplog):
+async def test_digest_job_swallows_send_errors_without_secret(monkeypatch, settings, caplog):
+    monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+
+    def factory(conn):
+        raise RuntimeError("accesskey=TOPSECRET")
+
+    monkeypatch.setattr(sched_mod, "send_digest", MagicMock(side_effect=lambda s, r, f: f("x")))
+    app = fake_app()
+    app.state.settings = settings
+    app.state.email_client_factory = factory
+    await sched_mod.scheduled_digest(app)
+    assert "RuntimeError" in caplog.text and "TOPSECRET" not in caplog.text
+
+
+async def test_digest_job_logs_check_failure_traceback(monkeypatch, settings, caplog):
     monkeypatch.setattr(sched_mod, "run_check", AsyncMock(side_effect=RuntimeError("down")))
     app = fake_app()
     app.state.settings = settings
     await sched_mod.scheduled_digest(app)
-    assert "RuntimeError" in caplog.text and "down" not in caplog.text
+    assert "down" in caplog.text and "Traceback" in caplog.text
 
 
 SATURDAY_NOON = datetime(2026, 10, 17, 12, 0, tzinfo=LONDON)
