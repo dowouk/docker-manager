@@ -17,7 +17,9 @@ MAX_PATTERNS = 10
 MAX_PATTERN_LENGTH = 200
 MATCH_TIMEOUT = 0.05
 MAX_URL_LENGTH = 500
-MATCH_BUDGET = 0.5  # CPU seconds of matching per container per check, once a pattern timed out
+MATCH_BUDGET = 0.5  # CPU seconds of matching per container once a match was slow or timed out
+MATCH_CEILING = 2.0  # CPU seconds of matching per container, always
+SLOW_MATCH = 0.01  # one match slower than this engages the budget
 MAX_COUNT = 20
 
 _BOOLS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
@@ -62,77 +64,101 @@ def _parse_bool(text: str) -> bool:
 _COUNTED = re.compile(r"\{(\d+)(?:,(\d+))?\}")
 
 
+UNSUPPORTED = (
+    "This pattern uses something tag patterns don't support "
+    "(for example \\p{...}, \\N{...}, inline flags, lookarounds or backreferences)"
+)
+_LITERALS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+_ESCAPES = frozenset(".-\\dw{}()[]|+*?^$/")  # \d and \w, or an escaped special character
+_CLASS_ESCAPES = frozenset("dw]-\\")
+
+
+def _scan_class(pattern: str, i: int) -> int:
+    """`i` is just after '['. Returns the index after the closing ']'."""
+    n = len(pattern)
+    if pattern[i: i + 1] == "^":
+        i += 1
+    start = i
+    while i < n:
+        ch = pattern[i]
+        if ch == "]":
+            if i == start:
+                raise ValueError(UNSUPPORTED)  # an empty class
+            return i + 1
+        if ch == "\\":
+            if pattern[i + 1: i + 2] not in _CLASS_ESCAPES or i + 1 >= n:
+                raise ValueError(UNSUPPORTED)
+            i += 2
+        elif ch in _LITERALS:
+            i += 1
+        else:
+            raise ValueError(UNSUPPORTED)  # includes '[', ':' and '='
+    raise ValueError(UNSUPPORTED)
+
+
 def _check_syntax(pattern: str) -> None:
-    """A conservative check done BEFORE compiling: the match timeout can't stop a pattern
-    that blows up the compiler (nested counted repeats). Rejects counted repeats above
-    MAX_COUNT, a quantifier applied to a group that already holds one, backreferences,
-    lookarounds, conditionals and recursion."""
-    frames: list[bool] = []  # per open group: does it contain a quantifier?
-    last_group_quantified = False  # the atom just before is a group holding a quantifier
-    after_quant = False  # the previous token was a quantifier (so +/? are modifiers)
+    """An allow-list check done BEFORE compiling (the match timeout can't stop a pattern
+    that blows up the compiler). Accepts only: literals [A-Za-z0-9._-], a few escapes,
+    simple character classes, groups ( and (?: with |, anchors ^ $, and the quantifiers
+    * + ? {n} {n,m} (n, m <= MAX_COUNT) – never stacked. A group holding a repeat may only
+    be repeated by {n,m}, and not if it holds a {n,m} itself. Anything else is refused."""
+    # per open group: [contains a quantifier, contains a counted repeat {n}]
+    frames: list[list[bool]] = []
+    atom = None  # what a quantifier applies to: None, "plain", "stacked" or a closed group's flags
     i, n = 0, len(pattern)
     while i < n:
         ch = pattern[i]
         quant_end = None
-        if ch == "\\":
-            nxt = pattern[i + 1: i + 2]
-            if nxt.isdigit() and nxt != "0" or nxt in ("g", "k"):
-                raise ValueError("backreferences are not supported")
-            i += 2
-            last_group_quantified = after_quant = False
-            continue
-        if ch == "[":
-            j = i + 1
-            if pattern[j: j + 1] == "^":
-                j += 1
-            if pattern[j: j + 1] == "]":
-                j += 1
-            while j < n and pattern[j] != "]":
-                j += 2 if pattern[j] == "\\" else 1
-            i = j + 1
-            last_group_quantified = after_quant = False
-            continue
-        if ch == "(":
+        if ch in _LITERALS or ch == ".":
+            i, atom = i + 1, "plain"
+        elif ch == "\\":
+            if pattern[i + 1: i + 2] not in _ESCAPES or i + 1 >= n:
+                raise ValueError(UNSUPPORTED)
+            i, atom = i + 2, "plain"
+        elif ch == "[":
+            i, atom = _scan_class(pattern, i + 1), "plain"
+        elif ch == "(":
             if pattern.startswith("(?", i):
-                # Only a plain (?: group: no flags (x/verbose included), names, lookarounds,
-                # atomic groups, recursion, conditionals or comments.
                 if not pattern.startswith("(?:", i):
-                    raise ValueError("only plain (?: ) grouping is supported")
+                    raise ValueError(UNSUPPORTED)
                 i += 3
             else:
                 i += 1
-            frames.append(False)
-            last_group_quantified = after_quant = False
-            continue
-        if ch == ")":
-            inner = frames.pop() if frames else False
+            frames.append([False, False])
+            atom = None
+        elif ch == ")":
+            if not frames:
+                raise ValueError("unbalanced parentheses")
+            inner = frames.pop()
             if frames:
-                frames[-1] = frames[-1] or inner
-            last_group_quantified, after_quant = inner, False
-            i += 1
-            continue
-        if ch in "*+?":
-            if after_quant and ch in "+?":
-                after_quant = False  # lazy or possessive modifier
-                i += 1
-                continue
+                frames[-1] = [frames[-1][0] or inner[0], frames[-1][1] or inner[1]]
+            i, atom = i + 1, tuple(inner)
+        elif ch == "|":
+            i, atom = i + 1, None
+        elif ch in "^$":
+            i, atom = i + 1, None
+        elif ch in "*+?":
             quant_end = i + 1
         elif ch == "{":
             m = _COUNTED.match(pattern, i)
             if m is None:
-                raise ValueError("braces must be a repeat like {3} or {1,5} (or escaped as \\{)")
+                raise ValueError(UNSUPPORTED)
             if any(g and int(g) > MAX_COUNT for g in m.groups()):
                 raise ValueError(f"repeat counts can be at most {MAX_COUNT}")
             quant_end = m.end()
+        else:
+            raise ValueError(UNSUPPORTED)
         if quant_end is not None:
-            if after_quant or last_group_quantified:
+            if atom is None:
+                raise ValueError("a repeat needs something to repeat")
+            if atom == "stacked":
+                raise ValueError("repeats can't be stacked")
+            counted = ch == "{"
+            if isinstance(atom, tuple) and atom[0] and (not counted or atom[1]):
                 raise ValueError("a repeated group can't contain another repeat")
             if frames:
-                frames[-1] = True
-            i, after_quant, last_group_quantified = quant_end, True, False
-            continue
-        i += 1
-        last_group_quantified = after_quant = False
+                frames[-1] = [True, frames[-1][1] or counted]
+            i, atom = quant_end, "stacked"  # a further quantifier would be stacked
     if frames:
         raise ValueError("unbalanced parentheses")
 
@@ -211,7 +237,7 @@ class TagFilter:
         self.warnings = warnings if warnings is not None else []
         self._off: set[str] = set()
         self._spent = 0.0
-        self._timed_out = False
+        self._slow = False
         self._over = False
 
     def _warn(self, message: str) -> None:
@@ -221,14 +247,18 @@ class TagFilter:
     def _matches(self, pattern: str, tag: str) -> bool:
         if pattern in self._off:
             return False
+        started = time.thread_time()
         try:
             return regex.fullmatch(pattern, tag, timeout=MATCH_TIMEOUT, concurrent=True) is not None
         except (TimeoutError, regex.error, ValueError, OverflowError) as exc:
             self._off.add(pattern)
-            self._timed_out = self._timed_out or isinstance(exc, TimeoutError)
+            self._slow = self._slow or isinstance(exc, TimeoutError)
             reason = "took too long" if isinstance(exc, TimeoutError) else "is not valid"
             self._warn(f"Tag pattern '{pattern}' {reason} and was treated as no match")
             return False
+        finally:
+            if time.thread_time() - started > SLOW_MATCH:
+                self._slow = True
 
     def allowed(self, tag: str) -> bool:
         rules = self._rules
@@ -243,8 +273,10 @@ class TagFilter:
             return not any(self._matches(p, tag) for p in rules.exclude_tags)
         finally:
             self._spent += time.thread_time() - started
-            # Cheap patterns never truncate: the budget only applies once one has timed out.
-            if self._timed_out and self._spent > MATCH_BUDGET and not self._over:
+            # Cheap patterns never truncate: the budget only applies once a match was slow
+            # or timed out; the ceiling always applies.
+            limit = MATCH_BUDGET if self._slow else MATCH_CEILING
+            if self._spent > min(limit, MATCH_CEILING) and not self._over:
                 self._over = True
                 self._warn("Tag patterns took too long – the remaining tags were not considered")
 

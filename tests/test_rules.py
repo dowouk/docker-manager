@@ -211,10 +211,17 @@ PROBES = ["((((a{50}){50}){50}){50})", "((((a{100}){100}){100}){100})", "(a+)+",
           "(?x)(((((a{20}) {20}) {20}) {20}) {20}) {20}",
           "(?x)#[\n((((a{20}){20}){20}){20}){20}\n]",
           "(?xi)(?:(?:a{20}) {20})", "(?x:(?:a{20}) {20})", "(?R)", "(a{20}){,}", "(?:abc){e<=3}",
-          "a{,}", "a{3,}", "a{,3}", "a{b", "(?#c)a", "(?>a)", "(?i)a", "(?P<n>a)", "(?<n>a)"]
-GOOD = ["16\\..*", "^v?\\d+$", "(a|aa)+$", "(?:1|2)\\.\\d+", "a{20}", "[a-z]{1,20}", "x{2}y{3}",
-        "[(]{2}", "a+?b*", "\\{3\\}", "(?:-alpine)?", "16\\.(?:1|2)?", "\\d+(?:-alpine)?",
-        "(?:a){20}", "(a|b)+", "[{]x"]
+          "a{,}", "a{3,}", "a{,3}", "a{b", "(?#c)a", "(?>a)", "(?i)a", "(?P<n>a)", "(?<n>a)",
+          "[[:alpha:][](((((a{20}){20}){20}){20}){20})]",
+          "[[=a=][](((((a{20}){20}){20}){20}){20})]",
+          "[[.a.][](((((a{20}){20}){20}){20}){20})]",
+          "[[:^digit:][](((((a{20}){20}){20}){20}){20})]",
+          "a{20}+", "a**", "a+?", "a*+", "\\p{L}", "\\N{DIGIT ONE}", "[a:b]", "[a=b]", "[]a]", "[]",
+          "[a", "(a", "a)", "*a", "|*", "^*", "a b", "\\1", "\\x41", "[\\p{L}]", "((a+){20}){20}", "(?:(?:a+){20}b){20}", "(?:a{2}){3}"]
+GOOD = ["16\\.\\d+", "\\d+\\.\\d+-alpine", ".*-rc.*", "1[0-9]\\.\\d+\\.\\d+", "(?:-alpine)?",
+        "v?\\d+(?:\\.\\d+){1,3}", "16\\..*", "^v?\\d+$", "(a|aa)+$", "(?:1|2)\\.\\d+", "a{20}",
+        "[a-z]{1,20}", "x{2}y{3}", "\\{3\\}", "16\\.(?:1|2)?", "\\d+(?:-alpine)?", "(?:a){20}",
+        "(a|b)+", "(?:a+){2}", "[^0-9]+", "[\\w.-]+", "[a-c\\]]"]
 
 
 @pytest.mark.parametrize("pattern", PROBES)
@@ -287,15 +294,35 @@ def test_pattern_that_times_out_is_switched_off(monkeypatch):
     assert len(calls) == 1
 
 
-def test_budget_applies_only_after_a_timeout(monkeypatch):
+def test_budget_applies_only_after_a_slow_match(monkeypatch):
     import app.rules as r
     monkeypatch.setattr(r, "MATCH_BUDGET", 0.0)
     cheap = r.TagFilter(Rules(include_tags=("1.*",)))
     assert all(cheap.allowed(f"1.{i}") for i in range(50)) and cheap.warnings == []
-    f = r.TagFilter(Rules(exclude_tags=("(1|11)+$",)))
+    f = r.TagFilter(Rules(exclude_tags=("(?:1|11)+$",)))
     assert f.allowed("1" * 40 + "!")  # times out; the budget is now spent
     assert f.allowed("1.2") is False
     assert any("took too long" in w for w in f.warnings)
+
+
+async def test_sub_timeout_slow_patterns_are_bounded(tmp_path, settings):
+    tags = ["1" * 26 + f".{i}" for i in range(30)]
+    slow = tuple(f"(?:1|11)+\\.{i}x" for i in range(10))
+    reg = FakeRegistry({"pg:1.2": "sha256:old"}, {"pg:1.2": tags})
+    c = info(tmp_path, name="db", image="pg:1.2", digests=["pg@sha256:old"])
+    started = time.monotonic()
+    result = await check_all([c], reg, settings, None,
+                             rules_for=lambda _: Rules(exclude_tags=slow))
+    assert time.monotonic() - started < 3
+    assert any("took too long" in w for w in result.containers[0].rule_warnings)
+
+
+def test_ceiling_always_applies(monkeypatch):
+    import app.rules as r
+    monkeypatch.setattr(r, "MATCH_CEILING", 0.0)
+    f = r.TagFilter(Rules(include_tags=("1.*",)))
+    assert f.allowed("1.1") is True and f.allowed("1.2") is False
+    assert f.warnings
 
 
 async def test_cheap_patterns_never_truncate_big_tag_lists(tmp_path, settings):
