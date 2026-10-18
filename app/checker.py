@@ -11,7 +11,7 @@ from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo, Mount, is_mailcow
 from app.layout import LayoutProblem
 from app.registry import NotFoundError, RegistryClient
-from app.rules import Rules, TagFilter
+from app.rules import Rules, TagFilter, tag_executor
 from app.versions import find_version_updates, parse_version_tag
 
 _UPDATABLE_STATES = ("running", "exited")
@@ -229,13 +229,14 @@ async def check_all(
         zip(refs, await asyncio.gather(*(_check_image(r, registry) for r in refs)))
     )
 
-    # Pattern matching is CPU work: do it off the event loop, one thread job per container.
+    # Pattern matching is CPU work: do it off the event loop, on its own small pool.
     async def filtered(c: ContainerInfo) -> tuple[list[str] | None, list[str]]:
         remote = remotes.get(c.image_ref)
         if not (rules[c.id].watch and remote is not None and remote.tags is not None):
             return None, []
         tag_filter = TagFilter(rules[c.id])
-        allowed = await asyncio.to_thread(tag_filter.filter, remote.tags)
+        allowed = await asyncio.get_running_loop().run_in_executor(
+            tag_executor(), tag_filter.filter, remote.tags)
         return allowed, tag_filter.warnings
 
     tag_results = await asyncio.gather(*(filtered(c) for c in regular))

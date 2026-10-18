@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import regex
 
@@ -15,10 +17,11 @@ from app.versions import parse_version_tag
 SETTING = "container_rules"
 MAX_PATTERNS = 10
 MAX_PATTERN_LENGTH = 200
-MATCH_TIMEOUT = 0.05
+MATCH_TIMEOUT = 0.5  # wall-clock backstop per match; CPU time decides (see MATCH_SWITCH_OFF)
 MAX_URL_LENGTH = 500
 MATCH_BUDGET = 0.5  # CPU seconds of matching per container once a match was slow or timed out
 MATCH_CEILING = 2.0  # CPU seconds of matching per container, always
+MATCH_SWITCH_OFF = 0.05  # a timed-out match must also have used this much CPU to switch its pattern off
 SLOW_MATCH = 0.01  # one match slower than this engages the budget
 MAX_COUNT = 20
 
@@ -61,7 +64,7 @@ def _parse_bool(text: str) -> bool:
         raise ValueError("use true or false") from None
 
 
-_COUNTED = re.compile(r"\{(\d+)(?:,(\d+))?\}")
+_COUNTED = re.compile(r"\{([0-9]+)(?:,([0-9]+))?\}")
 
 
 UNSUPPORTED = (
@@ -238,9 +241,33 @@ def _check_compiles(patterns: list[str]) -> None:
             raise ValueError(f"'{p}' is not a valid pattern ({exc})") from None
 
 
+# All tag matching runs on this small pool, not the loop's default executor: a pathological
+# pattern can then only slow other tag matching, never password hashing or anything else.
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def tag_executor() -> ThreadPoolExecutor:
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tags")
+        return _executor
+
+
+def shutdown_tag_executor() -> None:
+    """Called on app shutdown; doesn't wait for running matches (each is time-limited)."""
+    global _executor
+    with _executor_lock:
+        pool, _executor = _executor, None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 class TagFilter:
     """Applies one container's include/exclude patterns. A pattern that times out is
-    switched off for the rest of the check, and matching stops after MATCH_BUDGET seconds
+    switched off for the rest of the check (an include then matches nothing, an exclude
+    excludes everything), and matching stops after MATCH_BUDGET seconds
     (the remaining tags then count as not allowed). Warnings collect in `warnings`."""
 
     def __init__(self, rules: Rules, warnings: list[str] | None = None):
@@ -255,18 +282,24 @@ class TagFilter:
         if message not in self.warnings:
             self.warnings.append(message)
 
-    def _matches(self, pattern: str, tag: str) -> bool:
+    def _matches(self, pattern: str, tag: str, on_fail: bool) -> bool:
+        """`on_fail` is the answer when the pattern can't be evaluated: False for an include
+        (not matched), True for an exclude (excluded – a broken exclude must not let tags through)."""
         if pattern in self._off:
-            return False
+            return on_fail
         started = time.thread_time()
         try:
             return regex.fullmatch(pattern, tag, timeout=MATCH_TIMEOUT, concurrent=True) is not None
         except (TimeoutError, regex.error, ValueError, OverflowError) as exc:
-            self._off.add(pattern)
-            self._slow = self._slow or isinstance(exc, TimeoutError)
-            reason = "took too long" if isinstance(exc, TimeoutError) else "is not valid"
+            timed_out = isinstance(exc, TimeoutError)
+            # A timeout under CPU starvation says little about the pattern: only switch it off
+            # when this match really burned CPU.
+            if not timed_out or time.thread_time() - started >= MATCH_SWITCH_OFF:
+                self._off.add(pattern)
+                self._slow = self._slow or timed_out
+            reason = "took too long" if timed_out else "is not valid"
             self._warn(f"Tag pattern '{pattern}' {reason} and was treated as no match")
-            return False
+            return on_fail
         finally:
             if time.thread_time() - started > SLOW_MATCH:
                 self._slow = True
@@ -279,9 +312,9 @@ class TagFilter:
             return False
         started = time.thread_time()  # CPU time of this thread: other threads don't count
         try:
-            if rules.include_tags and not any(self._matches(p, tag) for p in rules.include_tags):
+            if rules.include_tags and not any(self._matches(p, tag, False) for p in rules.include_tags):
                 return False
-            return not any(self._matches(p, tag) for p in rules.exclude_tags)
+            return not any(self._matches(p, tag, True) for p in rules.exclude_tags)
         finally:
             self._spent += time.thread_time() - started
             # Cheap patterns never truncate: the budget only applies once a match was slow

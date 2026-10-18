@@ -112,14 +112,14 @@ def test_pathological_pattern_times_out_with_warning():
     rules = Rules(exclude_tags=("(a|aa)+$",))
     warnings: list[str] = []
     started = time.monotonic()
-    assert tag_allowed("a" * 40 + "!", rules, warnings)
-    assert time.monotonic() - started < 1
-    assert len(warnings) == 1 and "(a|aa)+$" in warnings[0]
+    assert not tag_allowed("a" * 40 + "!", rules, warnings)  # a broken exclude excludes
+    assert time.monotonic() - started < 2
+    assert "(a|aa)+$" in warnings[0] and len(warnings) <= 2  # a 0.5 s timeout also spends the budget
 
 
 def test_bad_pattern_is_no_match_with_warning():
     warnings: list[str] = []
-    assert tag_allowed("1", Rules(exclude_tags=("(",)), warnings)
+    assert not tag_allowed("1", Rules(exclude_tags=("(",)), warnings)  # a broken exclude excludes
     assert not tag_allowed("1", Rules(include_tags=("(",)), warnings)
     assert len(warnings) == 1  # the same warning is reported once
 
@@ -169,7 +169,8 @@ async def test_pathological_rule_does_not_stop_check(tmp_path, settings):
                              rules_for=lambda _: Rules(exclude_tags=("(1|11)+$",)))
     assert time.monotonic() - started < 2
     assert result.containers[0].minor_update == "16.3"
-    assert len(result.containers[0].rule_warnings) == 1
+    warnings = result.containers[0].rule_warnings
+    assert "(1|11)+$" in warnings[0] and len(warnings) <= 2  # a 0.5 s timeout also spends the budget
 
 
 def test_old_stored_result_loads():
@@ -216,7 +217,7 @@ PROBES = ["((((a{50}){50}){50}){50})", "((((a{100}){100}){100}){100})", "(a+)+",
           "[[=a=][](((((a{20}){20}){20}){20}){20})]",
           "[[.a.][](((((a{20}){20}){20}){20}){20})]",
           "[[:^digit:][](((((a{20}){20}){20}){20}){20})]",
-          "a{20}+", "a**", "a+?", "a*+", "\\p{L}", "\\N{DIGIT ONE}", "[a:b]", "[a=b]", "[]a]", "[]",
+          "a{٣}", "a{1,٣}", "a{20}+", "a**", "a+?", "a*+", "\\p{L}", "\\N{DIGIT ONE}", "[a:b]", "[a=b]", "[]a]", "[]",
           "[a", "(a", "a)", "*a", "|*", "^*", "a b", "\\1", "\\x41", "[\\p{L}]", "((a+){20}){20}", "(?:(?:a+){20}b){20}", "(?:a{2}){3}"]
 GOOD = ["16\\.\\d+", "\\d+\\.\\d+-alpine", ".*-rc.*", "1[0-9]\\.\\d+\\.\\d+", "(?:-alpine)?",
         "v?\\d+(?:\\.\\d+){1,3}", "16\\..*", "^v?\\d+$", "(a|aa)+$", "(?:1|2)\\.\\d+", "a{20}",
@@ -290,7 +291,7 @@ def test_pattern_that_times_out_is_switched_off(monkeypatch):
 
     monkeypatch.setattr(regex, "fullmatch", spy)
     f = TagFilter(Rules(exclude_tags=("(1|11)+$",)))
-    assert f.allowed("1" * 40 + "!") and f.allowed("1" * 41 + "!")
+    assert not f.allowed("1" * 40 + "!") and not f.allowed("1" * 41 + "!")  # off: still excluded
     assert len(calls) == 1
 
 
@@ -300,7 +301,7 @@ def test_budget_applies_only_after_a_slow_match(monkeypatch):
     cheap = r.TagFilter(Rules(include_tags=("1.*",)))
     assert all(cheap.allowed(f"1.{i}") for i in range(50)) and cheap.warnings == []
     f = r.TagFilter(Rules(exclude_tags=("(?:1|11)+$",)))
-    assert f.allowed("1" * 40 + "!")  # times out; the budget is now spent
+    assert not f.allowed("1" * 40 + "!")  # times out; the budget is now spent
     assert f.allowed("1.2") is False
     assert any("took too long" in w for w in f.warnings)
 
@@ -325,7 +326,11 @@ def test_ceiling_always_applies(monkeypatch):
     assert f.warnings
 
 
-async def test_cheap_patterns_never_truncate_big_tag_lists(tmp_path, settings):
+async def test_cheap_patterns_never_truncate_big_tag_lists(tmp_path, settings, monkeypatch):
+    import types
+    import app.rules as r
+    # A frozen CPU clock: no matching ever looks slow, whatever the machine is doing.
+    monkeypatch.setattr(r, "time", types.SimpleNamespace(thread_time=lambda: 0.0))
     tags = [f"1{i % 10}.{i // 10}.{i % 7}" for i in range(2000)]
     reg = FakeRegistry({"pg:10.0.0": "sha256:old"}, {"pg:10.0.0": tags})
     cs = [info(tmp_path, name=f"db{i}", image="pg:10.0.0", digests=["pg@sha256:old"])
@@ -335,6 +340,89 @@ async def test_cheap_patterns_never_truncate_big_tag_lists(tmp_path, settings):
     result = await check_all(cs, reg, settings, None, rules_for=lambda _: rules)
     assert all(c.rule_warnings == [] for c in result.containers)
     assert all(c.minor_update is not None for c in result.containers)
+
+
+def _timing_out(monkeypatch, cpu=0.0):
+    """regex.fullmatch that always times out, after `cpu` seconds of (fake) thread CPU."""
+    import types
+    import regex
+    import app.rules as r
+    clock = [0.0]
+    calls = []
+
+    def fullmatch(p, t, **k):
+        calls.append(t)
+        clock[0] += cpu
+        raise TimeoutError
+
+    monkeypatch.setattr(r, "regex", types.SimpleNamespace(
+        fullmatch=fullmatch, error=regex.error, compile=regex.compile))
+    monkeypatch.setattr(r, "time", types.SimpleNamespace(thread_time=lambda: clock[0]))
+    return calls
+
+
+def test_exclude_that_times_out_excludes_the_tag(monkeypatch):
+    from app.rules import TagFilter
+    _timing_out(monkeypatch, cpu=0.06)
+    f = TagFilter(Rules(exclude_tags=("1.*",)))
+    assert f.allowed("1.2") is False and f.allowed("1.3") is False  # switched off: still excluded
+    assert any("took too long" in w for w in f.warnings)
+
+
+def test_include_that_times_out_does_not_allow_the_tag(monkeypatch):
+    from app.rules import TagFilter
+    _timing_out(monkeypatch, cpu=0.06)
+    f = TagFilter(Rules(include_tags=("1.*",)))
+    assert f.allowed("1.2") is False
+    assert any("took too long" in w for w in f.warnings)
+
+
+def test_exclude_that_raises_excludes_the_tag():
+    from app.rules import TagFilter
+    f = TagFilter(Rules(exclude_tags=("(",)))  # hand-built: can't compile
+    assert f.allowed("1.2") is False and f.warnings
+
+
+def test_timeout_with_low_cpu_does_not_switch_the_pattern_off(monkeypatch):
+    from app.rules import TagFilter
+    calls = _timing_out(monkeypatch, cpu=0.001)
+    f = TagFilter(Rules(include_tags=("1.*",)))
+    assert [f.allowed(f"1.{i}") for i in range(3)] == [False] * 3
+    assert len(calls) == 3  # tried every time: the pattern wasn't switched off
+
+
+def test_timeout_with_high_cpu_switches_the_pattern_off(monkeypatch):
+    from app.rules import TagFilter
+    calls = _timing_out(monkeypatch, cpu=0.06)
+    f = TagFilter(Rules(include_tags=("1.*",)))
+    assert [f.allowed(f"1.{i}") for i in range(3)] == [False] * 3
+    assert len(calls) == 1
+
+
+def test_match_timeout_is_a_half_second_backstop():
+    import app.rules as r
+    assert r.MATCH_TIMEOUT == 0.5 and r.MATCH_SWITCH_OFF == 0.05
+
+
+async def test_tag_matching_runs_on_the_dedicated_pool(tmp_path, settings, monkeypatch):
+    import threading
+    import regex
+    import app.rules as r
+    names = set()
+    real = regex.fullmatch
+
+    def spy(p, t, **k):
+        names.add(threading.current_thread().name)
+        return real(p, t, **k)
+
+    monkeypatch.setattr(regex, "fullmatch", spy)
+    reg = FakeRegistry({"pg:1.0.0": "sha256:old"}, {"pg:1.0.0": ["1.0.1"]})
+    c = info(tmp_path, name="db", image="pg:1.0.0", digests=["pg@sha256:old"])
+    await check_all([c], reg, settings, None, rules_for=lambda _: Rules(include_tags=("1.*",)))
+    assert names and all(n.startswith("tags") for n in names)
+    assert r.tag_executor()._max_workers == 2
+    r.shutdown_tag_executor()
+    assert r._executor is None
 
 
 @pytest.mark.parametrize("bad", [5, None, [1], "abc", ["(a|b"], {"x": 1}])

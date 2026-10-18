@@ -47,7 +47,7 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.roles import Role
-from app.rules import RulesError, RulesStore
+from app.rules import RulesError, RulesStore, shutdown_tag_executor
 from app import skips as skips_mod
 from app.skips import SkipStore
 from app.sessions import COOKIE, SessionStore
@@ -346,6 +346,7 @@ def create_app(
                     scheduler.shutdown(wait=False)
             finally:
                 shutdown_notify_executor()
+                shutdown_tag_executor()
                 if owns_http:
                     await http.aclose()
 
