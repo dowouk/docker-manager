@@ -26,7 +26,7 @@ from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.mailcow import check_mailcow, run_capture, update_mailcow
-from app.keys import SecretBox, load_or_create_key
+from app.keys import KeyUnusable, load_secret_box
 from app.registry import RegistryClient, RegistryError
 from app.registry_logins import (
     logins_by_host,
@@ -35,7 +35,9 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.sessions import SessionStore
-from app.settings_service import FIELDS, SECTIONS, SettingsError, SettingsService, key_path
+from app.settings_service import (
+    FIELDS, KEY_UNUSABLE_MESSAGE, SECTIONS, SettingsError, SettingsService, key_path,
+)
 from app.store import Store
 from app import view
 from app.updaters import (
@@ -229,7 +231,7 @@ def create_app(
     store.mark_interrupted_jobs()
     if settings_service is None:
         settings_service = SettingsService(
-            settings, store, SecretBox(load_or_create_key(key_path(settings)))
+            settings, store, load_secret_box(key_path(settings))
         )
 
     @asynccontextmanager
@@ -617,7 +619,10 @@ def create_app(
         service = app.state.settings_service
         logins = [i for i in service.registry_logins() if i.get("host") != registry]
         logins.append({"host": registry, "username": username, "password": password})
-        service.save_registry_logins(logins, user.email, f"Registry login {registry} added")
+        try:
+            service.save_registry_logins(logins, user.email, f"Registry login {registry} added")
+        except KeyUnusable:
+            return refuse(KEY_UNUSABLE_MESSAGE)
         apply_settings(app)
         return _redirect("/settings?msg=registry_saved#registries")
 

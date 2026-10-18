@@ -16,6 +16,21 @@ _HUB_ALIASES = {"docker.io", "index.docker.io", "registry-1.docker.io", "hub.doc
 _HUB_DOCKER_KEY = "https://index.docker.io/v1/"
 
 
+def _check_port(value: str, original: str) -> None:
+    if value.startswith("["):  # [::1]:5000
+        end = value.find("]")
+        rest = value[end + 1:] if end != -1 else "x"
+        if end == -1 or rest not in ("",) and not rest.startswith(":"):
+            raise ValueError(f"Not a registry host: {original!r}")
+        port = rest[1:] if rest else None
+    elif value.count(":") > 1:
+        raise ValueError(f"Not a registry host: {original!r}")
+    else:
+        port = value.partition(":")[2] if ":" in value else None
+    if port is not None and not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+        raise ValueError(f"Not a registry host: {original!r}")
+
+
 def normalise_host(host: str) -> str:
     value = host.strip().lower()
     for scheme in ("https://", "http://"):
@@ -25,6 +40,7 @@ def normalise_host(host: str) -> str:
         value = value.removesuffix("/v1")
     if not value or "/" in value:
         raise ValueError(f"Not a registry host: {host!r}")
+    _check_port(value, host)
     return "docker.io" if value in _HUB_ALIASES else value
 
 
@@ -179,7 +195,7 @@ async def test_login(http: httpx.AsyncClient, host: str, username: str, password
                 raise refused
         if not resp.is_success:
             raise RegistryError(f"{registry} returned HTTP {resp.status_code}")
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise RegistryError(f"{registry} could not be reached") from exc
 
 

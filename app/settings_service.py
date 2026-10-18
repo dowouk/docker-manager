@@ -7,12 +7,13 @@ from typing import Literal, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import Settings
-from app.keys import SecretBox
+from app.keys import KeyUnusable, SecretBox
 from app.store import Store
 
 log = logging.getLogger(__name__)
 
 REGISTRY_LOGINS = "registry_logins"
+KEY_UNUSABLE_MESSAGE = "The key file for saved secrets can't be used, so nothing can be saved here. See the logs."
 
 
 @dataclass(frozen=True)
@@ -240,7 +241,11 @@ class SettingsService:
             if field.kind == "secret":
                 if not raw.strip():
                     continue
-                updates[field.name] = {"enc": self._box.encrypt(raw.strip())}
+                try:
+                    updates[field.name] = {"enc": self._box.encrypt(raw.strip())}
+                except KeyUnusable:
+                    errors[field.name] = KEY_UNUSABLE_MESSAGE
+                    continue
                 parts.append(f"{field.label} replaced")
                 changed.append(field.name)
                 continue

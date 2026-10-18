@@ -37,3 +37,29 @@ def test_round_trip_and_wrong_key():
     assert box.decrypt(token) == "hunter2-connection-string"
     assert SecretBox(b"b" * 32).decrypt(token) is None
     assert box.decrypt("not-a-token") is None
+
+
+def test_read_key_unreadable_is_none(tmp_path):
+    assert read_key(str(tmp_path)) is None  # a directory: OSError, not FileNotFoundError
+
+
+def test_load_secret_box_with_bad_key_file_does_not_crash_or_overwrite(tmp_path, caplog):
+    from app.keys import KeyUnusable, load_secret_box
+
+    path = tmp_path / "secret.key"
+    path.write_bytes(b"short")
+    box = load_secret_box(str(path))
+    assert path.read_bytes() == b"short"
+    assert caplog.text.count("secret key") == 1
+    assert box.decrypt(SecretBox(b"a" * 32).encrypt("x")) is None
+    with pytest.raises(KeyUnusable):
+        box.encrypt("x")
+
+
+def test_load_secret_box_good_and_missing(tmp_path):
+    from app.keys import load_secret_box
+
+    path = tmp_path / "new" / "secret.key"
+    box = load_secret_box(str(path))
+    assert path.exists()
+    assert box.decrypt(box.encrypt("x")) == "x"

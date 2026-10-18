@@ -221,3 +221,20 @@ def test_history_changes_view(client):
 
 def test_all_routes_still_guarded(app):
     assert_all_routes_guarded(app)
+
+
+def test_app_starts_with_a_bad_key_file_and_leaves_it_alone(settings, tmp_path, caplog):
+    key = tmp_path / "secret.key"  # DATA_DIR is tmp_path
+    key.write_bytes(b"too short")
+    app = create_app(
+        settings, docker_client=object(), http=httpx.AsyncClient(),
+        store=Store(str(tmp_path / "data" / "dashboard.db")),
+        runner=FakeRunner(), start_scheduler=False,
+    )
+    assert key.read_bytes() == b"too short"
+    assert "secret key" in caplog.text
+    with logged_in_client(app, follow_redirects=False) as c:
+        assert c.get("/settings").status_code == 200
+        r = c.post("/settings/email", data=GOOD_EMAIL)
+        assert r.status_code == 400 and "TOPSECRET" not in r.text
+    assert key.read_bytes() == b"too short"

@@ -122,3 +122,22 @@ def test_base_file_kept_alongside_saved_login(tmp_path):
         "credHelpers": {"123.dkr.ecr.eu-west-2.amazonaws.com": "ecr-login", "ghcr.io": "docker-manager",
                         "quay.io": "docker-manager", "myreg.example.com": "docker-manager"},
         "credsStore": "desktop"}
+
+
+@pytest.mark.parametrize("bad", ["ghcr.io:abc", "ghcr.io:", "ghcr.io:0", "ghcr.io:70000", "ghcr.io:12:3"])
+def test_normalise_host_rejects_bad_ports(bad):
+    with pytest.raises(ValueError):
+        normalise_host(bad)
+
+
+def test_normalise_host_keeps_good_port():
+    assert normalise_host("Registry.example.com:65535") == "registry.example.com:65535"
+
+
+async def test_login_invalid_url_is_unreachable():
+    class Broken:
+        async def get(self, *a, **k):
+            raise httpx.InvalidURL("Invalid port")
+
+    with pytest.raises(RegistryError, match="could not be reached"):
+        await test_login(Broken(), "ghcr.io", "u", "p")
