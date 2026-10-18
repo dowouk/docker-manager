@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -99,3 +99,27 @@ def test_weekday_translation():
     assert t("*/2") == "sun,tue,thu,sat"
     assert t("mon-fri") == "mon-fri"
     assert t("*") == "*"
+
+
+async def test_reschedule_changes_interval_and_adds_digest(settings):
+    app = fake_app()
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 6})
+    sch = build_scheduler(app, app.state.settings)
+    sch.start(paused=True)
+    app.state.scheduler = sch
+    assert sch.get_job("digest") is None
+
+    app.state.settings = settings.model_copy(update={
+        "check_interval_hours": 2,
+        "acs_connection_string": "endpoint=x", "digest_from": "d@x.com", "digest_to": ["a@b.c"],
+    })
+    sched_mod.reschedule(app)
+    job = sch.get_job("check")
+    assert job.trigger.interval.total_seconds() == 2 * 3600
+    assert job.next_run_time > datetime.now(job.next_run_time.tzinfo) + timedelta(hours=1)
+    assert sch.get_job("digest") is not None
+
+    app.state.settings = settings.model_copy(update={"check_interval_hours": 2})
+    sched_mod.reschedule(app)
+    assert sch.get_job("digest") is None
+    sch.shutdown(wait=False)

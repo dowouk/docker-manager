@@ -26,8 +26,10 @@ from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner
 from app.mailcow import check_mailcow, run_capture, update_mailcow
+from app.keys import SecretBox, load_or_create_key
 from app.registry import RegistryClient
 from app.sessions import SessionStore
+from app.settings_service import SettingsService, key_path
 from app.store import Store
 from app import view
 from app.updaters import (
@@ -157,6 +159,18 @@ def _log_task_failure(task: asyncio.Task) -> None:
         log.error("Background check after a job failed", exc_info=exc)
 
 
+def apply_settings(app: FastAPI) -> None:
+    """Make a saved settings change take effect in the running app."""
+    app.state.settings = app.state.settings_service.effective()
+    # Registry logins: Task 6 rebuilds app.state.registry here (in-memory logins
+    # plus a credential-helper config). Until then the startup client is kept.
+    app.state.templates.env.globals["server_name"] = app.state.settings.server_name
+    if app.state.scheduler is not None:
+        from app.scheduler import reschedule  # deferred: scheduler imports this module
+
+        reschedule(app)
+
+
 def create_app(
     settings: Settings,
     *,
@@ -166,6 +180,7 @@ def create_app(
     runner: JobRunner | None = None,
     start_scheduler: bool = True,
     email_client_factory=None,
+    settings_service: SettingsService | None = None,
 ) -> FastAPI:
     owns_http = http is None
     if docker_client is None:
@@ -177,6 +192,10 @@ def create_app(
     if runner is None:
         runner = JobRunner(store)
     store.mark_interrupted_jobs()
+    if settings_service is None:
+        settings_service = SettingsService(
+            settings, store, SecretBox(load_or_create_key(key_path(settings)))
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -184,8 +203,9 @@ def create_app(
         if start_scheduler:
             from app.scheduler import build_scheduler  # deferred: scheduler imports this module
 
-            scheduler = build_scheduler(app, settings)
+            scheduler = build_scheduler(app, app.state.settings)
             scheduler.start()
+            app.state.scheduler = scheduler
         try:
             yield
         finally:
@@ -197,17 +217,18 @@ def create_app(
                     await http.aclose()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.state.settings = settings
+    app.state.scheduler = None
+    app.state.settings_service = settings_service
+    app.state.settings = settings_service.effective()
     app.state.docker = docker_client
     app.state.http = http
-    app.state.registry = RegistryClient(http, settings.registry_auth_file)
+    app.state.registry = RegistryClient(http, app.state.settings.registry_auth_file)
     app.state.store = store
     app.state.runner = runner
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()
     app.state.email_client_factory = email_client_factory
     backup_dir = os.path.join(settings.data_dir, "backups")
-    tz = ZoneInfo(settings.tz)
 
     app.state.sessions = SessionStore(store)
     app.state.sessions.purge_expired()  # dead rows would otherwise pile up
@@ -222,12 +243,12 @@ def create_app(
     def uk_date(dt: datetime | None) -> str:
         if dt is None:
             return "–"
-        local = dt.astimezone(tz)
+        local = dt.astimezone(ZoneInfo(app.state.settings.tz))
         return f"{local.day} {local:%b %Y, %H:%M}"
 
     env.filters["uk_date"] = uk_date
     env.globals.update(
-        server_name=settings.server_name,
+        server_name=app.state.settings.server_name,
         STATUS_LABELS=STATUS_LABELS,
         JOB_STATUS_LABELS=JOB_STATUS_LABELS,
         JOB_KIND_LABELS=JOB_KIND_LABELS,
@@ -239,6 +260,7 @@ def create_app(
         user_initials=view.user_initials,
     )
     templates = Jinja2Templates(env=env)
+    app.state.templates = templates
 
     def render(request: Request, name: str, user: User, status_code: int = 200, **ctx):
         return templates.TemplateResponse(
@@ -286,11 +308,11 @@ def create_app(
             rows=view.by_urgency(result) if result else [],
             overview=view.overview(result) if result else None,
             attention=view.attention(result) if result else [],
-            greeting=view.greeting(datetime.now(tz)),
+            greeting=view.greeting(datetime.now(ZoneInfo(app.state.settings.tz))),
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
             offers_project=functools.partial(_offers_project, result),
-            digest_enabled=settings.digest_enabled,
+            digest_enabled=app.state.settings.digest_enabled,
             error=error,
         )
 
@@ -308,7 +330,7 @@ def create_app(
         try:
             result = _latest(app) or await run_check(app)
             outcome = await asyncio.to_thread(
-                send_digest, settings, result, app.state.email_client_factory
+                send_digest, app.state.settings, result, app.state.email_client_factory
             )
         except Exception:  # noqa: BLE001
             log.exception("Sending the digest failed")
@@ -388,7 +410,8 @@ def create_app(
             "version", f"{info.name} → {tag}", user,
             lambda ctx: update_version(
                 ctx, info, change, backup_dir, wait,
-                health_timeout=settings.health_timeout_seconds, tz=tz,
+                health_timeout=app.state.settings.health_timeout_seconds,
+                tz=ZoneInfo(app.state.settings.tz),
             ),
         )
 
@@ -398,7 +421,7 @@ def create_app(
         if result is None or result.mailcow is None:
             raise HTTPException(status_code=404, detail="Mailcow not found")
         return submit(
-            "mailcow", "Mailcow", user, lambda ctx: update_mailcow(ctx, settings.mailcow_dir)
+            "mailcow", "Mailcow", user, lambda ctx: update_mailcow(ctx, app.state.settings.mailcow_dir)
         )
 
     @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])

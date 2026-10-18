@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
-from app.digest import render_digest, send_digest
+from app.digest import render_digest, send_digest, send_test_email
 from app.inventory import ContainerInfo
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
@@ -162,3 +162,18 @@ def test_when_none_disabled_still_sends_problems(settings, problem):
     s = settings.model_copy(update={"digest_when_none": False})
     assert render_digest(result([cs("web"), problem]), s) is not None
     assert render_digest(result([cs("web")], MailcowStatus(error="x")), s) is not None
+
+
+def test_send_test_email(digest_settings):
+    client = FakeClient()
+    send_test_email(digest_settings, lambda conn: client)
+    (msg,) = client.messages
+    assert msg["content"]["subject"] == "test-server: test email"
+    assert msg["recipients"] == {"to": [{"address": "a@example.com"}, {"address": "b@example.com"}]}
+    assert "email is working" in msg["content"]["plainText"]
+    assert "test-server" in msg["content"]["html"]
+
+
+def test_send_test_email_unconfigured_raises(settings):
+    with pytest.raises(ValueError, match="Email is not configured"):
+        send_test_email(settings, lambda conn: FakeClient())

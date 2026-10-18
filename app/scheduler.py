@@ -77,6 +77,17 @@ async def scheduled_digest(app: FastAPI) -> None:
         log.exception("Scheduled digest failed")
 
 
+def _add_digest_job(scheduler: AsyncIOScheduler, app: FastAPI, settings: Settings, tz) -> None:
+    scheduler.add_job(
+        scheduled_digest,
+        digest_trigger(settings.digest_schedule, tz),
+        args=[app],
+        id="digest",
+        max_instances=1,
+        coalesce=True,
+    )
+
+
 def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
     tz = ZoneInfo(settings.tz)
     scheduler = AsyncIOScheduler(timezone=tz)
@@ -90,12 +101,19 @@ def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
         coalesce=True,
     )
     if settings.digest_enabled:
-        scheduler.add_job(
-            scheduled_digest,
-            digest_trigger(settings.digest_schedule, tz),
-            args=[app],
-            id="digest",
-            max_instances=1,
-            coalesce=True,
-        )
+        _add_digest_job(scheduler, app, settings, tz)
     return scheduler
+
+
+def reschedule(app: FastAPI) -> None:
+    """Apply changed settings to the running scheduler. No check runs immediately."""
+    scheduler = app.state.scheduler
+    settings = app.state.settings
+    tz = ZoneInfo(settings.tz)
+    scheduler.reschedule_job(
+        "check", trigger=IntervalTrigger(hours=settings.check_interval_hours, timezone=tz)
+    )
+    if scheduler.get_job("digest"):
+        scheduler.remove_job("digest")
+    if settings.digest_enabled:
+        _add_digest_job(scheduler, app, settings, tz)
