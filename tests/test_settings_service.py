@@ -40,10 +40,23 @@ def test_invalid_value_saves_nothing(settings, tmp_path):
 
 
 @pytest.mark.parametrize("field,value", [("tz", "Mars/Olympus"), ("server_name", "  ")])
-def test_general_validation(settings, tmp_path, field, value):
+def test_general_validation(settings, tmp_path, monkeypatch, field, value):
+    monkeypatch.delenv("SERVER_NAME")
+    base = Settings(_env_file=None)
     form = {"server_name": "web1", "tz": "Europe/London", field: value}
     with pytest.raises(SettingsError):
-        svc(settings, tmp_path).save("general", form, "me")
+        svc(base, tmp_path).save("general", form, "me")
+
+
+def test_locked_field_with_invalid_value_is_ignored(settings, tmp_path):
+    s = svc(settings, tmp_path)  # SERVER_NAME is env-locked
+    assert s.save("general", {"server_name": "  ", "tz": "Europe/London"}, "me") == []
+    assert s._store.load_settings() == {}
+
+
+def test_unknown_section_raises(settings, tmp_path):
+    with pytest.raises(ValueError):
+        svc(settings, tmp_path).save("nope", {}, "me")
 
 
 def test_interval_must_be_positive(settings, tmp_path):

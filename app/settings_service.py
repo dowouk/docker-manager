@@ -198,6 +198,8 @@ class SettingsService:
         }
 
     def save(self, section: str, form: Mapping[str, str], user: str) -> list[str]:
+        if section not in SECTIONS:
+            raise ValueError(f"Unknown settings section: {section}")
         current = self.effective()
         errors: dict[str, str] = {}
         updates: dict[str, object] = {}
@@ -205,12 +207,6 @@ class SettingsService:
         changed: list[str] = []
         for field in (f for f in FIELDS if f.section == section):
             if self.locked(field.name):
-                # Never stored, but a submitted value is still checked so bad input isn't silently dropped.
-                if field.kind != "secret" and field.name in form:
-                    try:
-                        _parse(field, form[field.name])
-                    except ValueError as exc:
-                        errors[field.name] = str(exc)
                 continue
             raw = form.get(field.name, "")
             if field.kind == "secret":
