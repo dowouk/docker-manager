@@ -22,12 +22,21 @@ def subprocess_env() -> dict[str, str]:
 
     The dashboard's own settings (secrets, TZ, DATA_DIR, …) must not reach
     `docker compose`, which lets shell variables override a project's `.env`.
+
+    The one exception is REGISTRY_AUTH_FILE: the Docker CLI sends registry logins
+    with each pull, reading them from DOCKER_CONFIG/config.json. When the file is a
+    mounted Docker config.json, point DOCKER_CONFIG at its folder, so the logins
+    that let the dashboard check a private image also let it pull that image.
     """
-    return {
+    env = {
         key: value
         for key, value in os.environ.items()
         if key in _ENV_KEYS or key.startswith(_ENV_PREFIXES)
     }
+    auth_file = os.environ.get("REGISTRY_AUTH_FILE")
+    if auth_file and "DOCKER_CONFIG" not in env and os.path.basename(auth_file) == "config.json":
+        env["DOCKER_CONFIG"] = os.path.dirname(auth_file) or "."
+    return env
 
 
 class BusyError(Exception):

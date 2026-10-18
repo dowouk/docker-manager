@@ -10,6 +10,8 @@ _LABEL_WORKING_DIR = "com.docker.compose.project.working_dir"
 _LABEL_CONFIG_FILES = "com.docker.compose.project.config_files"
 _LABEL_ENV_FILES = "com.docker.compose.project.environment_file"
 _LABEL_SERVICE = "com.docker.compose.service"
+# Set on the short-lived helper container that updates the dashboard itself.
+HELPER_LABEL = "docker-manager.helper"
 _MIN_SELF_ID_LEN = 12
 
 
@@ -53,6 +55,8 @@ def list_containers(client: docker.DockerClient, self_id: str | None) -> list[Co
     for c in client.containers.list(all=True):
         attrs = c.attrs
         labels = c.labels or {}
+        if HELPER_LABEL in labels:
+            continue  # the dashboard's own self-update helper, not one of your containers
         image_ref = attrs["Config"]["Image"]
         image_id = attrs["Image"]
         running = _get_image(client, image_id)

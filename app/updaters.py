@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, tzinfo
 
 from app.compose_edit import TagChange, apply_tag_change, restore_backup
-from app.inventory import ContainerInfo
+from app.inventory import HELPER_LABEL, ContainerInfo
 from app.jobs import JobContext
 from app.logfilter import ProgressFilter
 
@@ -19,7 +19,7 @@ RATE_LIMIT_MESSAGE = "Docker Hub rate limit reached – try again later"
 ENV_FILE_MESSAGE = "Project uses an env file that isn't mounted – update by hand"
 _LABEL_PROJECT = "com.docker.compose.project"
 _LABEL_SERVICE = "com.docker.compose.service"
-_HELPER_LABEL = "docker-manager.helper"
+_HELPER_LABEL = HELPER_LABEL
 NOTHING_TO_RESTART = "Already up to date – nothing to restart"
 
 
@@ -227,6 +227,24 @@ def _remove_old_helpers(client) -> None:
         for c in old:
             c.remove(force=True)
     except Exception:  # noqa: BLE001 - tidying up must never stop an update
+        pass
+
+
+def remove_finished_helpers(client) -> None:
+    """Remove self-update helpers that finished successfully.
+
+    A successful self-update replaces the dashboard, and the old one is stopped
+    before it can remove its helper, so the helper would otherwise stay until the
+    next self-update. Helpers that failed are kept so their output can be read on
+    the server. Best effort; blocking Docker SDK calls.
+    """
+    try:
+        finished = client.containers.list(
+            all=True, filters={"label": [f"{_HELPER_LABEL}=self-update"], "status": "exited"})
+        for c in finished:
+            if (c.attrs.get("State") or {}).get("ExitCode") == 0:
+                c.remove()
+    except Exception:  # noqa: BLE001 - tidying up must never stop a check
         pass
 
 

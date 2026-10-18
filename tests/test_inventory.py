@@ -140,3 +140,11 @@ def test_env_files_from_compose_label():
     plain = StubContainer(ID_B, "db", "postgres:16", "sha256:db")
     (info,) = list_containers(StubClient([plain], StubImages({})), None)
     assert info.env_files == []
+
+
+def test_self_update_helper_is_not_listed():
+    client = make_client()
+    client.containers.items.append(StubContainer(
+        ID_C, "vigilant_sutherland", "ghcr.io/dowouk/docker-manager:latest", "sha256:web",
+        state="exited", labels={"docker-manager.helper": "self-update"}))
+    assert [c.name for c in list_containers(client, None)] == ["web", "plain"]

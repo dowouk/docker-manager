@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from app.jobs import BusyError, JobContext, JobRunner
+from app.jobs import BusyError, JobContext, JobRunner, subprocess_env
 from app.store import Store
 
 
@@ -215,6 +215,26 @@ async def test_last_output_is_per_run_and_excludes_command_echo():
     assert ctx.last_output == "one\ntwo\n"
     assert await ctx.run(["/bin/sh", "-c", "echo three"]) == 0
     assert ctx.last_output == "three\n"
+
+
+def test_registry_auth_file_also_used_for_pulls(monkeypatch):
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setenv("REGISTRY_AUTH_FILE", "/run/docker-auth/config.json")
+    env = subprocess_env()
+    assert env["DOCKER_CONFIG"] == "/run/docker-auth"
+    assert "REGISTRY_AUTH_FILE" not in env
+
+
+def test_explicit_docker_config_wins(monkeypatch):
+    monkeypatch.setenv("REGISTRY_AUTH_FILE", "/run/docker-auth/config.json")
+    monkeypatch.setenv("DOCKER_CONFIG", "/elsewhere")
+    assert subprocess_env()["DOCKER_CONFIG"] == "/elsewhere"
+
+
+def test_auth_file_not_named_config_json_is_not_a_docker_config(monkeypatch):
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setenv("REGISTRY_AUTH_FILE", "/run/secrets/registry-auth.json")
+    assert "DOCKER_CONFIG" not in subprocess_env()
 
 
 def _leaky_env(monkeypatch):

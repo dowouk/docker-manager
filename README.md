@@ -13,6 +13,7 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Set up Azure Communication Services email](#set-up-azure-communication-services-email)
 - [Install on a server](#install-on-a-server)
 - [Configuration reference](#configuration-reference)
+- [Private images](#private-images)
 - [Updating the dashboard itself](#updating-the-dashboard-itself)
 - [Docker Hub limits](#docker-hub-limits)
 - [First run checklist](#first-run-checklist)
@@ -212,10 +213,37 @@ All settings are environment variables in the compose file. The Entra app regist
 | `DIGEST_WHEN_NONE` | No | `true` | Still email when everything is up to date. When `false`, the email is still sent if something couldn't be checked |
 | `TZ` | No | `Europe/London` | Time zone for the schedule and the times shown |
 | `HEALTH_TIMEOUT_SECONDS` | No | `300` | How long a version update waits for the service to come up healthy before rolling back. It must stay running, without restarting, for 20 seconds |
-| `REGISTRY_AUTH_FILE` | No | – | Path to a mounted Docker-style `config.json` with registry logins, only for checking private registries |
+| `REGISTRY_AUTH_FILE` | No | – | Path to a mounted Docker `config.json` with registry logins, for private images. Used for checks, and – when the file is named `config.json` – for pulls too. See [Private images](#private-images) |
 | `DATA_DIR` | No | `/data` | Where the database and backups are kept inside the container. Leave as it is; the examples map it to the `data` folder next to the compose file |
 
 The email is only sent when `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` are all set.
+
+## Private images
+
+For images in a private registry (for example a private package on `ghcr.io`), log in on the server as usual, then let the dashboard use that login – both to check the image and to pull it when you update.
+
+1. Log in on the server as root. For GitHub, use a personal access token with only the `read:packages` permission:
+
+   ```sh
+   docker login ghcr.io
+   ```
+
+2. In the dashboard's `compose.yml`, add the setting and mount the folder (read-only):
+
+   ```yaml
+       environment:
+         REGISTRY_AUTH_FILE: "/run/docker-auth/config.json"
+       volumes:
+         - /root/.docker:/run/docker-auth:ro
+   ```
+
+   Mount the folder, not just `config.json`: `docker login` replaces the file, and a mounted single file would go on showing the old one.
+
+3. Run `docker compose up -d`, then press **Check now**.
+
+The login must be stored in `config.json` itself. If `docker login` says it used a credential helper (`credsStore`), the dashboard can't read it.
+
+A Docker Hub login in the same file is used too, which raises Docker Hub's limits (see [Docker Hub limits](#docker-hub-limits)).
 
 ## Updating the dashboard itself
 

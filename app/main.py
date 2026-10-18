@@ -32,6 +32,7 @@ from app import view
 from app.updaters import (
     UpdateFailed,
     follow_self_update,
+    remove_finished_helpers,
     start_self_update,
     update_build,
     update_version,
@@ -85,6 +86,7 @@ async def run_check(app: FastAPI) -> CheckResult:
     """Inventory → registry check → store. Concurrent calls are serialised."""
     state = app.state
     async with state.check_lock:
+        await asyncio.to_thread(remove_finished_helpers, state.docker)
         containers = await asyncio.to_thread(list_containers, state.docker, detect_self_id())
         result = await check_all(
             containers,

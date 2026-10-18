@@ -11,6 +11,7 @@ from app.updaters import (
     UpdateFailed,
     compose_cmd,
     follow_self_update,
+    remove_finished_helpers,
     start_self_update,
     update_build,
     update_version,
@@ -571,3 +572,32 @@ async def test_backup_timestamp_uses_configured_time_zone(compose_file, tmp_path
     await update_version(FakeCtx(), info, change, str(tmp_path / "bk"), ok_wait, tz=tz)
     (now,) = seen
     assert now.tzinfo is tz
+
+
+def test_finished_helpers_removed_but_failed_ones_kept():
+    removed, seen = [], {}
+
+    class Helper:
+        def __init__(self, name, code):
+            self.name, self.attrs = name, {"State": {"ExitCode": code}}
+
+        def remove(self, force=False):
+            removed.append(self.name)
+
+    class C:
+        def list(self, all=False, filters=None):
+            seen.update(all=all, filters=filters)
+            return [Helper("ok", 0), Helper("failed", 1)]
+
+    client = type("Client", (), {"containers": C()})()
+    remove_finished_helpers(client)
+    assert seen == {"all": True, "filters": {"label": ["docker-manager.helper=self-update"], "status": "exited"}}
+    assert removed == ["ok"]
+
+
+def test_finished_helper_cleanup_never_raises():
+    class Broken:
+        def list(self, **kw):
+            raise RuntimeError("daemon down")
+
+    remove_finished_helpers(type("Client", (), {"containers": Broken()})())
