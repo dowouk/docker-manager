@@ -28,21 +28,19 @@ services:
     # [Mailcow] pid: host
     # [Mailcow] privileged: true
     environment:
-      # ---- Required -------------------------------------------------------
-      # The address you open in the browser – must match the redirect URI in
-      # the Entra app registration (https://<this host>/auth/callback).
+      # ---- Address ---------------------------------------------------------
+      # The address you open in the browser. Microsoft sign-in needs it (the
+      # redirect URI is https://<this host>/auth/callback); you can also set it
+      # on the Settings page instead.
       PUBLIC_URL: "https://updates.example.com"
-      # The Entra app registration and the secrets come from the .env file next
-      # to this one (see ../.env.example).
-      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
-      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
-      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
 
-      # ---- Optional extra restrictions (on top of "Assignment required") --
-      # Sign-in names (UPNs), comma-separated – not mail addresses, if they differ.
-      # ALLOWED_EMAILS: "you@yourcompany.onmicrosoft.com"
-      # Object ID of an Entra group; needs a groups claim (see README).
-      # ALLOWED_GROUP_ID: "00000000-0000-0000-0000-000000000000"
+      # ---- Microsoft sign-in (optional – or set it on the Settings page) --
+      # Local accounts work without these. The secret comes from the .env file
+      # next to this one (see ../.env.example). Anything set here shows as locked
+      # on the Settings page.
+      # AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      # AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      # AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
 
       # ---- Weekly email (optional – or set these on the Settings page) ----
       # Anything set here wins over the Settings page and shows as locked there.
