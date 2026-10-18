@@ -309,10 +309,28 @@ def test_digest_job_follows_channels_without_restart(app, client):
 
 
 # -- phone width ------------------------------------------------------------------------------
-def test_table_uses_responsive_pattern(client):
+def test_channels_are_a_stacked_list_not_a_table(client):
     add(client)
-    page = client.get("/settings").text
-    block = page.split('id="notifications"')[1].split("</section>")[0]
-    assert '<div class="table-wrap">' in block and '<table class="data">' in block
-    for label in ("Name", "Provider", "Recipients", "Sends", "Status"):
-        assert f'data-label="{label}"' in block
+    block = client.get("/settings").text.split('id="notifications"')[1].split("</section>")[0]
+    assert '<ul class="channel-list">' in block and "<table" not in block
+    for text in ("Ops mail", "SMTP2GO", "a@x.com, b@x.com", "Weekly digest, Update failed",
+                 "Not used yet", ">Edit<", ">Test<", ">Delete<"):
+        assert text in block
+
+
+def test_preset_block_served_hidden(client):
+    page = client.get("/settings/channels/new?provider=smtp").text
+    assert "data-presets hidden" in page
+
+
+def test_digest_sync_failure_still_redirects(app, client, caplog, monkeypatch):
+    app.state.scheduler = object()
+
+    def boom(_app):
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr("app.scheduler.sync_digest_job", boom)
+    r = add(client)
+    assert r.status_code == 303 and r.headers["location"].startswith("/settings?msg=channel_saved")
+    assert len(app.state.channels.list()) == 1
+    assert "RuntimeError" in caplog.text and "secret detail" not in caplog.text

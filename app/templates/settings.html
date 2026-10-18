@@ -120,37 +120,33 @@
     <p class="card-text">Channels are where messages go. Each one chooses which events it carries, including the weekly digest above.</p>
     {% if channels_unreadable %}<p class="notice notice-error" role="alert">The saved notification channels can't be read – add them again.</p>{% endif %}
     {% if channels %}
-    <div class="table-wrap">
-      <table class="data">
-        <thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Recipients</th><th scope="col">Sends</th><th scope="col">Status</th><th scope="col" class="col-action">Actions</th></tr></thead>
-        <tbody>
-        {% for c in channels %}
-          <tr>
-            <td data-label="Name"><span class="who-name">{{ c.name }}</span>{% if c.readonly %}<br><span class="meta">Set by the server's environment</span>{% elif not c.enabled %}<br><span class="meta">Turned off</span>{% endif %}</td>
-            <td data-label="Provider">{{ c.provider }}</td>
-            <td data-label="Recipients">{{ c.recipients }}</td>
-            <td data-label="Sends">{{ c.events | join(", ") if c.events else "Nothing" }}</td>
-            <td data-label="Status">{% if c.failed %}<span class="badge badge-failed">{{ c.status }}</span>{% elif c.at %}Last sent {{ c.at | uk_date }}{% else %}<span class="meta">{{ c.status }}</span>{% endif %}</td>
-            <td data-label="Actions" class="col-action">
-              <div class="row-actions">
-                {% if not c.readonly %}<a class="button button-quiet button-small" href="/settings/channels/{{ c.id }}">Edit</a>{% endif %}
-                <form method="post" action="/settings/channels/{{ c.id }}/test">
-                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                  <button type="submit" class="button button-quiet button-small">Test</button>
-                </form>
-                {% if not c.readonly %}
-                <form method="post" action="/settings/channels/{{ c.id }}/delete">
-                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
-                  <button type="submit" class="button button-quiet button-small">Delete</button>
-                </form>
-                {% endif %}
-              </div>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    <ul class="channel-list">
+    {% for c in channels %}
+      <li class="channel">
+        <div class="channel-head">
+          <span class="who-name">{{ c.name }}</span>
+          <span class="meta">{{ c.provider }}</span>
+          {% if c.readonly %}<span class="meta">Set by the server's environment</span>{% elif not c.enabled %}<span class="meta">Turned off</span>{% endif %}
+        </div>
+        <p class="channel-line"><span class="meta">To</span> {{ c.recipients }}</p>
+        <p class="channel-line"><span class="meta">Sends</span> {{ c.events | join(", ") if c.events else "Nothing" }}</p>
+        <p class="channel-line">{% if c.failed %}<span class="badge badge-failed">{{ c.status }}</span>{% elif c.at %}<span class="badge badge-succeeded">Last sent {{ c.at | uk_date }}</span>{% else %}<span class="badge badge-muted">{{ c.status }}</span>{% endif %}</p>
+        <div class="channel-actions">
+          {% if not c.readonly %}<a class="button button-quiet button-small" href="/settings/channels/{{ c.id }}">Edit</a>{% endif %}
+          <form method="post" action="/settings/channels/{{ c.id }}/test">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="button button-quiet button-small">Test</button>
+          </form>
+          {% if not c.readonly %}
+          <form method="post" action="/settings/channels/{{ c.id }}/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="button button-quiet button-small">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
     {% else %}
     <p class="empty">No notification channels yet.</p>
     {% endif %}

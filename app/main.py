@@ -732,7 +732,10 @@ def create_app(
         if app.state.scheduler is not None:
             from app.scheduler import sync_digest_job  # deferred: scheduler imports this module
 
-            sync_digest_job(app)
+            try:
+                sync_digest_job(app)
+            except Exception as exc:  # noqa: BLE001 – the change is saved; don't 500 over scheduling
+                log.warning("Rescheduling the digest failed (%s)", type(exc).__name__)
 
     def channel_or_404(channel_id: str, *, editable: bool = True) -> Channel:
         found = app.state.channels.get(channel_id) if CHANNEL_ID.match(channel_id) else None
