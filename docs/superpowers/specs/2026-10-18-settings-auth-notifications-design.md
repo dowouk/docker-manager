@@ -175,6 +175,18 @@ When the database has **no users** and this is **not an upgrade from 0.1** (see 
 
 History gains sign-in events (success, failure, lockout), user changes, role changes and settings changes, alongside update jobs, with a filter by kind. **Only Admins see these audit entries**; Viewers and Operators see update jobs only (Viewers without logs) (Claude's call).
 
+### Health endpoint (`/healthz`)
+
+Added by the owner on 2026-10-18, for 0.3.
+
+- `GET` / `HEAD /healthz` – **public** (no sign-in, no CSRF), so the reverse proxy, Uptime Kuma or Docker can probe it. It is reachable during first-start setup too.
+- Returns `200` with `{"status": "ok"}` when the app is serving and the database answers a trivial query; `503` with `{"status": "unavailable"}` otherwise. `Cache-Control: no-store`.
+- Reveals nothing else: no version, server name, container counts, check results or error text (Claude's call – it is public, and the Docker socket makes this a sensitive host).
+- Docker or registry problems do **not** make it fail: those show on the dashboard and through the "Check failing" notification; `/healthz` answers "is the dashboard itself up" (Claude's call).
+- Not logged per request at INFO, so frequent probes don't fill the logs.
+- The image gets a Docker `HEALTHCHECK` that calls it (with Python's standard library – no `curl` in the image), every 30 s. The self-update helper container (same image, different entrypoint) disables that health check.
+- README documents it for Caddy/Traefik/Uptime Kuma monitoring.
+
 ## 3. Notifications
 
 ### Channels and events
@@ -275,7 +287,7 @@ Shown as a badge on each project row ("2 mounts outside /docker"), a **Layout** 
 Each is a releasable version with its own CHANGELOG entry:
 
 1. **0.2 – Foundations:** settings store with env override, secret key and encryption, server-side sessions, Settings page (General, Checking, Registries, Email as today), History for settings changes. No behaviour change for existing installs.
-2. **0.3 – Accounts:** first-start setup, local accounts, TOTP, Entra in Settings, roles, Users page, migration of 0.1 allow rules, `reset-admin`.
+2. **0.3 – Accounts:** first-start setup, local accounts, TOTP, Entra in Settings, roles, Users page, migration of 0.1 allow rules, `reset-admin`, `/healthz`.
 3. **0.4 – Notifications:** channels, ACS/SMTP2GO/SMTP, events, test buttons.
 4. **0.5 – Checking:** labels, skip/snooze, release-notes links, filters/search, random delay, heartbeat, layout check.
 
