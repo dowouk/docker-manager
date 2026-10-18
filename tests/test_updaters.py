@@ -322,6 +322,8 @@ def test_start_self_update_args():
         "/docker": {"bind": "/docker", "mode": "rw"},
     }
     assert kw["entrypoint"] == ["sh", "-c"]
+    # the image's /healthz HEALTHCHECK must not run in the short-lived helper
+    assert kw["healthcheck"] == {"test": ["NONE"]}
     script, = kw["command"]
     first, second = script.split(" && ")
     assert shlex.split(first) == compose_cmd(info, "pull", "dash")

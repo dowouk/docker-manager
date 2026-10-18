@@ -13,7 +13,7 @@ import docker.errors
 import httpx
 import jinja2
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -35,6 +35,7 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.sessions import SessionStore
+from app.users import UserStore
 from app.settings_service import (
     FIELDS, KEY_UNUSABLE_MESSAGE, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
 )
@@ -269,6 +270,7 @@ def create_app(
     app.state.email_client_factory = email_client_factory
     backup_dir = os.path.join(settings.data_dir, "backups")
 
+    app.state.users = UserStore(store, settings_service._box)
     app.state.sessions = SessionStore(store)
     app.state.sessions.purge_expired()  # dead rows would otherwise pile up
     setup_auth(app, settings, app.state.sessions)
@@ -664,10 +666,33 @@ def create_app(
                           changes=store.list_audit())
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
 
+    @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+    async def healthz():
+        """Liveness for the container HEALTHCHECK: public, no detail, never cached."""
+        try:
+            with app.state.store._lock:
+                app.state.store._db.execute("SELECT 1").fetchone()
+        except Exception:
+            body, status = {"status": "unavailable"}, 503
+        else:
+            body, status = {"status": "ok"}, 200
+        return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
+
     return app
+
+
+class HealthzAccessFilter(logging.Filter):
+    """Drop uvicorn access-log lines for /healthz so the 30-second probe doesn't fill the log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            return args[2].split("?", 1)[0] != "/healthz"
+        return True
 
 
 def build_app() -> FastAPI:
     """Factory for `uvicorn --factory app.main:build_app`."""
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("uvicorn.access").addFilter(HealthzAccessFilter())
     return create_app(get_settings())

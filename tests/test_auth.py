@@ -13,24 +13,43 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from app.auth import (
+    Identity,
     User,
     csrf_token,
     current_user,
+    require_role,
     setup_auth,
     user_from_claims,
     verify_csrf,
 )
+from app.keys import SecretBox
+from app.roles import Role
 from app.sessions import SessionStore
+from app.users import UserStore
 from app.store import Store
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, set_session
+from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, make_user, set_session, sign_in
 
 CALLS: list[str] = []
 
 
-def make_app(settings) -> FastAPI:
+def make_app(settings, setup_open=lambda: False) -> FastAPI:
     app = FastAPI()
-    app.state.sessions = SessionStore(Store(os.path.join(settings.data_dir, "dashboard.db")))
-    setup_auth(app, settings, app.state.sessions)
+    store = Store(os.path.join(settings.data_dir, "dashboard.db"))
+    app.state.users = UserStore(store, SecretBox(b"k" * 32))
+    app.state.sessions = SessionStore(store)
+    setup_auth(app, settings, app.state.sessions, setup_open)
+
+    @app.get("/admin")
+    def admin_page(user: User = Depends(require_role(Role.ADMIN))):
+        return {"admin": user.email}
+
+    @app.api_route("/healthz", methods=["GET", "HEAD"])
+    def healthz():
+        return {"status": "ok"}
+
+    @app.get("/setup")
+    def setup_page():
+        return {"setup": True}
 
     @app.get("/")
     def index(user: User = Depends(current_user)):
@@ -70,7 +89,7 @@ def client_app(settings):
 @pytest.fixture
 def logged_in_client_(settings):
     app = make_app(settings)
-    with logged_in_client(app, settings, follow_redirects=False) as c:
+    with logged_in_client(app, follow_redirects=False) as c:
         yield c
 
 
@@ -167,6 +186,103 @@ def test_session_without_user_rejected(settings):
         assert c.get("/", headers={"Accept": "application/json"}).status_code == 401
 
 
+# ---- user loaded on every request ----
+
+HTML = {"Accept": "text/html"}
+
+
+def _session_rows(app) -> int:
+    return app.state.sessions._store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+
+def test_disabled_user_is_signed_out_on_next_request(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        rec = sign_in(c, app, Role.VIEWER)
+        assert c.get("/").status_code == 200
+        app.state.users.update(rec.id, disabled=True)
+        # disabling normally ends sessions too; a stale one must still be refused
+        set_session(c, app, {"user_id": rec.id, "csrf": CSRF})
+        before = _session_rows(app)
+        r = c.get("/", headers=HTML)
+        assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+        assert _session_rows(app) < before
+        assert "max-age=0" in r.headers["set-cookie"].lower()
+    assert CALLS == ["index"]
+
+
+def test_role_change_applies_without_signing_in_again(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        rec = sign_in(c, app, Role.ADMIN)
+        make_user(app, Role.VIEWER)
+        assert c.get("/admin", headers=HTML).status_code == 403
+        r = c.get("/admin", headers=HTML)
+        assert "You don't have permission to do that" in r.text
+        assert c.get("/admin", headers={"Accept": "application/json"}).json() == {
+            "detail": "You don't have permission to do that"}
+        make_user(app, Role.ADMIN)
+        assert c.get("/admin").json() == {"admin": "test@example.com"}
+        assert rec.id == app.state.users.by_email("local", "test@example.com").id
+
+
+def test_deleted_user_is_signed_out(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        make_user(app, Role.ADMIN, email="boss@example.com")  # keep an admin around
+        rec = sign_in(c, app, Role.VIEWER)
+        app.state.users.delete(rec.id)
+        set_session(c, app, {"user_id": rec.id, "csrf": CSRF})  # a stale session survives
+        r = c.get("/", headers=HTML)
+        assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+
+
+def test_pending_user_only_reaches_pending_page(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        sign_in(c, app, Role.PENDING)
+        r = c.get("/", headers=HTML)
+        assert r.status_code == 302 and r.headers["location"] == "/pending"
+        assert c.get("/", headers={"Accept": "application/json"}).status_code == 403
+        r = c.get("/pending")
+        assert r.status_code == 200
+        assert "Your account is waiting for an Admin to approve it" in r.text
+        assert 'action="/auth/logout"' in r.text and CSRF in r.text
+        assert c.get("/auth/signed-out").status_code == 200
+    assert CALLS == []
+
+
+def test_active_user_is_sent_away_from_pending(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        sign_in(c, app, Role.VIEWER)
+        assert c.get("/pending").headers["location"] == "/"
+
+
+def test_setup_path_only_public_while_setup_open(settings):
+    closed = make_app(settings)
+    with TestClient(closed, base_url="https://testserver", follow_redirects=False) as c:
+        assert c.get("/setup", headers=HTML).headers["location"] == "/auth/login"
+        assert c.get("/healthz").json() == {"status": "ok"}
+    app = make_app(settings, setup_open=lambda: True)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        assert c.get("/setup").json() == {"setup": True}
+        assert c.get("/healthz").json() == {"status": "ok"}  # public in either state
+        r = c.get("/", headers=HTML)
+        assert r.status_code == 302 and r.headers["location"] == "/setup"
+        assert c.post("/check").status_code == 401
+        assert c.get("/auth/signed-out").status_code == 200
+    assert CALLS == []
+
+
+def test_session_with_user_id_has_it_in_the_column(settings):
+    app = make_app(settings)
+    with TestClient(app, base_url="https://testserver") as c:
+        rec = sign_in(c, app, Role.VIEWER)
+    store = app.state.sessions._store
+    assert store._db.execute("SELECT user_id FROM sessions").fetchone()[0] == rec.id
+
+
 # ---- CSRF ----
 
 def test_post_without_csrf_is_403(logged_in_client_):
@@ -192,7 +308,9 @@ def test_post_with_csrf_header_ok(logged_in_client_):
 
 def test_csrf_token_stored_in_session(settings):
     app = FastAPI()
-    app.state.sessions = SessionStore(Store(os.path.join(settings.data_dir, "dashboard.db")))
+    store = Store(os.path.join(settings.data_dir, "dashboard.db"))
+    app.state.users = UserStore(store, SecretBox(b"k" * 32))
+    app.state.sessions = SessionStore(store)
     setup_auth(app, settings, app.state.sessions)
 
     from starlette.requests import Request
@@ -201,7 +319,7 @@ def test_csrf_token_stored_in_session(settings):
     def t(request: Request):
         return {"a": csrf_token(request), "b": csrf_token(request)}
 
-    with logged_in_client(app, settings) as c:
+    with logged_in_client(app) as c:
         body = c.get("/t").json()
         assert body["a"] == body["b"] == CSRF
 
@@ -209,12 +327,12 @@ def test_csrf_token_stored_in_session(settings):
 # ---- user_from_claims ----
 
 def test_user_from_claims_accepts_good_claims(settings):
-    assert user_from_claims(good_claims(settings), settings) == User("Alice", "Alice@Example.com")
+    assert user_from_claims(good_claims(settings), settings) == Identity("Alice", "Alice@Example.com")
 
 
 def test_user_from_claims_falls_back_to_email_and_name(settings):
     claims = good_claims(settings, preferred_username=None, email="a@b.com", name=None)
-    assert user_from_claims(claims, settings) == User("a@b.com", "a@b.com")
+    assert user_from_claims(claims, settings) == Identity("a@b.com", "a@b.com")
 
 
 def test_user_from_claims_wrong_tenant_rejected(settings):
@@ -340,8 +458,9 @@ def test_callback_success_sets_minimal_session(settings, monkeypatch):
     r = c.get("/")
     assert r.status_code == 200 and r.json()["user"] == "Alice@Example.com"
     data = c.app_.state.sessions.load(c.cookies["session"])
-    assert set(data) == {"user", "csrf"}
-    assert data["user"] == {"name": "Alice", "email": "Alice@Example.com"}
+    assert set(data) == {"user_id", "csrf"}
+    rec = c.app_.state.users.get(data["user_id"])
+    assert (rec.kind, rec.email, rec.name, rec.role) == ("entra", "Alice@Example.com", "Alice", "admin")
     assert data["csrf"]
 
 

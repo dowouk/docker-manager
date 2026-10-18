@@ -16,7 +16,7 @@ from app.jobs import BUSY_MESSAGE, BusyError
 from app.config import Settings
 from app.main import apply_settings, create_app
 from app.store import Store
-from auth_helpers import CSRF, USER, assert_all_routes_guarded, logged_in_client, set_session
+from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, sign_in
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
 
@@ -135,7 +135,7 @@ def client_for(settings, tmp_path):
 
     def factory(**kw):
         app = make_app(settings, tmp_path, **kw)
-        c = logged_in_client(app, settings, follow_redirects=False)
+        c = logged_in_client(app, follow_redirects=False)
         c.__enter__()
         clients.append(c)
         return c, app
@@ -455,7 +455,7 @@ async def test_job_triggers_check_afterwards(settings, tmp_path, seeded, monkeyp
     app = make_app(settings, tmp_path, seeded, runner=runner)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as c:
-        set_session(c, app, {"user": USER, "csrf": CSRF})
+        sign_in(c, app)
         r = await c.post("/mailcow/update", data={"csrf_token": CSRF})
     assert r.status_code == 303
     work = runner.submitted[0][3]
@@ -544,7 +544,7 @@ def test_background_check_failure_is_logged(settings, tmp_path, seeded, caplog, 
     runner = FakeRunner()
     app = make_app(settings, tmp_path, seeded, runner=runner,
                    docker_client=BrokenDocker("daemon down"))
-    with logged_in_client(app, settings, follow_redirects=False) as c:
+    with logged_in_client(app, follow_redirects=False) as c:
         c.post("/mailcow/update", data={"csrf_token": CSRF})
     work = runner.submitted[0][3]
 
@@ -589,7 +589,7 @@ def digest_app(settings, tmp_path, factory, result=None, **overrides):
         store=store, runner=FakeRunner(), start_scheduler=False,
         email_client_factory=factory,
     )
-    c = logged_in_client(app, s, follow_redirects=False)
+    c = logged_in_client(app, follow_redirects=False)
     c.__enter__()
     return c
 
@@ -748,7 +748,7 @@ def test_server_name_change_shows_without_restart(settings, tmp_path, seeded, mo
     monkeypatch.delenv("SERVER_NAME")
     s = Settings(_env_file=None)
     app = make_app(s, tmp_path, seeded)
-    c = logged_in_client(app, s, follow_redirects=False)
+    c = logged_in_client(app, follow_redirects=False)
     c.__enter__()
     assert "web-new" not in c.get("/").text
     app.state.settings_service.save("general", {"server_name": "web-new", "tz": "Europe/London"}, "me")

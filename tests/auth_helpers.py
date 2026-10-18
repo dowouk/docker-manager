@@ -1,6 +1,7 @@
 """Reusable auth test helpers (also used against the full app in Task 13)."""
 import re
 
+from app.roles import Role
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -9,7 +10,20 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.routing import Mount, Route, WebSocketRoute
 
 CSRF = "test-csrf-token"
-USER = {"name": "Test User", "email": "test@example.com"}
+EMAIL = "test@example.com"
+
+
+def make_user(app: FastAPI, role: Role = Role.ADMIN, email: str = EMAIL, name: str = "Test User"):
+    """The local test user with the given role (created, or its role changed if it exists)."""
+    users = app.state.users
+    rec = users.by_email("local", email)
+    if rec is None:
+        return users.create("local", email, name, role.value)
+    if rec.role != role.value:
+        # direct write: the last-admin rule is not what these tests are about
+        with users._store.write_tx() as db:
+            db.execute("UPDATE users SET role = ? WHERE id = ?", (role.value, rec.id))
+    return users.get(rec.id)
 
 
 def set_session(client: TestClient, app: FastAPI, data: dict) -> None:
@@ -18,9 +32,15 @@ def set_session(client: TestClient, app: FastAPI, data: dict) -> None:
     client.cookies.set("session", token, domain="testserver.local", path="/")
 
 
-def logged_in_client(app: FastAPI, settings=None, **kwargs) -> TestClient:
+def sign_in(client: TestClient, app: FastAPI, role: Role = Role.ADMIN, **user_kw):
+    rec = make_user(app, role, **user_kw)
+    set_session(client, app, {"user_id": rec.id, "csrf": CSRF})
+    return rec
+
+
+def logged_in_client(app: FastAPI, role: Role = Role.ADMIN, **kwargs) -> TestClient:
     client = TestClient(app, base_url="https://testserver", **kwargs)
-    set_session(client, app, {"user": USER, "csrf": CSRF})
+    sign_in(client, app, role)
     return client
 
 
@@ -40,6 +60,7 @@ def assert_all_routes_guarded(app: FastAPI) -> None:
     """
     auth_routes: set[tuple[str, str]] = set()
     checked = 0
+    setup_open = bool(getattr(getattr(app.state, "setup", None), "is_open", lambda: False)())
     for route in app.routes:
         path = getattr(route, "path", None)
         if path is None:
@@ -55,6 +76,15 @@ def assert_all_routes_guarded(app: FastAPI) -> None:
                 f"{path} is under /static/ (public) but is not a StaticFiles mount"
             )
             continue
+        if norm == "/healthz/":
+            with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+                for method in ("GET", "HEAD"):
+                    r = c.request(method, "/healthz", headers={"Accept": "text/html"})
+                    assert r.status_code in (200, 503), f"/healthz returned {r.status_code}"
+            checked += 1
+            continue
+        if (norm == "/setup/" or norm.startswith("/setup/")) and setup_open:
+            continue  # public only while setup is open
         if isinstance(route, Mount):
             path = path.rstrip("/") + "/x"
         elif not isinstance(route, (Route, APIRoute, WebSocketRoute)):

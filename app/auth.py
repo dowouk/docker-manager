@@ -1,10 +1,12 @@
 """Microsoft Entra ID sign-in (OIDC code flow + PKCE), auth guard and CSRF.
 
 The guard is a pure ASGI middleware that sits *inside* ServerSessionMiddleware, so
-``scope["session"]`` is available. Everything except ``/auth/*`` and
-``/static/*`` requires a signed-in session. There is no fallback mode.
+``scope["session"]`` is available. Everything except ``/auth/*``, ``/static/*``,
+``/healthz`` (and ``/setup*`` while setup is open) needs a signed-in, enabled user,
+loaded from the database on every request. There is no fallback mode.
 """
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -15,24 +17,36 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.config import Settings
+from app.roles import Role
 from app.sessions import ServerSessionMiddleware, SessionStore
+from app.users import UserStore
 
 _PUBLIC_PREFIXES = ("/auth/", "/static/")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
-@dataclass
-class User:
+@dataclass(frozen=True)
+class Identity:
+    """Who a verified Entra token says signed in (not yet an account)."""
     name: str
     email: str
+
+
+@dataclass(frozen=True)
+class User:
+    id: int
+    name: str
+    email: str
+    role: Role
+    kind: str
 
 
 def _issuer(settings: Settings) -> str:
     return f"https://login.microsoftonline.com/{settings.azure_tenant_id}/v2.0"
 
 
-def user_from_claims(claims: dict, settings: Settings) -> User | None:
-    """Return the User if the (already signature-verified) claims are acceptable.
+def user_from_claims(claims: dict, settings: Settings) -> Identity | None:
+    """Return the identity if the (already signature-verified) claims are acceptable.
 
     Fails closed: any configured restriction (ALLOWED_EMAILS, ALLOWED_GROUP_ID)
     must be satisfied. If groups are missing from the token (e.g. group overage)
@@ -71,50 +85,111 @@ def user_from_claims(claims: dict, settings: Settings) -> User | None:
         if not isinstance(groups, list) or settings.allowed_group_id not in groups:
             return None
 
-    return User(name=_clean(claims.get("name")) or identity, email=identity)
+    return Identity(name=_clean(claims.get("name")) or identity, email=identity)
 
 
-def _is_public_path(path: str) -> bool:
-    if ".." in path.split("/") or "\\" in path or "\x00" in path:
+def _clean_path(path: str) -> bool:
+    return ".." not in path.split("/") and "\\" not in path and "\x00" not in path
+
+
+def _is_public_path(path: str, setup_open: bool = False) -> bool:
+    if not _clean_path(path):
         return False
-    return path.startswith(_PUBLIC_PREFIXES)
+    if path == "/healthz" or path.startswith(_PUBLIC_PREFIXES):
+        return True
+    return setup_open and (path == "/setup" or path.startswith("/setup/"))
+
+
+def _pending_may_visit(path: str) -> bool:
+    return path in ("/pending", "/account") or path.startswith("/account/")
 
 
 class AuthGuardMiddleware:
-    """Reject every request without a signed-in session, except /auth/* and /static/*."""
+    """Reject every request without a signed-in, enabled user.
 
-    def __init__(self, app):
+    The user is loaded from the database on every request, so a disabled account,
+    a deleted account or a changed role takes effect on the very next request.
+    While first-start setup is open every other path leads to /setup.
+    """
+
+    def __init__(self, app, users_getter: Callable[[], UserStore],
+                 setup_open: Callable[[], bool] = lambda: False):
         self.app = app
+        self.users_getter = users_getter
+        self.setup_open = setup_open
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        if _is_public_path(scope.get("path", "")):
+        path = scope.get("path", "")
+        is_setup = self.setup_open()
+        if _is_public_path(path, is_setup):
             await self.app(scope, receive, send)
+            return
+        if is_setup and _clean_path(path):
+            await self._refuse(scope, receive, send, "/setup")
             return
         session = scope.get("session")
-        user = session.get("user") if isinstance(session, dict) else None
-        if isinstance(user, dict) and user.get("email"):
-            await self.app(scope, receive, send)
+        user = self._load(session)
+        if user is None:
+            if isinstance(session, dict):
+                session.clear()  # persisted as a sign-out by the session middleware
+            await self._refuse(scope, receive, send, "/auth/login")
             return
+        if user.role == Role.PENDING and not _pending_may_visit(path):
+            await self._refuse(scope, receive, send, "/pending", status=403)
+            return
+        scope.setdefault("state", {})["user"] = user
+        await self.app(scope, receive, send)
+
+    def _load(self, session) -> User | None:
+        user_id = session.get("user_id") if isinstance(session, dict) else None
+        if not isinstance(user_id, int) or isinstance(user_id, bool):
+            return None
+        rec = self.users_getter().get(user_id)
+        if rec is None or rec.disabled:
+            return None
+        try:
+            role = Role(rec.role)
+        except ValueError:
+            return None
+        return User(id=rec.id, name=rec.name, email=rec.email, role=role, kind=rec.kind)
+
+    async def _refuse(self, scope, receive, send, location: str, status: int = 401):
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         accept = headers.get(b"accept", b"").decode("latin-1").lower()
         if scope["method"] in ("GET", "HEAD") and "text/html" in accept:
-            response: Response = RedirectResponse("/auth/login", status_code=302)
+            response: Response = RedirectResponse(location, status_code=302)
+        elif status == 403:
+            response = JSONResponse({"detail": "Your account is waiting for approval"}, status_code=403)
         else:
             response = JSONResponse({"detail": "Not signed in"}, status_code=401)
         await response(scope, receive, send)
 
 
 def current_user(request: Request) -> User:
-    user = request.session.get("user")
-    if not isinstance(user, dict) or not user.get("email"):
+    user = request.scope.get("state", {}).get("user")
+    if not isinstance(user, User):
         raise HTTPException(status_code=401, detail="Not signed in")
-    return User(name=user.get("name", ""), email=user["email"])
+    return user
+
+
+class RoleDenied(Exception):
+    """The signed-in user's role is below what the route needs."""
+
+
+def require_role(minimum: Role) -> Callable[[Request], User]:
+    def dependency(request: Request) -> User:
+        user = current_user(request)
+        if user.role < minimum:
+            raise RoleDenied()
+        return user
+
+    return dependency
 
 
 def csrf_token(request: Request) -> str:
@@ -153,11 +228,23 @@ _PAGE = (
 )
 
 
+_PENDING_PAGE = (
+    "<!doctype html><html lang=\"en-GB\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>Waiting for approval</title></head><body><main><h1>Waiting for approval</h1>"
+    "<p>Your account is waiting for an Admin to approve it.</p>"
+    "<form method=\"post\" action=\"/auth/logout\">"
+    "<input type=\"hidden\" name=\"csrf_token\" value=\"{csrf}\">"
+    "<button type=\"submit\">Sign out</button></form></main></body></html>"
+)
+
+
 def _page(title: str, body: str, status: int) -> HTMLResponse:
     return HTMLResponse(_PAGE.format(title=title, body=body), status_code=status)
 
 
-def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None:
+def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore,
+               setup_open: Callable[[], bool] = lambda: False) -> None:
     oauth = OAuth()
     if not settings.entra_enabled:
         # Task 7 replaces this; until then Microsoft sign-in is simply unavailable.
@@ -173,7 +260,7 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
             return _page("Microsoft sign-in isn't set up",
                          "Ask the administrator to set up Microsoft sign-in.", 503)
 
-        _finish_setup(app, sessions)
+        _finish_setup(app, sessions, setup_open)
         return
     oauth.register(
         name="entra",
@@ -203,23 +290,32 @@ def setup_auth(app: FastAPI, settings: Settings, sessions: SessionStore) -> None
                 "Sign-in could not be completed. <a href=\"/auth/login\">Try again</a>.",
                 400,
             )
-        user = user_from_claims(token.get("userinfo") or {}, settings)
+        identity = user_from_claims(token.get("userinfo") or {}, settings)
         request.session.clear()  # always start fresh (session fixation)
-        if user is None:
+        users: UserStore = request.app.state.users
+        # Interim (until Task 7): 0.2 access rules, and 0.2 gave every allowed user full
+        # control, so a first sign-in creates an Admin.
+        record = None
+        if identity is not None:
+            record = users.by_email("entra", identity.email) or users.create(
+                "entra", identity.email, identity.name, Role.ADMIN.value, pinned=True)
+        if record is None or record.disabled:
             return _page(
                 "You don't have access to this dashboard",
                 "Your account is not permitted to use this dashboard. "
                 "Ask the administrator for access.",
                 403,
             )
-        request.session["user"] = {"name": user.name, "email": user.email}
+        users.touch_sign_in(record.id)
+        request.session["user_id"] = record.id
         request.session["csrf"] = secrets.token_urlsafe(32)
         return RedirectResponse("/", status_code=302)
 
-    _finish_setup(app, sessions)
+    _finish_setup(app, sessions, setup_open)
 
 
-def _finish_setup(app: FastAPI, sessions: SessionStore) -> None:
+def _finish_setup(app: FastAPI, sessions: SessionStore,
+                  setup_open: Callable[[], bool]) -> None:
     @app.post("/auth/logout", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def logout(request: Request):
         request.session.clear()
@@ -233,6 +329,23 @@ def _finish_setup(app: FastAPI, sessions: SessionStore) -> None:
             200,
         )
 
+    @app.get("/pending", include_in_schema=False)
+    async def pending(request: Request):
+        user = current_user(request)
+        if user.role != Role.PENDING:
+            return RedirectResponse("/", status_code=302)
+        return HTMLResponse(_PENDING_PAGE.format(csrf=csrf_token(request)))
+
+    @app.exception_handler(RoleDenied)
+    async def role_denied(request: Request, exc: RoleDenied):
+        accept = request.headers.get("accept", "").lower()
+        if request.method in ("GET", "HEAD") and "text/html" in accept:
+            return _page("You don't have permission to do that",
+                         "Ask an Admin if you need access. <a href=\"/\">Back to the dashboard</a>.",
+                         403)
+        return JSONResponse({"detail": "You don't have permission to do that"}, status_code=403)
+
     # Added first = innermost: ServerSessionMiddleware (added next) wraps the guard.
-    app.add_middleware(AuthGuardMiddleware)
+    app.add_middleware(AuthGuardMiddleware, users_getter=lambda: app.state.users,
+                       setup_open=setup_open)
     app.add_middleware(ServerSessionMiddleware, sessions=sessions)

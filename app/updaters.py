@@ -274,6 +274,8 @@ def start_self_update(client, info: ContainerInfo, compose_root: str):
             **{path: {"bind": path, "mode": "ro"} for path in info.env_files},
         },
         labels={_HELPER_LABEL: "self-update"},
+        # Same image as the dashboard, so it would inherit the /healthz HEALTHCHECK.
+        healthcheck={"test": ["NONE"]},
     )
 
 
