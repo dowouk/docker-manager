@@ -5,6 +5,7 @@ reasons – provider text can contain credentials, so it is never passed on.
 """
 import asyncio
 import ipaddress
+import logging
 import re
 import smtplib
 import socket
@@ -14,6 +15,8 @@ from email.message import EmailMessage
 from typing import Literal, Protocol
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 TIMEOUT = 20
 
@@ -71,7 +74,7 @@ def _validate(fields: tuple[ProviderField, ...], config: dict) -> dict[str, str]
         if f.kind == "email" and not _EMAIL.match(value):
             errors[f.name] = "Enter an email address"
         elif f.kind == "int":
-            if not value.isdigit() or not 1 <= int(value) <= 65535:
+            if not (value.isascii() and value.isdecimal()) or not 1 <= int(value) <= 65535:
                 errors[f.name] = "Enter a number from 1 to 65535"
         elif f.kind == "choice" and value not in {c[0] for c in f.choices}:
             errors[f.name] = "Choose one of the options"
@@ -183,7 +186,8 @@ class SMTPProvider:
     label = "SMTP"
     fields = (
         ProviderField("host", "Host", "text"),
-        ProviderField("port", "Port", "int", default="587"),
+        ProviderField("port", "Port", "int", default="587",
+                      help="Usually 587 (STARTTLS) or 465 (TLS). SMTP2GO also accepts 2525."),
         ProviderField("security", "Security", "choice", default="starttls", choices=(
             ("starttls", "STARTTLS"), ("tls", "TLS"),
             ("none", "None (private addresses only)"))),
@@ -195,37 +199,64 @@ class SMTPProvider:
     def validate(self, config: dict) -> dict[str, str]:
         return _validate(self.fields, config)
 
-    def _send(self, config: dict, message: Message) -> None:
-        host, port = config["host"].strip(), int(config["port"])
-        security = config.get("security") or "starttls"
+    def _deliver(self, config: dict, message: Message, sent: list) -> None:
+        host = str(config["host"]).strip()
+        port = int(str(config["port"]).strip())
+        security = str(config.get("security") or "").strip()
+        sender = str(config["sender"]).strip()
+        username = str(config.get("username") or "").strip()
+        if security not in ("starttls", "tls", "none"):
+            raise ValueError("security")
         if security == "none" and not all_private(host):
             raise NotifyError(NOT_PRIVATE)
         mail = EmailMessage()
         mail["Subject"] = _one_line(message.subject)
-        mail["From"] = config["sender"]
+        mail["From"] = sender
         mail["To"] = ", ".join(message.recipients)
         mail.set_content(message.plain)
         mail.add_alternative(message.html, subtype="html")
         ctx = ssl.create_default_context()
+        if security == "tls":
+            conn = smtplib.SMTP_SSL(host, port, timeout=TIMEOUT, context=ctx)
+        else:
+            conn = smtplib.SMTP(host, port, timeout=TIMEOUT)
+        with conn:
+            if security == "starttls":
+                conn.starttls(context=ctx)
+            if username:
+                conn.login(username, config.get("password") or "")
+            conn.send_message(mail, sender, list(message.recipients))
+            sent.append(True)
+
+    def _send(self, config: dict, message: Message) -> None:
+        sent: list = []
         try:
-            if security == "tls":
-                conn = smtplib.SMTP_SSL(host, port, timeout=TIMEOUT, context=ctx)
-            else:
-                conn = smtplib.SMTP(host, port, timeout=TIMEOUT)
-            with conn:
-                if security == "starttls":
-                    conn.starttls(context=ctx)
-                if config.get("username"):
-                    conn.login(config["username"], config.get("password") or "")
-                conn.send_message(mail, config["sender"], list(message.recipients))
-        except socket.timeout:
-            raise NotifyError(NO_ANSWER) from None
-        except smtplib.SMTPAuthenticationError:
-            raise NotifyError(LOGIN_REFUSED) from None
-        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError, smtplib.SMTPSenderRefused):
-            raise NotifyError(REJECTED) from None
-        except OSError:  # includes SMTPConnectError and other SMTPException subclasses
-            raise NotifyError(UNREACHABLE) from None
+            self._deliver(config, message, sent)
+        except NotifyError:
+            raise
+        except Exception as e:
+            if sent:  # delivered; only closing the connection failed
+                log.debug("SMTP close failed after send: %s", type(e).__name__)
+                return
+            reason = self._reason(e)
+        else:
+            return
+        # Raised outside the except block so the original error (which may quote the
+        # password) isn't kept as __context__ for tracebacks and logs.
+        raise NotifyError(reason)
+
+    @staticmethod
+    def _reason(e: Exception) -> str:
+        if isinstance(e, socket.timeout):
+            return NO_ANSWER
+        if isinstance(e, smtplib.SMTPAuthenticationError):
+            return LOGIN_REFUSED
+        if isinstance(e, (smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError,
+                          smtplib.SMTPSenderRefused)):
+            return REJECTED
+        if isinstance(e, OSError):  # includes SMTPConnectError and other SMTPException subclasses
+            return UNREACHABLE
+        return REJECTED  # ValueError/UnicodeError from bad config or characters; never echo them
 
     async def send(self, config: dict, message: Message, http: httpx.AsyncClient) -> None:
         await asyncio.to_thread(self._send, config, message)

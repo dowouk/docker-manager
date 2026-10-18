@@ -1,6 +1,7 @@
 import asyncio
 import smtplib
 import socket
+import ssl
 
 import httpx
 import pytest
@@ -101,6 +102,7 @@ class FakeSMTP:
         self.host, self.port, self.timeout, self.context = host, port, timeout, context
         self.calls = []
         self.sent = None
+        self.closed = False
         type(self).instances.append(self)
         if "connect" in self.fail:
             raise self.fail["connect"]
@@ -109,9 +111,13 @@ class FakeSMTP:
         return self
 
     def __exit__(self, *a):
+        self.closed = True
+        if "exit" in self.fail:
+            raise self.fail["exit"]
         return False
 
     def starttls(self, context=None):
+        self.context = context
         self.calls.append("starttls")
 
     def login(self, user, password):
@@ -312,3 +318,76 @@ def test_presets():
     assert providers.SMTP_PRESETS["m365"] == {
         "host": "smtp.office365.com", "port": "587", "security": "starttls"}
     assert providers.SMTP_PRESETS["smtp2go"]["host"] == "mail.smtp2go.com"
+
+
+def _strict(ctx):
+    return ctx.check_hostname is True and ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_smtp_verifies_certificates(fake_smtp):
+    send_smtp(smtp_cfg())
+    assert _strict(fake_smtp.instances[0].context)
+    send_smtp(smtp_cfg(security="tls"))
+    assert _strict(fake_smtp.instances[1].context)
+
+
+def test_smtp_connection_closed(fake_smtp):
+    send_smtp(smtp_cfg())
+    assert fake_smtp.instances[0].closed
+
+
+def test_smtp_close_error_after_send_is_success(fake_smtp):
+    fake_smtp.fail = {"exit": OSError("boom")}
+    send_smtp(smtp_cfg())  # no raise
+    assert fake_smtp.instances[0].sent is not None
+
+
+def test_smtp_subject_newlines_collapsed(fake_smtp):
+    async def go():
+        async with httpx.AsyncClient() as http:
+            await SMTPProvider().send(smtp_cfg(), Message(
+                subject="a\r\nBcc: x@evil.test", plain="p", html="h",
+                recipients=("a@example.com",)), http)
+    run(go())
+    msg = fake_smtp.instances[0].sent[0]
+    assert msg["Subject"] == "a Bcc: x@evil.test"
+    assert "Bcc" not in msg
+
+
+def test_smtp_only_raises_notify_error(fake_smtp):
+    bad_recipient = Message(subject="s", plain="p", html="h",
+                            recipients=("a@example.com\r\nBcc: x@evil.test",))
+
+    async def go(cfg, msg=MSG):
+        async with httpx.AsyncClient() as http:
+            await SMTPProvider().send(cfg, msg, http)
+    for cfg, msg in [(smtp_cfg(port="x"), MSG), (smtp_cfg(port="\u00b2"), MSG),
+                     (smtp_cfg(security="bogus"), MSG), (smtp_cfg(), bad_recipient),
+                     (smtp_cfg(sender="me@example.com\r\nBcc: x"), MSG)]:
+        with pytest.raises(NotifyError) as e:
+            run(go(cfg, msg))
+        assert str(e.value) == "The email service rejected the message"
+
+
+def test_smtp_non_ascii_password_does_not_leak(fake_smtp, monkeypatch):
+    def login(self, user, password):
+        password.encode("ascii")  # what smtplib does; raises UnicodeEncodeError
+    monkeypatch.setattr(fake_smtp, "login", login)
+    with pytest.raises(NotifyError) as e:
+        send_smtp(smtp_cfg(username="u", password="pässwörd"))
+    for text in (str(e.value), repr(e.value), repr(e.value.__cause__), repr(e.value.__context__)):
+        assert "pässwörd" not in text and "ä" not in text and "ö" not in text
+
+
+def test_smtp_inputs_stripped(fake_smtp):
+    send_smtp(smtp_cfg(sender=" me@example.com ", username=" u ", password="p", host=" smtp.example.com "))
+    s = fake_smtp.instances[0]
+    assert s.host == "smtp.example.com"
+    assert s.calls[1] == ("login", "u", "p")
+    assert s.sent[1] == "me@example.com"
+
+
+def test_validate_port_unicode_digit():
+    assert set(SMTPProvider().validate(smtp_cfg(port="\u00b2"))) == {"port"}
+    assert set(SMTPProvider().validate(smtp_cfg(port="\u0665"))) == {"port"}
+    assert set(SMTPProvider().validate(smtp_cfg(security=""))) == {"security"}
