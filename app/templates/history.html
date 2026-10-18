@@ -3,11 +3,34 @@
 {% block content %}
 <section class="intro">
   <div>
-    <h1>Update history</h1>
-    <p class="lede">Every update run from this dashboard, newest first.</p>
+    <h1>History</h1>
+    <p class="lede">{% if view == "changes" %}Every settings change made from this dashboard, newest first.{% else %}Every update run from this dashboard, newest first.{% endif %}</p>
   </div>
+  <nav class="segmented tabs" aria-label="History view">
+    <a href="/history"{% if view != "changes" %} aria-current="page"{% endif %}>Updates</a>
+    <a href="/history?view=changes"{% if view == "changes" %} aria-current="page"{% endif %}>Changes</a>
+  </nav>
 </section>
-{% if jobs %}
+{% if view == "changes" %}
+{% if changes %}
+<div class="table-wrap">
+  <table class="data">
+    <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+    {% for entry in changes %}
+      <tr>
+        <td data-label="When"><span class="mono">{{ entry.at | uk_date }}</span></td>
+        <td data-label="Who">{{ entry.user }}</td>
+        <td data-label="Change">{{ entry.summary }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No settings have been changed yet.</p>
+{% endif %}
+{% elif jobs %}
 <div class="table-wrap">
   <table class="data">
     <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">What</th><th scope="col">Result</th><th scope="col" class="col-action">Log</th></tr></thead>

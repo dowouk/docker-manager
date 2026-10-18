@@ -21,16 +21,21 @@ from app.auth import User, csrf_token, current_user, setup_auth, verify_csrf
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
-from app.digest import send_digest
+from app.digest import send_digest, send_test_email
 from app.imageref import parse_image_ref
 from app.inventory import detect_self_id, list_containers
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import SecretBox, load_or_create_key
-from app.registry import RegistryClient
-from app.registry_logins import logins_by_host, write_docker_config
+from app.registry import RegistryClient, RegistryError
+from app.registry_logins import (
+    logins_by_host,
+    normalise_host,
+    test_login,
+    write_docker_config,
+)
 from app.sessions import SessionStore
-from app.settings_service import SettingsService, key_path
+from app.settings_service import FIELDS, SECTIONS, SettingsError, SettingsService, key_path
 from app.store import Store
 from app import view
 from app.updaters import (
@@ -58,6 +63,16 @@ FLASH = {
     "digest_nothing": ("Digest skipped – nothing to report", "ok"),
     "digest_unconfigured": ("Digest skipped – email not configured", "ok"),
     "digest_failed": ("The digest could not be sent – check the server logs", "error"),
+}
+
+# Same idea for the Settings page.
+SETTINGS_FLASH = {
+    "saved": ("Settings saved", "ok"),
+    "email_sent": ("Test email sent", "ok"),
+    "email_failed": ("The test email could not be sent – check the server logs", "error"),
+    "email_unconfigured": ("Save a connection string, sender and recipient before sending a test", "error"),
+    "registry_saved": ("Registry login saved", "ok"),
+    "registry_removed": ("Registry login removed", "ok"),
 }
 
 STATUS_LABELS = {
@@ -509,9 +524,134 @@ def create_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    def settings_fields(section: str, submitted=None, errors=None) -> list[dict]:
+        """What the template needs per field. `submitted` (a re-render after an error)
+        replaces non-secret values; secrets are never filled in."""
+        service = app.state.settings_service
+        values = service.form_values(section)
+        out = []
+        for f in (f for f in FIELDS if f.section == section):
+            locked = service.locked(f.name)
+            value = values[f.name]
+            if submitted is not None and not locked and f.kind != "secret":
+                value = submitted.get(f.name, "")
+            out.append({
+                "name": f.name, "label": f.label, "kind": f.kind, "help": f.help,
+                "minimum": f.minimum, "maximum": f.maximum,
+                "value": value, "locked": locked,
+                "error": (errors or {}).get(f.name),
+                "has_secret": f.kind == "secret" and service.has_secret(f.name),
+                "unreadable": f.name in service.unreadable,
+            })
+        return out
+
+    def render_settings(
+        request: Request, user: User, status_code: int = 200, *, msg: str = "",
+        section: str | None = None, submitted=None, errors=None,
+        registry_form=None, registry_error=None,
+    ):
+        service = app.state.settings_service
+        fields = {key: settings_fields(
+            key, submitted if key == section else None, errors if key == section else None,
+        ) for key in SECTIONS}
+        logins = service.registry_logins()  # read after the fields: it can mark them unreadable
+        return render(
+            request, "settings.html", user, status_code,
+            sections=[(key, title, fields[key]) for key, title in SECTIONS.items()],
+            registry_logins=[{"host": i.get("host", ""), "username": i.get("username", "")}
+                             for i in logins],
+            registry_unreadable="registry_logins" in service.unreadable,
+            registry_form=registry_form or {"host": "", "username": ""},
+            registry_error=registry_error,
+            flash=SETTINGS_FLASH.get(msg),
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request, msg: str = "", user: User = Depends(current_user)):
+        return render_settings(request, user, msg=msg)
+
+    # The fixed paths below are declared before /settings/{section} so they win.
+    @app.post("/settings/email/test", dependencies=[Depends(verify_csrf)])
+    async def settings_email_test(user: User = Depends(current_user)):
+        try:
+            await asyncio.to_thread(
+                send_test_email, app.state.settings, app.state.email_client_factory
+            )
+        except ValueError:
+            return _redirect("/settings?msg=email_unconfigured#email")
+        except Exception:  # noqa: BLE001 – never show the text: it can hold the connection string
+            log.exception("Sending the test email failed")
+            return _redirect("/settings?msg=email_failed#email")
+        return _redirect("/settings?msg=email_sent#email")
+
+    @app.post("/settings/registries", dependencies=[Depends(verify_csrf)])
+    async def settings_registry_add(
+        request: Request,
+        host: str = Form(""),
+        username: str = Form(""),
+        password: str = Form(""),
+        user: User = Depends(current_user),
+    ):
+        def refuse(message: str):
+            return render_settings(
+                request, user, 400, registry_error=message,
+                registry_form={"host": host.strip(), "username": username.strip()},
+            )
+
+        try:
+            registry = normalise_host(host)
+        except ValueError:
+            return refuse("Enter a registry host, for example ghcr.io")
+        username = username.strip()
+        if not username or not password:
+            return refuse("Enter a username and password")
+        try:
+            await test_login(app.state.http, registry, username, password)
+        except RegistryError as exc:  # fixed messages only
+            return refuse(str(exc))
+        service = app.state.settings_service
+        logins = [i for i in service.registry_logins() if i.get("host") != registry]
+        logins.append({"host": registry, "username": username, "password": password})
+        service.save_registry_logins(logins, user.email, f"Registry login {registry} added")
+        apply_settings(app)
+        return _redirect("/settings?msg=registry_saved#registries")
+
+    @app.post("/settings/registries/{host:path}/delete", dependencies=[Depends(verify_csrf)])
+    async def settings_registry_delete(host: str, user: User = Depends(current_user)):
+        try:
+            registry = normalise_host(host)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Unknown registry") from None
+        service = app.state.settings_service
+        logins = service.registry_logins()
+        kept = [i for i in logins if i.get("host") != registry]
+        if len(kept) != len(logins):
+            service.save_registry_logins(kept, user.email, f"Registry login {registry} removed")
+            apply_settings(app)
+        return _redirect("/settings?msg=registry_removed#registries")
+
+    @app.post("/settings/{section}", dependencies=[Depends(verify_csrf)])
+    async def settings_save(
+        request: Request, section: str, user: User = Depends(current_user)
+    ):
+        if section not in SECTIONS:
+            raise HTTPException(status_code=404, detail="Unknown settings section")
+        form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+        try:
+            app.state.settings_service.save(section, form, user.email)
+        except SettingsError as exc:
+            return render_settings(
+                request, user, 400, section=section, submitted=form, errors=exc.errors
+            )
+        apply_settings(app)
+        return _redirect(f"/settings?msg=saved#{section}")
+
     @app.get("/history", response_class=HTMLResponse)
-    async def history(request: Request, user: User = Depends(current_user)):
-        return render(request, "history.html", user, jobs=store.list_jobs())
+    async def history(request: Request, view: str = "", user: User = Depends(current_user)):
+        if view == "changes":
+            return render(request, "history.html", user, view="changes",
+                          changes=store.list_audit())
+        return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
 
     return app
 
