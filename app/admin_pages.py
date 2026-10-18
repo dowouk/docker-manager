@@ -131,6 +131,8 @@ def setup_admin_pages(app: FastAPI) -> None:
         if not app.state.settings.local_sign_in:
             return users_page(request, user, 400,
                               "Local sign-in is turned off – turn it on in Settings first")
+        if not rec.active:
+            return users_page(request, user, 400, "Turn this account on before inviting them")
         audit(user, f"Created a new invite link for {rec.email}")
         return invite_result(request, user, rec)
 
@@ -304,8 +306,17 @@ def setup_admin_pages(app: FastAPI) -> None:
         if clean:
             users.update(used.id, name=clean)
         users.set_password_hash(used.id, hashed, False)
+        # A new password means no earlier session can be trusted (an invite can be
+        # re-issued for an account that was already in use).
+        users.end_sessions(used.id)
         app.state.store.add_audit(used.email, "users", "Accepted invite and set a password")
-        return complete_sign_in(request, users.get(used.id))
+        fresh = users.get(used.id)
+        if fresh.totp_enabled:
+            # The invite proves the link, not the second factor: same step as a password sign-in.
+            request.session["pending_user_id"] = fresh.id
+            request.session["pending_at"] = users.now().timestamp()
+            return RedirectResponse("/auth/totp", status_code=303)
+        return complete_sign_in(request, fresh)
 
     # --- account -----------------------------------------------------------
 

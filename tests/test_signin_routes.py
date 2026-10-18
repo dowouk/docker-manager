@@ -346,6 +346,20 @@ def test_forced_password_change_clears_flag_and_ends_other_sessions(app, client)
     assert n == 1
 
 
+def test_changing_your_own_password_deletes_outstanding_invites(app, client):
+    rec = add_user(app)
+    token = app.state.users.create_invite(rec.id)
+    assert app.state.users.peek_invite(token) is not None
+    login(client)
+    csrf = csrf_of(client, "/account/password")
+    r = client.post("/account/password", data={
+        "csrf_token": csrf, "current_password": PASSWORD,
+        "new_password": "a brand new passphrase",
+        "confirm_password": "a brand new passphrase"})
+    assert r.status_code == 200
+    assert app.state.users.peek_invite(token) is None
+
+
 def test_password_change_refuses_common_short_and_mismatch(app, client):
     add_user(app, must_change_password=True)
     login(client)

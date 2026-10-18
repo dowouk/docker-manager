@@ -239,6 +239,7 @@ def setup_signin(app: FastAPI) -> None:
             rec.id, await asyncio.to_thread(hash_password, new_password), False)
         cookie = request.cookies.get(COOKIE)
         users.end_sessions(rec.id, SessionStore.token_hash(cookie) if cookie else None)
+        users.delete_invites(rec.id)  # an old invite link must not undo this change
         app.state.store.add_audit(rec.email, "account", "Password changed")
         fresh = users.get(rec.id)
         nxt = forced_page(fresh, app.state.settings)

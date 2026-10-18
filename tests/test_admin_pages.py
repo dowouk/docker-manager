@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 
@@ -278,6 +279,54 @@ def test_invite_refused_for_disabled_user(app, admin):
                                   "confirm_password": PASSWORD}).status_code == 410
         assert c.get("/", headers=HTML).status_code == 302
     assert app.state.users.get(ann.id).password_hash is None
+
+
+def _session_count(app, user_id):
+    with app.state.store._lock:
+        return app.state.store._db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+
+def _accept(app, c, token):
+    path = f"/auth/invite/{token}"
+    csrf = anon_csrf(c, path)
+    return c.post(path, data={"csrf_token": csrf, "new_password": PASSWORD,
+                              "confirm_password": PASSWORD})
+
+
+def test_reissued_invite_ends_the_users_other_sessions(app):
+    ann = local(app)
+    app.state.sessions.create({"user_id": ann.id, "csrf": "x"})  # an earlier device
+    assert _session_count(app, ann.id) == 1
+    token = app.state.users.create_invite(ann.id)
+    with anonymous(app) as c:
+        r = _accept(app, c, token)
+        assert r.status_code == 303 and r.headers["location"] == "/"
+    assert _session_count(app, ann.id) == 1  # only the new one
+
+
+def test_reissued_invite_for_two_step_user_still_asks_for_the_code(app):
+    ann = local(app)
+    app.state.users.set_totp(ann.id, "JBSWY3DPEHPK3PXP", True)
+    app.state.sessions.create({"user_id": ann.id, "csrf": "x"})
+    token = app.state.users.create_invite(ann.id)
+    with anonymous(app) as c:
+        r = _accept(app, c, token)
+        assert r.status_code == 303 and r.headers["location"] == "/auth/totp"
+        assert c.get("/", headers=HTML).status_code == 302  # not signed in yet
+        assert _session_count(app, ann.id) == 0  # the earlier device is out too
+        csrf = anon_csrf(c, "/auth/totp")
+        ok = c.post("/auth/totp", data={"csrf_token": csrf,
+                                        "code": pyotp.TOTP("JBSWY3DPEHPK3PXP").now()})
+        assert ok.status_code == 303 and ok.headers["location"] == "/"
+        assert c.get("/", headers=HTML).status_code == 200
+
+
+def test_invite_route_refuses_disabled_user(app, admin):
+    ann = local(app)
+    app.state.users.update(ann.id, disabled=True)
+    r = post(admin, f"/users/{ann.id}/invite")
+    assert r.status_code == 400 and "/auth/invite/" not in r.text
 
 
 def test_invite_redirects_to_setup_while_setup_open(app):
