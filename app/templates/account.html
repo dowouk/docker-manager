@@ -13,7 +13,7 @@
 <section class="card form-card">
   <h2>Your new recovery codes</h2>
   <p class="card-text">Keep these somewhere safe. Each works once if you lose your authenticator app. Any older codes no longer work, and these won't be shown again.</p>
-  <ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  {% include "_recovery_codes.html" %}
   <div class="card-actions"><a class="button button-accent" href="/account">Done</a></div>
 </section>
 {% else %}

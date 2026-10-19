@@ -14,7 +14,7 @@
   <p class="notice notice-ok" role="status">Two-step sign-in is turned on.</p>
   <h2>Your recovery codes</h2>
   <p class="card-text">Keep these somewhere safe. Each works once if you lose your authenticator app. They won't be shown again.</p>
-  <ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  {% include "_recovery_codes.html" %}
   <div class="card-actions"><a class="button button-accent" href="/">Done</a></div>
 </section>
 {% elif stage == "password" %}
