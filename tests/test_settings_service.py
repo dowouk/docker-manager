@@ -6,6 +6,7 @@ from app.config import Settings
 from app.keys import SecretBox
 from app.settings_service import SettingsError, SettingsService, key_path
 from app.store import Store
+from auth_helpers import CHECKING_FORM
 
 
 TENANT = "33333333-3333-3333-3333-333333333333"
@@ -17,8 +18,7 @@ def svc(settings, tmp_path, key=b"k" * 32):
 
 def test_db_value_used_when_env_not_set(settings, tmp_path):
     s = svc(settings, tmp_path)
-    s.save("checking", {"check_interval_hours": "3", "health_timeout_seconds": "300",
-                        "mailcow_dir": "/opt/mailcow-dockerized"}, "me@x.com")
+    s.save("checking", {**CHECKING_FORM, "check_interval_hours": "3"}, "me@x.com")
     assert s.effective().check_interval_hours == 3
 
 
@@ -27,8 +27,7 @@ def test_env_wins_and_locked_field_ignored(settings, tmp_path, monkeypatch):
     base = Settings(_env_file=None)
     s = SettingsService(base, Store(str(tmp_path / "d.db")), SecretBox(b"k" * 32))
     assert s.locked("check_interval_hours") == "CHECK_INTERVAL_HOURS"
-    s.save("checking", {"check_interval_hours": "1", "health_timeout_seconds": "300",
-                        "mailcow_dir": "/opt/mailcow-dockerized"}, "me@x.com")
+    s.save("checking", {**CHECKING_FORM, "check_interval_hours": "1"}, "me@x.com")
     assert s.effective().check_interval_hours == 12
     assert "check_interval_hours" not in s._store.load_settings()
 
@@ -63,8 +62,7 @@ def test_unknown_section_raises(settings, tmp_path):
 
 def test_interval_must_be_positive(settings, tmp_path):
     with pytest.raises(SettingsError):
-        svc(settings, tmp_path).save("checking", {"check_interval_hours": "0",
-            "health_timeout_seconds": "300", "mailcow_dir": "/opt/m"}, "me")
+        svc(settings, tmp_path).save("checking", {**CHECKING_FORM, "check_interval_hours": "0", "mailcow_dir": "/opt/m"}, "me")
 
 
 SIGNIN = {"local_sign_in": "on", "default_role": "pending", "azure_client_secret": "endpoint=SECRET"}
@@ -108,7 +106,7 @@ def test_audit_records_change_without_secret_value(open_settings, tmp_path):
 
 def test_no_change_no_audit(settings, tmp_path):
     s = svc(settings, tmp_path)
-    form = {"check_interval_hours": "6", "health_timeout_seconds": "300", "mailcow_dir": "/opt/mailcow-dockerized"}
+    form = dict(CHECKING_FORM)
     assert s.save("checking", form, "me") == []
     assert s._store.list_audit() == []
 
@@ -116,9 +114,9 @@ def test_no_change_no_audit(settings, tmp_path):
 def test_registry_logins_round_trip_encrypted(settings, tmp_path):
     s = svc(settings, tmp_path)
     assert s.registry_logins() == []
-    s.save_registry_logins([{"host": "ghcr.io", "password": "PW"}], "me", "Registries: added ghcr.io")
-    assert s.registry_logins() == [{"host": "ghcr.io", "password": "PW"}]
-    assert "PW" not in json.dumps(s._store.load_settings())
+    s.save_registry_logins([{"host": "ghcr.io", "password": "pw!s3cret#value"}], "me", "Registries: added ghcr.io")
+    assert s.registry_logins() == [{"host": "ghcr.io", "password": "pw!s3cret#value"}]
+    assert "pw!s3cret#value" not in json.dumps(s._store.load_settings())
     assert s._store.list_audit()[0].summary == "Registries: added ghcr.io"
     other = svc(settings, tmp_path, key=b"z" * 32)
     assert other.registry_logins() == []
@@ -305,3 +303,74 @@ def test_tenant_id_must_be_a_guid(settings, tmp_path, monkeypatch):
     s.save("signin", {"local_sign_in": "on", "default_role": "viewer",
                       "azure_tenant_id": TENANT}, "me")
     assert s.effective().azure_tenant_id == TENANT
+
+
+CHECKING = CHECKING_FORM
+
+
+@pytest.mark.parametrize("name,value", [
+    ("random_delay_minutes", "61"), ("random_delay_minutes", "-1"), ("random_delay_minutes", "x"),
+    ("heartbeat_url", "ftp://hc.example/p"), ("heartbeat_url", "hc.example/p"),
+    ("heartbeat_url", "https://user:pass@hc.example/p"), ("heartbeat_url", "https://user@hc.example/p"),
+    ("layout_allowlist", "relative/path"), ("layout_allowlist", "/ok\nnot/abs"),
+    ("layout_allowlist", "\n".join(f"/p{i}" for i in range(51))),
+])
+def test_checking_option_validation(settings, tmp_path, name, value):
+    s = svc(settings, tmp_path)
+    with pytest.raises(SettingsError) as exc:
+        s.save("checking", {**CHECKING, name: value}, "me")
+    assert name in exc.value.errors
+
+
+def test_checking_options_save_and_load(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    s.save("checking", {**CHECKING, "random_delay_minutes": "60", "check_on_startup": "",
+                        "heartbeat_url": "https://hc.example/p", "layout_check": "",
+                        "named_volumes_allowed": "on",
+                        "layout_allowlist": "/srv/a\n\n /srv/b \n/srv/a"}, "me")
+    eff = s.effective()
+    assert eff.random_delay_minutes == 60 and eff.check_on_startup is False
+    assert eff.heartbeat_url == "https://hc.example/p" and eff.layout_check is False
+    assert eff.named_volumes_allowed is True and eff.layout_allowlist == ["/srv/a", "/srv/b"]
+    assert s.form_values("checking")["layout_allowlist"] == "/srv/a\n/srv/b"
+
+
+def test_fifty_allowlist_entries_accepted(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    s.save("checking", {**CHECKING, "layout_allowlist": "\n".join(f"/p{i}" for i in range(50))}, "me")
+    assert len(s.effective().layout_allowlist) == 50
+
+
+def test_blank_heartbeat_url_clears(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    s.save("checking", {**CHECKING, "heartbeat_url": "https://hc.example/p"}, "me")
+    s.save("checking", {**CHECKING, "heartbeat_url": ""}, "me")
+    assert s.effective().heartbeat_url is None
+
+
+def test_environment_cannot_set_checking_options(settings, tmp_path, monkeypatch):
+    for k, v in {"CHECK_ON_STARTUP": "false", "RANDOM_DELAY_MINUTES": "30",
+                 "HEARTBEAT_URL": "https://evil.example/", "LAYOUT_CHECK": "false",
+                 "NAMED_VOLUMES_ALLOWED": "true", "LAYOUT_ALLOWLIST": "/x"}.items():
+        monkeypatch.setenv(k, v)
+    s = SettingsService(Settings(_env_file=None), Store(str(tmp_path / "d.db")), SecretBox(b"k" * 32))
+    eff = s.effective()
+    assert eff.check_on_startup is True and eff.random_delay_minutes == 0
+    assert eff.heartbeat_url is None and eff.layout_check is True
+    assert eff.named_volumes_allowed is False and eff.layout_allowlist == []
+    for n in ("check_on_startup", "random_delay_minutes", "heartbeat_url",
+              "layout_check", "named_volumes_allowed", "layout_allowlist"):
+        assert s.locked(n) is None
+
+
+def test_audit_never_contains_heartbeat_url(settings, tmp_path):
+    s = svc(settings, tmp_path)
+    url = "https://hc.example/ping/SECRET-TOKEN"
+    s.save("checking", {**CHECKING, "heartbeat_url": url}, "me")
+    s.save("checking", {**CHECKING, "heartbeat_url": url + "2"}, "me")
+    s.save("checking", {**CHECKING, "heartbeat_url": ""}, "me")
+    texts = [row["detail"] if isinstance(row, dict) else str(row) for row in s._store.list_audit()]
+    joined = " ".join(texts)
+    assert "SECRET-TOKEN" not in joined
+    for word in ("set", "changed", "cleared"):
+        assert f"Heartbeat address {word}" in joined

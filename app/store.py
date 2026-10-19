@@ -91,8 +91,18 @@ def _migration_3(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX sessions_user ON sessions (user_id)")
 
 
+def _migration_4(db: sqlite3.Connection) -> None:
+    db.execute(
+        "CREATE TABLE skips (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, "
+        "kind TEXT NOT NULL CHECK(kind IN ('build','minor','major','mailcow')), "
+        "value TEXT, until TEXT, user TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL)"
+    )
+    db.execute("CREATE INDEX skips_key ON skips (key, kind)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
-    _migration_1, _migration_2, _migration_3]
+    _migration_1, _migration_2, _migration_3, _migration_4]
 
 
 def _now() -> str:

@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import Settings
+from app.rules import is_plain_http_url
 from app.keys import KeyUnusable, SecretBox
 from app.store import Store
 
@@ -18,7 +19,11 @@ REGISTRY_LOGINS = "registry_logins"
 GROUP_MAPPINGS = "group_mappings"
 # Set on the page only: an environment value must not preset (or lock) these.
 UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins",
-                     "require_totp_admins", "default_role"})
+                     "require_totp_admins", "default_role", "check_on_startup",
+                     "random_delay_minutes", "heartbeat_url", "layout_check",
+                     "named_volumes_allowed", "layout_allowlist"})
+MAX_ALLOWLIST = 50
+MAX_HEARTBEAT_URL = 2000
 LOCAL_OFF_MESSAGE = "Turn on Microsoft sign-in first, or you won't be able to sign in"
 _GUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 MAPPABLE_ROLES = {"viewer": "Viewer", "operator": "Operator", "admin": "Admin"}
@@ -31,7 +36,7 @@ class Field:
     label: str
     section: str
     kind: Literal["text", "int", "float", "bool", "email", "email_list",
-                  "cron", "tz", "path", "secret", "choice"]
+                  "cron", "tz", "path", "path_list", "secret", "choice"]
     help: str = ""
     minimum: float | None = None
     maximum: float | None = None
@@ -73,6 +78,21 @@ FIELDS: list[Field] = [
           "How long to wait for a container to become healthy after an update.", 30, 3600),
     Field("mailcow_dir", "Mailcow folder", "checking", "path",
           "Full path to the Mailcow folder on this server."),
+    Field("check_on_startup", "Check when the dashboard starts", "checking", "bool",
+          "Untick to wait one full interval after a restart before the first check."),
+    Field("random_delay_minutes", "Random delay before scheduled checks (minutes)", "checking",
+          "int", "Spreads checks out so they don't all hit registries at once. 0 means no delay.",
+          0, 60),
+    Field("heartbeat_url", "Heartbeat address", "checking", "text",
+          "Optional. After each scheduled check this address is fetched, with /fail added "
+          "if the check failed. Use https:// or http://, with no username or password.",
+          optional=True),
+    Field("layout_check", "Check container layout", "checking", "bool",
+          "Flags containers whose files live in places that are awkward to back up or move."),
+    Field("named_volumes_allowed", "Allow named volumes", "checking", "bool",
+          "Don't flag containers that use named Docker volumes."),
+    Field("layout_allowlist", "Allowed folders", "checking", "path_list",
+          f"Full paths, one per line (up to {MAX_ALLOWLIST}). Mounts under these are never flagged."),
     Field("digest_schedule", "Weekly digest schedule", "digest", "cron",
           "Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am."),
     Field("digest_when_none", "Send the digest when everything is up to date", "digest", "bool",
@@ -134,6 +154,11 @@ def _parse(field: Field, raw: str, current=None):
                 raise ValueError("Start with https:// and give only the address, "
                                  "for example https://dash.example.com")
             return raw.rstrip("/")
+        if field.name == "heartbeat_url":
+            if len(raw) > MAX_HEARTBEAT_URL or not is_plain_http_url(raw):
+                raise ValueError("Start with https:// or http:// and don't put a username "
+                                 "or password in the address")
+            return raw
         if field.name == "azure_tenant_id" and not _GUID.fullmatch(raw):
             raise ValueError("Use the Directory (tenant) ID – the long code, not your domain name")
         return raw
@@ -170,6 +195,13 @@ def _parse(field: Field, raw: str, current=None):
         if not raw or not os.path.isabs(raw):
             raise ValueError("Enter a full path starting with /")
         return raw
+    if kind == "path_list":
+        items = [line.strip() for line in raw.splitlines() if line.strip()]
+        if len(items) > MAX_ALLOWLIST:
+            raise ValueError(f"Enter at most {MAX_ALLOWLIST} paths")
+        if not all(os.path.isabs(i) and "\0" not in i for i in items):
+            raise ValueError("Enter full paths starting with /, one per line")
+        return list(dict.fromkeys(items))
     if kind == "cron":
         from app.scheduler import digest_trigger  # scheduler imports app.main
 
@@ -199,7 +231,7 @@ def _form_string(field: Field, value) -> str:
     if value is None:
         return ""
     if isinstance(value, list):
-        return ", ".join(value)
+        return "\n".join(value) if field.kind == "path_list" else ", ".join(value)
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
@@ -322,7 +354,11 @@ class SettingsService:
             old = getattr(current, field.name)
             if value != old:
                 updates[field.name] = value
-                parts.append(f"{field.label} {_show(field, old)} → {_show(field, value)}")
+                if field.name == "heartbeat_url":  # may carry a token: never audit the address
+                    what = "cleared" if value is None else "set" if old is None else "changed"
+                    parts.append(f"{field.label} {what}")
+                else:
+                    parts.append(f"{field.label} {_show(field, old)} → {_show(field, value)}")
                 changed.append(field.name)
         if (section == "signin" and not self.locked("local_sign_in") and "local_sign_in" not in errors
                 and updates.get("local_sign_in", current.local_sign_in) is False

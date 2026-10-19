@@ -8,6 +8,12 @@ A small web page, running on each of your servers, that shows whether your Docke
 
 - [What it does](#what-it-does)
 - [How it decides there's an update](#how-it-decides-theres-an-update)
+- [Watch rules](#watch-rules)
+- [Skip and snooze](#skip-and-snooze)
+- [Release notes](#release-notes)
+- [Filters and search](#filters-and-search)
+- [Checking settings](#checking-settings)
+- [Layout check](#layout-check)
 - [Security](#security)
 - [Accounts and sign-in](#accounts-and-sign-in)
 - [Set up the Azure app registration](#set-up-the-azure-app-registration-for-microsoft-sign-in)
@@ -16,7 +22,7 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Settings](#settings)
 - [Configuration reference](#configuration-reference)
 - [Private images](#private-images)
-- [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03)
+- [Upgrading from an earlier version](#upgrading-from-an-earlier-version)
 - [Monitoring](#monitoring)
 - [Updating the dashboard itself](#updating-the-dashboard-itself)
 - [Docker Hub limits](#docker-hub-limits)
@@ -29,6 +35,7 @@ You install one copy of the dashboard on **each** server. It only sees the conta
 
 - Lists every container, grouped by compose project, with the image it runs and the newest one available.
 - Checks automatically every 6 hours, and whenever you press **Check now**.
+- Lets you set [watch rules](#watch-rules) per container, [skip or snooze](#skip-and-snooze) an update, links to [release notes](#release-notes), and flags files kept outside `/docker` with the [layout check](#layout-check).
 - Updates a container with one click and shows the live output while it runs. Every update is kept in **History** (who, when, what, result and the full log).
 - Updates Mailcow using Mailcow's own `update.sh`, exactly as you would by hand.
 - Has a **Settings** page for most options, so you don't need to edit files and restart. Changes are kept in **History**.
@@ -57,6 +64,149 @@ Updates run `docker compose` the way you would by hand in the project's folder: 
 **Mailcow** – all Mailcow containers are shown as one **Mailcow** row. The dashboard runs Mailcow's own `./update.sh --check` on the server to see whether Mailcow has an update. **Update Mailcow** runs `./update.sh --force` – the same as running `./update.sh` by hand, without the questions.
 
 Some containers show **Not checkable** – for example images you built yourself, or images pinned by digest (`image@sha256:…`). Containers not started by `docker compose` are shown but can't be updated here.
+
+## Watch rules
+
+Each container can have its own rules: whether it is watched at all, which versions count as updates, whether it appears in emails, where its release notes are, and whether it is left out of the [layout check](#layout-check). Set them with labels in the compose file, or on the dashboard.
+
+| Label | Value | Effect |
+| --- | --- | --- |
+| `docker-manager.enable` | `true` or `false` | `false` stops the container being checked at all. It shows as **Not watched** |
+| `docker-manager.include_tags` | patterns separated by `;` | Only tags matching one of these can be offered as a version update |
+| `docker-manager.exclude_tags` | patterns separated by `;` | Tags matching any of these are never offered as a version update |
+| `docker-manager.notify` | `true` or `false` | `false` leaves the container out of the weekly digest and the **Updates found** and **Layout problems** messages. It still shows on the dashboard |
+| `docker-manager.release_notes` | a link starting `https://` or `http://` | Where to read about its updates. See [Release notes](#release-notes) |
+| `docker-manager.layout.ignore` | `true` or `false` | `true` leaves the container out of the [layout check](#layout-check) |
+
+On/off values can be `true`, `false`, `yes`, `no`, `1` or `0`, in any case. Labels go under the service in your compose file:
+
+```yaml
+services:
+  db:
+    image: postgres:16.2
+    labels:
+      docker-manager.include_tags: '16\.\d+'
+      docker-manager.release_notes: "https://www.postgresql.org/docs/release/"
+  scratch:
+    image: alpine:3.20
+    labels:
+      docker-manager.enable: "false"
+  backup-helper:
+    image: example/backup:1.4.2
+    labels:
+      docker-manager.notify: "false"
+      docker-manager.layout.ignore: "true"
+```
+
+Use single quotes around a pattern with backslashes, as above, so YAML leaves them alone. Changing a label means recreating the container (`docker compose up -d`).
+
+**On the dashboard.** An Operator or Admin can open **Watch settings** under a container's name and set the same rules there, with no file editing. They are kept in the dashboard's database and the change is recorded in **History → Changes**.
+
+**A label always wins.** If a rule is set by a label, the dashboard shows that field as "Set by a label on the container" and it can't be changed there; remove the label to manage it on the page. A label value that isn't valid (for example `docker-manager.notify: maybe`, or a pattern that isn't supported) is ignored, and a warning is shown on that container. Other labels on the same container still apply.
+
+Turning `notify` or `watch` back on for a container can notify you again about updates or layout problems it already has.
+
+Containers are identified by `<project>/<service>` (for example `shop/db`) when they were started by compose, otherwise by their name. Rules and skips belong to that identity, so they carry over when the container is recreated.
+
+### Tag patterns
+
+`include_tags` and `exclude_tags` take patterns (regular expressions) that must match the **whole** tag. `16\.\d+` matches `16.4` but not `16.4.1` or `v16.4`. If there is an include list, a tag must match one of its patterns; it is then dropped if it matches any exclude pattern. They only affect version updates (minor, patch and major). A newer build of the tag you already use is still reported. A rule needs at most 10 patterns of up to 200 characters each.
+
+| Pattern | Matches |
+| --- | --- |
+| `16\.\d+` | `16.1`, `16.4`, not `17.0` |
+| `\d+\.\d+-alpine` | `1.25-alpine`, `3.4-alpine` |
+| `.*-rc.*` | any tag with `-rc` in it (as an exclude pattern, hides release candidates) |
+| `v?\d+(?:\.\d+){1,3}` | a version of two to four parts, with or without a leading `v`: `v1.2`, `2.0.1`, `1.2.3.4` |
+
+Only a safe subset of regular expressions is supported, so a pattern can never make a check slow or crash it:
+
+- letters, digits and `.` `_` `-`, and `.` for any character;
+- `\d` (a digit), `\w` (a letter, digit or underscore) and an escaped special character such as `\.`;
+- simple character classes and ranges, such as `[a-z]`, `[0-9.]` or `[^0-9]`;
+- groups `( … )` and `(?: … )`, with `|` for "or";
+- `^` and `$`;
+- repeats `*`, `+`, `?`, `{n}` and `{n,m}`, with numbers up to 20. A group that contains `*`, `+` or `?` can be repeated once with `{n,m}`, as in the last example.
+
+These are refused: lookarounds, backreferences, named groups, inline flags (such as `(?i)`), `\p{…}`, repeats on top of repeats (`(a+)+`), a repeat of a group that already holds a `{n,m}`, and counts above 20. They are the ways a pattern can run for a very long time or use a lot of memory. On the dashboard a refused pattern shows the reason and nothing is saved; in a label it is ignored with a warning.
+
+Matching is also timed. A pattern that takes too long (or fails) is treated as not matching if it is an include pattern, so those tags aren't offered, and as matching if it is an exclude pattern, so those tags are left out; a warning is shown on the container; a container whose patterns take too long overall stops being matched for that check. Other containers and the check itself are not affected.
+
+## Skip and snooze
+
+Don't want to be reminded about an update yet? An Operator or Admin can press **Skip…** on a container (or the Mailcow row) with an update on offer, and choose:
+
+- **Skip this version** hides that exact update – the new build (its image digest), the version (for example `16.4`) or the Mailcow release – until a **different** one appears. If `16.5` arrives after you skipped `16.4`, `16.5` shows and is reported; a new build after a skipped build does too.
+- **Snooze 1 week** or **Snooze 1 month** hides any update of that kind for that container for 7 or 30 days, then it comes back by itself.
+
+Add a reason if you like (up to 200 characters). A new skip or snooze for the same container and kind replaces the earlier one.
+
+Hidden updates are not counted as needing an update, are not in the attention cards, the weekly digest's update sections or **Updates found** messages, and the container shows a **Skipped** or **Snoozed until …** badge. They are listed in the **Skipped** list at the bottom of the dashboard, and under the **Skipped** filter, with who did it, when and why. **Remove** puts an update back straight away. Everyone can see the list; only Operators and Admins can skip, snooze or remove.
+
+Every skip, snooze and removal is recorded in **History → Changes** (Admins), with who and the reason.
+
+## Release notes
+
+Update rows have a **Release notes** link, and the digest has one beside each update. It is chosen in this order:
+
+1. the `docker-manager.release_notes` rule, if set;
+2. the image's `org.opencontainers.image.source` label, when it is a GitHub address (`https://github.com/<owner>/<repo>`): the link goes to its `/releases` page;
+3. for images on Docker Hub, the image's **Tags** page (`https://hub.docker.com/r/<namespace>/<name>/tags`, or `https://hub.docker.com/_/<name>/tags` for official images).
+
+Images from other registries with no label and no rule have no link. Links open in a new tab. Everyone who can see the dashboard sees them.
+
+## Filters and search
+
+Above the container list, filter chips narrow it down: **Needs update**, **Major only**, **Errors**, **Stopped**, **Not checkable**, **Skipped** and, when the layout check is on, **Layout problems**. Each chip shows a count. Press one or more chips to show containers matching any of them; press again to switch off. The search box matches the name, image or project. Your choice is remembered in your browser (not on the server), so it is still there next time, and **Esc** clears the search. The attention cards at the top follow the same filter.
+
+## Checking settings
+
+**Settings → Checking** (Admins) has these, besides the interval, health timeout and Mailcow folder. None of them can be set by environment variable.
+
+- **Check when the dashboard starts** (on by default). Switch off to wait one full interval after a restart before the first check.
+- **Random delay before scheduled checks** (0 to 60 minutes, 0 by default). Each scheduled check waits a random time up to this long first, so many servers on one schedule don't all call the registries at the same moment. **Check now** is never delayed.
+- **Heartbeat address** (optional). After each **scheduled** check the dashboard fetches this address: the address itself when the check worked, or the address with `/fail` added to the path (your query string is kept) when it failed – the same "failed" as the **Check failing or recovered** message. It waits up to 10 seconds, doesn't retry, and never delays or fails the check; a failed ping is only logged. Use `https://` or `http://`, with no username or password in the address. The address may hold a secret key, so it is never shown in History.
+- **Check container layout**, **Allow named volumes** and **Allowed folders** – see [Layout check](#layout-check).
+
+**Healthchecks.io** works directly: use the ping address, for example `https://hc-ping.com/your-uuid`. A failed check pings `https://hc-ping.com/your-uuid/fail`, which marks the check as failed straight away. Set the check's period a little longer than your interval (plus the random delay).
+
+**Uptime Kuma** push monitors work differently: the address is like `https://kuma.example.com/api/push/abc123?status=up&msg=OK&ping=`, and Kuma reports a failure with `status=down`, not with `/fail`. A failed check therefore calls an address Kuma doesn't recognise, so with Uptime Kuma only the success ping is meaningful: the monitor goes down because the pings stop (set its heartbeat interval a little longer than your check interval), not because a failure was reported.
+
+## Layout check
+
+If you keep each project's files in one place (`/docker/<project>`), you can back up or move a server by copying one folder. The layout check looks for containers that keep things elsewhere and lists them on the **Layout** page (every signed-in person can open it). It **only reports – it never moves, changes or deletes anything**.
+
+It runs with every check, and flags:
+
+- **Bind mounts** from a folder outside `/docker` (or your `COMPOSE_ROOT`). The fix is shown: move the data to `/docker/<project>/<folder>` and use a relative path in the compose file.
+- **Named volumes** (they live in Docker's own folder), unless you allow them.
+- **Compose files and env files** outside `/docker`.
+- **Containers not started by compose** (shown as a notice, not a problem).
+
+These are never flagged:
+
+- `/var/run/docker.sock`, `/run/docker.sock`, `/etc/localtime` and `/etc/timezone`;
+- `/dev` and anything under it, `/proc`, and `/sys` when mounted read-only;
+- anonymous volumes and tmpfs mounts;
+- anything under `/docker` and, for Mailcow, its own folder – Mailcow's containers and `mailcowdockerized_` volumes are left alone;
+- the dashboard's own `/data` mount;
+- anything under a path in **Allowed folders**, and containers with the `docker-manager.layout.ignore` label.
+
+A system path such as `/etc` or `/usr` gets "System path – if this is intended, add it to the allowed paths" instead of a move suggestion. Add a folder to **Allowed folders** (Settings → Checking, full paths, one per line, up to 50) when it is intentional – for example a media disk at `/mnt/media`. For a volume you don't want flagged, tick **Allow named volumes**, or put the label on the container:
+
+```yaml
+services:
+  media:
+    image: example/media:2
+    volumes:
+      - /mnt/media:/media          # allowed in Settings, or:
+    labels:
+      docker-manager.layout.ignore: "true"
+```
+
+A flagged mount such as `/srv/app/uploads:/uploads` is fixed by moving the folder to `/docker/<project>/uploads` and writing `./uploads:/uploads`.
+
+Problems show as a badge on the container in the dashboard, under the **Layout problems** chip, and in the weekly digest. Switch the whole check off with **Check container layout** in Settings → Checking.
 
 ## Security
 
@@ -104,8 +254,8 @@ Microsoft sign-in can't skip the token – the token step always comes first. Un
 
 | Role | Can do |
 | --- | --- |
-| **Viewer** | See the dashboard, the History list of updates (without logs) and their own Account page |
-| **Operator** | Everything a Viewer can, plus Check now, all container, project and version updates and previews, and job logs and live logs |
+| **Viewer** | See the dashboard, the Layout page, release-notes links, the Skipped list, the History list of updates (without logs) and their own Account page |
+| **Operator** | Everything a Viewer can, plus Check now, Watch settings, skip and snooze, all container, project and version updates and previews, and job logs and live logs |
 | **Admin** | Everything an Operator can, plus Settings, Users, the History **Changes** tab, Send digest now, the Mailcow update and the dashboard's own update |
 
 There is also a **Waiting for approval** state with no access at all.
@@ -198,7 +348,7 @@ For each extra server, go to **Authentication → Web → Redirect URIs → Add 
 
 ### 6. Optional: app roles and groups
 
-See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from 0.1, 0.2 or 0.3](#upgrading-from-01-02-or-03).
+See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from an earlier version](#upgrading-from-an-earlier-version).
 
 ## Notifications
 
@@ -212,13 +362,15 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 
 | Event | Ticked for a new channel | Sent when |
 | --- | --- | --- |
-| **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating and what couldn't be checked, and goes to every channel that has this ticked |
-| **Updates found** | No | A check finds updates that haven't been reported yet. It only lists updates you haven't already been told about. When you first turn it on, it starts from what is already known, so only later updates are sent |
+| **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating, a count of skipped or snoozed updates, layout problems and what couldn't be checked, with release-notes links, and goes to every channel that has this ticked |
+| **Updates found** | No | A check finds updates that haven't been reported yet (skipped and snoozed ones are left out). It only lists updates you haven't already been told about. When you first turn it on, it starts from what is already known, so only later updates are sent |
 | **Update failed** | Yes | An update, rollback or Mailcow update ends in failure. Self-updates and jobs interrupted by a restart don't send a message |
 | **Update finished** | No | An update finishes successfully (self-updates and interrupted jobs don't send a message) |
 | **Check failing or recovered** | Yes | A check failed: it raised an error, Docker couldn't be reached, or every registry lookup failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
-| **Layout problems** | Yes | Not sent yet: it comes with the layout check in the next release (0.5). It is ticked by default so you will get it when it arrives |
+| **Layout problems** | Yes | A check finds layout problems that weren't there before (see [Layout check](#layout-check)). The first layout check ever (including the first after upgrading) only records what is already there, so you aren't flooded. Containers with `docker-manager.notify: "false"` are left out |
 | **User waiting for approval** | Yes | Someone signs in with Microsoft for the first time and is waiting for an Admin to approve them |
+
+Layout problems also count as something to report in the digest: they make it send even when "send when up to date" is off.
 
 The **Weekly digest** card on the Settings page holds the digest schedule and whether to send it when everything is up to date. If no channel has the digest ticked, nothing is sent and **Send digest now** is hidden.
 
@@ -333,7 +485,7 @@ Open **Settings** from the top of the dashboard. Most options can be changed the
 
 - **General** – server name, time zone and the dashboard's address.
 - **Sign-in** – Microsoft sign-in (tenant ID, client ID, client secret and the redirect URI to copy), roles from Microsoft groups, local sign-in, two-step sign-in for Admins and the default role. See [Accounts and sign-in](#accounts-and-sign-in).
-- **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, and the Mailcow folder.
+- **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, the Mailcow folder, [startup, random delay and heartbeat](#checking-settings), and the [layout check](#layout-check).
 - **Weekly digest** – the schedule, and whether to send it when everything is up to date. The digest goes to every notification channel that has it ticked.
 - **Notifications** – channels (Azure Communication Services, SMTP2GO or SMTP), the events each one carries, and a **Test** button for each. See [Notifications](#notifications).
 - **Registry logins** – logins for private images (see [Private images](#private-images)). Each one is checked against the registry before it is saved.
@@ -368,7 +520,7 @@ Settings can be environment variables in the compose file, and many can also be 
 | `AZURE_CLIENT_ID` | No | – | Yes | Application (client) ID. Optional: or set on the Settings page |
 | `AZURE_CLIENT_SECRET` | No | – | Yes | Client secret **Value** (keep in `.env`). Optional: or set on the Settings page |
 | `SESSION_SECRET` | No | – | – | No longer needed – ignored if set, so 0.1 `.env` files still work |
-| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-01-02-or-03) |
+| `ALLOWED_EMAILS` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: become pre-created Admins. See [Upgrading](#upgrading-from-an-earlier-version) |
 | `ALLOWED_GROUP_ID` | No | – | No | 0.1/0.2 only, **read once when upgrading** and ignored afterwards: becomes a group mapping to Admin |
 | `INITIAL_ADMIN_EMAIL` | No | – | No | Creates the first Admin without the setup token. Needs `INITIAL_ADMIN_PASSWORD_FILE` and `PUBLIC_URL` |
 | `INITIAL_ADMIN_PASSWORD_FILE` | No | – | No | Path to a file (4 KiB or smaller) with that Admin's password; they must change it at first sign-in |
@@ -425,7 +577,9 @@ This still works exactly as before, and the logins in the file keep working alon
 
 The login must be stored in `config.json` itself. If `docker login` says it used a credential helper (`credsStore`), the dashboard can't read it.
 
-## Upgrading from 0.1, 0.2 or 0.3
+## Upgrading from an earlier version
+
+**From 0.4:** nothing to change. Your settings and stored results carry over. The layout check is on by default and its first run is recorded without sending a message, but it will list anything you keep outside `/docker`; allow it or use the `layout.ignore` label if that is intended.
 
 Pull the new image and run `docker compose up -d`. **Keep your existing compose file and `.env` for the upgrade** – don't replace them with the new examples. You don't need to change either. If you do switch to the new example files, carry your `AZURE_*` values over (or enter them on the Settings page) and keep `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` in place until the first 0.3 start has run, because that is when they are read.
 

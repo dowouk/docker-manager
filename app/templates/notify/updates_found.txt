@@ -2,6 +2,6 @@
 {% block headline %}{{ headline }}{% endblock %}
 {% block body %}
 {% for u in updates %}
-- {{ u.name }}{% if u.image %} ({{ u.image }}){% endif %}: {{ u.change }}
+- {{ u.name }}{% if u.image %} ({{ u.image }}){% endif %}: {{ u.change }}{% if u.release_notes %} – release notes: {{ u.release_notes }}{% endif +%}
 {% endfor %}
 {% endblock %}

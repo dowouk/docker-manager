@@ -51,39 +51,84 @@
     });
   }
 
-  // Filter buttons and search over the container table. The filter is remembered per browser.
+  // Filter chips and search over the table rows and the attention cards. Chips are toggles:
+  // a row shows when it matches any pressed chip (none pressed = everything). The choice is
+  // remembered per browser under "dm-filters". Without JS the chips stay hidden and everything shows.
   function initFilter() {
     var tools = document.getElementById("table-tools");
     if (!tools) return;
-    var buttons = tools.querySelectorAll("button[data-filter]");
+    var chips = tools.querySelectorAll("button[data-chip]");
     var search = document.getElementById("container-search");
-    var rows = document.querySelectorAll("table.containers tbody tr[data-state]");
+    var items = document.querySelectorAll("[data-state][data-name]");
+    var groups = document.querySelectorAll("[data-group-header]");
+    var rows = document.querySelectorAll("table.containers tbody tr[data-name]");
     var empty = document.getElementById("no-matches");
-    var filter = storageGet("containerFilter") || "all";
+    var active = {};
+    var saved = null;
+    try { saved = JSON.parse(storageGet("dm-filters") || "null"); } catch (e) { saved = null; }
+    if (saved && typeof saved === "object") {
+      var names = Array.isArray(saved.chips) ? saved.chips : [];
+      for (var n = 0; n < names.length; n++) {
+        if (tools.querySelector('button[data-chip="' + String(names[n]).replace(/[^a-z-]/g, "") + '"]')) active[names[n]] = true;
+      }
+      if (typeof saved.q === "string") search.value = saved.q;
+    }
+    function matches(item, chip) {
+      if (chip === "skipped") return item.getAttribute("data-skipped") === "1";
+      if (chip === "layout") return parseInt(item.getAttribute("data-layout") || "0", 10) > 0;
+      return (item.getAttribute("data-state") || "").split(" ").indexOf(chip) !== -1;
+    }
+    function show(item, query, any) {
+      if (query) {
+        var hay = (item.getAttribute("data-name") || "") + " " + (item.getAttribute("data-image") || "") + " " +
+          (item.getAttribute("data-project") || "");
+        if (hay.indexOf(query) === -1) return false;
+      }
+      if (!any) return true;
+      for (var c in active) if (active[c] && matches(item, c)) return true;
+      return false;
+    }
     function apply() {
       var query = (search.value || "").trim().toLowerCase();
+      var any = false;
+      for (var key in active) if (active[key]) any = true;
       var shown = 0;
-      for (var i = 0; i < rows.length; i++) {
-        var row = rows[i];
-        var visible = (filter === "all" || row.getAttribute("data-state") === filter) &&
-          (!query || (row.getAttribute("data-search") || "").indexOf(query) !== -1);
-        row.hidden = !visible;
-        if (visible) shown++;
+      var projects = {};
+      for (var i = 0; i < items.length; i++) {
+        var ok = show(items[i], query, any);
+        items[i].hidden = !ok;
+        if (ok && items[i].tagName === "TR") { shown++; projects[items[i].getAttribute("data-project") || ""] = true; }
       }
-      for (var j = 0; j < buttons.length; j++) {
-        buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-filter") === filter ? "true" : "false");
+      for (var g = 0; g < groups.length; g++) {
+        groups[g].hidden = !projects[groups[g].getAttribute("data-project") || ""];
+      }
+      for (var j = 0; j < chips.length; j++) {
+        var chip = chips[j].getAttribute("data-chip");
+        chips[j].setAttribute("aria-pressed", active[chip] ? "true" : "false");
+        var count = 0;
+        for (var r = 0; r < rows.length; r++) if (matches(rows[r], chip)) count++;
+        var badge = chips[j].querySelector(".count");
+        if (badge) badge.textContent = String(count);
       }
       if (empty) empty.hidden = shown !== 0;
+      var chosen = [];
+      for (var k in active) if (active[k]) chosen.push(k);
+      storageSet("dm-filters", JSON.stringify({ chips: chosen, q: query }));
     }
-    for (var k = 0; k < buttons.length; k++) {
-      buttons[k].addEventListener("click", function () {
-        filter = this.getAttribute("data-filter");
-        storageSet("containerFilter", filter);
+    for (var m = 0; m < chips.length; m++) {
+      chips[m].addEventListener("click", function () {
+        var chip = this.getAttribute("data-chip");
+        active[chip] = !active[chip];
         apply();
       });
     }
-    if (!tools.querySelector('button[data-filter="' + filter + '"]')) filter = "all";
     search.addEventListener("input", apply);
+    search.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && search.value) {
+        search.value = "";
+        apply();
+      }
+    });
     tools.hidden = false;
     apply();
   }

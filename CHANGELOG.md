@@ -2,6 +2,15 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.0] - 18th October 2026
+
+- Watch Rules per Container – from Labels or the Dashboard
+- Skip or Snooze an Update
+- Release Notes Links
+- Dashboard Filters and Search
+- Random Start Delay, Check on Startup and Heartbeat Ping
+- Layout Check – Flags Anything Kept Outside /docker
+
 ## [0.4.0] - 18th October 2026
 
 - Notification Channels – Azure Communication Services, SMTP2GO and SMTP

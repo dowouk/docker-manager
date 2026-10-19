@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Layout{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Layout</h1>
+    <p class="lede">Everything a container keeps outside <span class="mono">{{ compose_root }}</span>. This page only reports – it never changes anything.</p>
+  </div>
+</section>
+{% if not enabled %}
+<p class="notice">The layout check is switched off. An Admin can turn it on under Checking in Settings.</p>
+{% elif not checked %}
+<p class="notice">No layout check has run yet – it runs with the next check.</p>
+{% elif not groups %}
+<p class="notice">Nothing stored outside {{ compose_root }}.</p>
+{% else %}
+{% for g in groups %}
+<section class="card" id="{{ g.anchor }}">
+  <h2>{% if g.project %}{{ g.project }}{% else %}Not started by compose{% endif %}</h2>
+  <ul class="plain">
+  {% for p in g.problems %}
+    <li>
+      <span class="pill {% if p.severity == 'problem' %}pill-major{% else %}pill-muted{% endif %}">{{ "Problem" if p.severity == "problem" else "Notice" }}</span>
+      <strong>{{ p.container }}</strong> – {{ p.detail }}
+      <div class="meta">{% for code, text in hint_parts(p.hint) %}{% if code %}<code>{{ text }}</code>{% else %}{{ text }}{% endif %}{% endfor %}</div>
+    </li>
+  {% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

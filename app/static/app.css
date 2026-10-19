@@ -331,3 +331,29 @@ dialog form[method="dialog"] { margin-top: 12px; }
 .details dd { margin: 0; color: var(--fg-strong); word-break: break-word; }
 .row-actions details { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 .row-actions summary { cursor: pointer; list-style: none; }
+
+/* ---- Skip and snooze ------------------------------------------------------------- */
+.skip-menu { display: flex; flex-direction: column; gap: 8px; }
+.skip-menu summary { cursor: pointer; list-style: none; }
+.skip-menu summary::-webkit-details-marker { display: none; }
+.skip-panel { display: flex; flex-direction: column; gap: 12px; padding: 12px; text-align: left;
+  background: var(--surface-2); border-radius: 10px; min-width: 220px; max-width: 100%; }
+.skip-panel form { margin: 0; display: block; }
+.skip-panel fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.skip-panel legend { padding: 0; margin-bottom: 4px; font-weight: 500; color: var(--fg-strong); }
+.skip-option { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.skip-reason .input { min-height: 40px; }
+.skipped-list td { vertical-align: top; }
+
+/* ---- Filter chips and release-notes links --------------------------------------- */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--link); font: inherit; font-size: 14px; cursor: pointer; }
+.chip:hover { color: var(--fg-strong); background: var(--surface-2); }
+.chip[aria-pressed="true"] { background: var(--surface-3); color: var(--fg-strong); font-weight: 500; border-color: var(--fg-strong); }
+.chip .count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.chip .count:empty { display: none; }
+.notes-link { display: inline-block; margin-top: 4px; font-size: 13px; }
+@media (max-width: 720px) {
+  .chips { width: 100%; }
+}

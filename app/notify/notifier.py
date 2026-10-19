@@ -5,6 +5,7 @@ failure is caught, recorded per channel (a fixed reason, never provider text) an
 channel name and exception type only.
 """
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import Callable
@@ -14,13 +15,17 @@ import httpx
 
 from app.checker import CheckResult, ContainerStatus, Status
 from app.config import Settings
+from app.digest import layout_lines, layout_summary, notifiable_layout
 from app.imageref import parse_image_ref
+from app.inventory import ContainerInfo
+from app.links import release_notes_url
 from app.notify import messages
 from app.notify.channels import Channel, ChannelStore
 from app.notify.messages import Rendered, UpdateItem
 from app.notify.providers import (
     LOGIN_REFUSED, NOT_PRIVATE, NO_ANSWER, PROVIDERS, REJECTED, UNREACHABLE, Message, NotifyError,
 )
+from app.skips import SkipStore, visible_result
 from app.store import Store
 
 log = logging.getLogger(__name__)
@@ -42,7 +47,8 @@ def check_failed(result: CheckResult | None) -> bool:
     """Every checkable container ended in an error (one image's error is not a failed check)."""
     if result is None:
         return True
-    checkable = [cs for cs in result.containers if cs.status != Status.NOT_CHECKABLE]
+    checkable = [cs for cs in result.containers
+                 if cs.status not in (Status.NOT_CHECKABLE, Status.NOT_WATCHED)]
     return bool(checkable) and all(cs.status == Status.ERROR for cs in checkable)
 
 
@@ -50,12 +56,14 @@ def _tag(cs: ContainerStatus) -> str:
     return parse_image_ref(cs.container.image_ref).tag or "latest"
 
 
-def _update_items(result: CheckResult) -> dict[str, tuple[str, UpdateItem]]:
+def _update_items(result: CheckResult, notes_for: Callable[[ContainerInfo], str | None] | None = None
+                  ) -> dict[str, tuple[str, UpdateItem]]:
     """key -> (signature, item) for every actionable update in the result."""
     items: dict[str, tuple[str, UpdateItem]] = {}
+    notes = None
 
     def add(key: str, signature: str, name: str, image: str, change: str) -> None:
-        items[key] = (signature, UpdateItem(key, name, image, change))
+        items[key] = (signature, UpdateItem(key, name, image, change, notes))
 
     mc = result.mailcow
     if mc and not mc.error and mc.update_available:
@@ -63,7 +71,10 @@ def _update_items(result: CheckResult) -> dict[str, tuple[str, UpdateItem]]:
         add("mailcow", latest, "Mailcow", "",
             f"{mc.current_version or 'unknown'} → {latest or 'unknown'}")
     for cs in result.containers:
+        if not cs.notify:
+            continue  # the container's `notify` rule keeps it out of "Updates found"
         name, image = cs.container.name, cs.container.image_ref
+        notes = notes_for(cs.container) if notes_for else None
         if cs.status in _BUILD:
             add(f"{name}:build", cs.remote_digest or "", name, image, "Newer build available")
         if cs.minor_update:
@@ -84,7 +95,9 @@ class Notifier:
                  settings_getter: Callable[[], Settings], http: httpx.AsyncClient,
                  providers=PROVIDERS,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 background: set | None = None, kind_labels: dict[str, str] | None = None):
+                 background: set | None = None, kind_labels: dict[str, str] | None = None,
+                 skips_getter: Callable[[], SkipStore | None] | None = None,
+                 rules_snapshot: Callable[[], Callable[[ContainerInfo], object]] | None = None):
         self._store = store
         self._channels = channels
         self._settings = settings_getter
@@ -93,6 +106,23 @@ class Notifier:
         self._clock = clock
         self._background = background if background is not None else set()
         self._kind_labels = kind_labels or {}
+        self._skips = skips_getter
+        self._rules_snapshot = rules_snapshot
+
+    def _visible(self, result: CheckResult) -> tuple[CheckResult, int]:
+        """The result with skipped and snoozed updates cleared, and how many that hid."""
+        skips = self._skips() if self._skips else None
+        if skips is None:
+            return result, 0
+        shown, hidden = visible_result(result, skips)
+        # A container left out of the digest by its `notify` rule doesn't count as skipped.
+        return shown, sum(1 for cs, _skip in hidden if cs is None or cs.notify)
+
+    def _notes_for(self) -> Callable[[ContainerInfo], str | None] | None:
+        if self._rules_snapshot is None:
+            return None
+        rules_for = self._rules_snapshot()
+        return lambda info: release_notes_url(info, rules_for(info))
 
     # -- sending ---------------------------------------------------------------------------
     async def _deliver(self, channel: Channel, event: str, rendered: Rendered) -> str | None:
@@ -183,7 +213,11 @@ class Notifier:
         if not self._channels.subscribed("digest"):
             return DIGEST_NO_CHANNEL
         try:
-            rendered = messages.digest_message(result, self._settings())
+            shown, skipped = self._visible(result)
+            settings = self._settings()
+            if not settings.layout_check:
+                shown = dataclasses.replace(shown, layout=None)  # switched off: nothing to report
+            rendered = messages.digest_message(shown, settings, skipped, self._notes_for())
         except Exception as exc:  # noqa: BLE001
             log.warning("Digest could not be rendered (%s)", type(exc).__name__)
             return DIGEST_FAILED
@@ -201,6 +235,7 @@ class Notifier:
             self._check_failed(failed)
             if not failed:
                 self._updates(result)
+            self._layout(result)
         except Exception as exc:  # noqa: BLE001 – never break the check
             log.warning("Post-check notifications failed (%s)", type(exc).__name__)
 
@@ -222,7 +257,8 @@ class Notifier:
             self._fire_message("check_failing", messages.check_recovered_message)
 
     def _updates(self, result: CheckResult) -> None:
-        items = _update_items(result)
+        shown, _ = self._visible(result)
+        items = _update_items(shown, self._notes_for())
         try:
             previous = json.loads(self._store.get_meta("notified_updates") or "{}")
             if not isinstance(previous, dict):
@@ -254,3 +290,23 @@ class Notifier:
 
     def user_pending(self, name: str, upn: str) -> None:
         self._fire_message("user_pending", lambda s: messages.user_pending_message(name, upn, s))
+
+    def _layout(self, result: CheckResult) -> None:
+        """Notify about layout problems not seen before. The first run with a list is only a
+        baseline; `None` means no layout check ran, so nothing is read or written."""
+        if result.layout is None:
+            return
+        problems = notifiable_layout(result)
+        try:
+            raw = json.loads(self._store.get_meta("notified_layout") or "null")
+        except ValueError:
+            raw = None
+        previous = set(raw) if isinstance(raw, list) else None
+        self._store.set_meta("notified_layout", json.dumps(sorted(p.key for p in problems)))
+        if previous is None:
+            return
+        new = [p for p in problems if p.key not in previous]
+        if new and self._channels.subscribed("layout_problems"):
+            lines, summary = layout_lines(new), layout_summary(new)
+            self._fire_message("layout_problems",
+                               lambda s: messages.layout_message(lines, s, summary))

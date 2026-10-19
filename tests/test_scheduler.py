@@ -5,7 +5,12 @@ from zoneinfo import ZoneInfo
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+import httpx
+import pytest
+import respx
+
 from app import scheduler as sched_mod
+from app.config import Settings
 from app.scheduler import build_scheduler
 
 LONDON = ZoneInfo("Europe/London")
@@ -14,6 +19,8 @@ LONDON = ZoneInfo("Europe/London")
 def fake_app(digest=False):
     app = MagicMock()
     app.state.channels.subscribed.side_effect = lambda event: [object()] if digest else []
+    app.state.settings = Settings(_env_file=None)
+    app.state.http = AsyncMock()
     return app
 
 
@@ -176,3 +183,177 @@ async def test_reschedule_digest_trigger_carries_new_schedule_and_tz(settings):
     fields = {f.name: str(f) for f in trigger.fields}
     assert (fields["minute"], fields["hour"], fields["day_of_week"]) == ("30", "9", "fri")
     sch.shutdown(wait=False)
+
+
+async def test_first_check_is_now_with_check_on_startup(settings):
+    sch = build_scheduler(fake_app(), settings.model_copy(update={"check_on_startup": True}))
+    sch.start(paused=True)
+    job_time = sch.get_job("check").next_run_time
+    assert abs((job_time - datetime.now(job_time.tzinfo)).total_seconds()) < 5
+
+
+async def test_first_check_one_interval_away_without_check_on_startup(settings):
+    s = settings.model_copy(update={"check_on_startup": False, "check_interval_hours": 6})
+    sch = build_scheduler(fake_app(), s)
+    sch.start(paused=True)
+    when = sch.get_job("check").next_run_time
+    delta = (when - datetime.now(when.tzinfo)).total_seconds()
+    assert 6 * 3600 - 5 < delta <= 6 * 3600
+
+
+async def test_random_delay_sleeps_in_range_before_check(monkeypatch):
+    order = []
+    sleeps = []
+
+    async def fake_sleep(n):
+        sleeps.append(n)
+        order.append("sleep")
+
+    async def fake_check(app):
+        order.append("check")
+        return object()
+
+    monkeypatch.setattr(sched_mod, "_sleep", fake_sleep)
+    monkeypatch.setattr(sched_mod, "_uniform", lambda a, b: b / 2)
+    monkeypatch.setattr(sched_mod, "run_check", fake_check)
+    monkeypatch.setattr(sched_mod, "check_failed", lambda r: False)
+    app = fake_app()
+    app.state.settings = Settings(_env_file=None).model_copy(update={"random_delay_minutes": 10})
+    await sched_mod.scheduled_check(app)
+    assert sleeps == [300] and order == ["sleep", "check"]
+
+
+async def test_no_sleep_without_delay(monkeypatch):
+    sleep = AsyncMock()
+    monkeypatch.setattr(sched_mod, "_sleep", sleep)
+    monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+    monkeypatch.setattr(sched_mod, "check_failed", lambda r: False)
+    await sched_mod.scheduled_check(fake_app())
+    sleep.assert_not_awaited()
+
+
+@respx.mock
+async def test_heartbeat_success_and_fail_urls():
+    ok = respx.get("https://hc.example/ping/abc").mock(return_value=httpx.Response(200))
+    bad = respx.get("https://hc.example/ping/abc/fail").mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient() as http:
+        await sched_mod.heartbeat(http, "https://hc.example/ping/abc", False)
+        await sched_mod.heartbeat(http, "https://hc.example/ping/abc/", True)
+        await sched_mod.heartbeat(http, None, False)
+    assert ok.call_count == 1 and bad.call_count == 1
+
+
+@respx.mock
+async def test_heartbeat_swallows_timeout_and_logs_type_only(caplog):
+    respx.get("https://hc.example/p").mock(side_effect=httpx.ReadTimeout("secret-token-xyz"))
+    async with httpx.AsyncClient() as http:
+        await sched_mod.heartbeat(http, "https://hc.example/p", False)
+    assert "Heartbeat failed (ReadTimeout)" in caplog.text
+    assert "secret-token-xyz" not in caplog.text
+
+
+async def test_heartbeat_uses_ten_second_timeout():
+    http = AsyncMock()
+    await sched_mod.heartbeat(http, "https://hc.example/p", False)
+    assert http.get.await_args.kwargs["timeout"] == 10
+    assert http.get.await_args.kwargs["follow_redirects"] is False
+
+
+async def _heartbeat_after(monkeypatch, run, failed_rule=None):
+    beat = AsyncMock()
+    monkeypatch.setattr(sched_mod, "heartbeat", beat)
+    monkeypatch.setattr(sched_mod, "run_check", run)
+    app = fake_app()
+    app.state.settings = Settings(_env_file=None).model_copy(update={"heartbeat_url": "https://hc.example/p"})
+    if failed_rule is not None:
+        monkeypatch.setattr(sched_mod, "check_failed", failed_rule)
+    await sched_mod.scheduled_check(app)
+    return beat, app
+
+
+async def test_scheduled_check_pings_success(monkeypatch):
+    beat, app = await _heartbeat_after(monkeypatch, AsyncMock(return_value=object()), lambda r: False)
+    beat.assert_awaited_once_with(app.state.http, "https://hc.example/p", False)
+
+
+async def test_scheduled_check_pings_fail_on_failed_result(monkeypatch):
+    beat, app = await _heartbeat_after(monkeypatch, AsyncMock(return_value=object()), lambda r: True)
+    beat.assert_awaited_once_with(app.state.http, "https://hc.example/p", True)
+
+
+async def test_scheduled_check_pings_fail_when_check_raises(monkeypatch):
+    beat, app = await _heartbeat_after(monkeypatch, AsyncMock(side_effect=RuntimeError("x")))
+    beat.assert_awaited_once_with(app.state.http, "https://hc.example/p", True)
+
+
+async def test_scheduled_check_survives_heartbeat_errors(monkeypatch):
+    monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+    monkeypatch.setattr(sched_mod, "check_failed", lambda r: False)
+    app = fake_app()
+    app.state.settings = Settings(_env_file=None).model_copy(update={"heartbeat_url": "https://hc.example/p"})
+    app.state.http.get = AsyncMock(side_effect=httpx.ConnectError("nope"))
+    await sched_mod.scheduled_check(app)  # must not raise
+
+
+async def test_run_check_alone_sends_no_heartbeat(monkeypatch):
+    # Check now calls run_check directly: no heartbeat request may be made.
+    import asyncio
+    from app import main
+
+    monkeypatch.setattr(main, "remove_finished_helpers", lambda docker: None)
+    monkeypatch.setattr(main, "list_containers", lambda docker, self_id: [])
+    monkeypatch.setattr(main, "detect_self_id", lambda: None)
+    monkeypatch.setattr(main, "check_all", AsyncMock(return_value=MagicMock()))
+    app = fake_app()
+    app.state.settings = Settings(_env_file=None).model_copy(
+        update={"heartbeat_url": "https://hc.example/p"})
+    app.state.check_lock = asyncio.Lock()
+    await main.run_check(app)
+    app.state.http.get.assert_not_awaited()
+
+
+@respx.mock
+@pytest.mark.parametrize("url,expected", [
+    ("https://hc.example/ping/abc?status=up&msg=OK", "https://hc.example/ping/abc/fail?status=up&msg=OK"),
+    ("https://hc.example/ping/abc/", "https://hc.example/ping/abc/fail"),
+    ("https://hc.example/ping/abc/?status=up", "https://hc.example/ping/abc/fail?status=up"),
+    ("https://hc.example/ping/abc#frag", "https://hc.example/ping/abc/fail"),
+    ("https://hc.example", "https://hc.example/fail"),
+])
+async def test_fail_url_goes_on_the_path_not_after_the_query(url, expected):
+    route = respx.get(expected).mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient() as http:
+        await sched_mod.heartbeat(http, url, True)
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_heartbeat_does_not_follow_redirects():
+    respx.get("https://hc.example/p").mock(
+        return_value=httpx.Response(302, headers={"location": "https://elsewhere.example/"}))
+    other = respx.get("https://elsewhere.example/").mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient(follow_redirects=True) as http:
+        await sched_mod.heartbeat(http, "https://hc.example/p", False)
+    assert other.call_count == 0
+
+
+async def test_heartbeat_url_never_reaches_the_logs(monkeypatch, caplog):
+    import logging
+    from app.main import configure_logging
+    saved = {n: logging.getLogger(n).level for n in ("httpx", "httpcore")}
+    try:
+        configure_logging()
+        monkeypatch.setattr(sched_mod, "run_check", AsyncMock(return_value=object()))
+        monkeypatch.setattr(sched_mod, "check_failed", lambda r: False)
+        app = fake_app()
+        app.state.settings = Settings(_env_file=None).model_copy(
+            update={"heartbeat_url": "https://hc-ping.example/TOKEN-123"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda r: httpx.Response(200))) as http:
+            app.state.http = http
+            caplog.set_level(logging.INFO)
+            await sched_mod.scheduled_check(app)
+        assert "TOKEN-123" not in caplog.text
+    finally:
+        for n, level in saved.items():
+            logging.getLogger(n).setLevel(level)

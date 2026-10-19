@@ -68,6 +68,44 @@
 {% endif %}
 {% endmacro %}
 
+{# Filter data for a row or card; JS filters on these, so the page works unchanged without it. #}
+{% macro filter_attrs(name, image, project, state, skipped, layout) -%}
+data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{ project | lower }}" data-state="{{ state }}" data-skipped="{{ 1 if skipped else 0 }}" data-layout="{{ layout }}"
+{%- endmacro %}
+
+{% macro release_notes_link(cs) %}
+{% if notes_by_id.get(cs.container.id) and row_state(cs) == "update" %}<a class="notes-link" href="{{ notes_by_id[cs.container.id] }}" target="_blank" rel="noopener noreferrer">Release notes</a>{% endif %}
+{% endmacro %}
+
+{% macro skip_badge(skip) %}{% if skip.until %}Snoozed until {{ skip.until | uk_date }}{% else %}Skipped{% endif %}{% endmacro %}
+
+{# "Skip…" disclosure: one small form per update on offer. Operator and above. #}
+{% macro skip_menu(items) %}
+{% if items and can(user, Role.OPERATOR) %}
+<details class="skip-menu">
+  <summary class="button button-quiet button-small">Skip…</summary>
+  <div class="skip-panel">
+    {% for item in items %}
+    <form method="post" action="/containers/{{ item.container_id or 'mailcow' }}/skip">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="kind" value="{{ item.kind }}">
+      <input type="hidden" name="value" value="{{ item.value }}">
+      <fieldset>
+        <legend>{{ skip_kind_labels[item.kind] }}{% if item.kind != "build" %} <span class="mono">{{ item.value }}</span>{% endif %}</legend>
+        <label class="skip-option"><input type="radio" name="mode" value="skip" checked> Skip this version</label>
+        <label class="skip-option"><input type="radio" name="mode" value="snooze7"> Snooze 1 week</label>
+        <label class="skip-option"><input type="radio" name="mode" value="snooze30"> Snooze 1 month</label>
+        <label class="skip-reason"><span class="visually-hidden">Reason (optional)</span>
+          <input class="input" type="text" name="reason" maxlength="200" placeholder="Reason (optional)" autocomplete="off"></label>
+        <button type="submit" class="button button-quiet button-small">Hide it</button>
+      </fieldset>
+    </form>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endmacro %}
+
 {% macro status_badge(state, label) %}
 <span class="badge badge-{{ state }}"><span class="dot dot-{{ state }}" aria-hidden="true"></span>{{ label }}</span>
 {% endmacro %}
@@ -92,11 +130,11 @@
     <div class="stat stat-health">
       <div class="stat-head"><span class="stat-label">Fleet health</span><span class="mono stat-label">{{ overview.total }} total</span></div>
       <div class="stat-figure"><span class="stat-number">{{ overview.percent_current }}%</span><span class="stat-unit">fully current</span></div>
-      <div class="health-bar" role="img" aria-label="{{ overview.current }} up to date, {{ overview.updates }} with updates, {{ overview.errors }} with errors{% if overview.unchecked %}, {{ overview.unchecked }} not checked{% endif %}">
+      <div class="health-bar" role="img" aria-label="{{ overview.current }} up to date, {{ overview.updates }} with updates, {{ overview.errors }} with errors{% if overview.unchecked + overview.not_watched %}, {{ overview.unchecked + overview.not_watched }} not checked{% endif %}">
         {% if overview.current %}<span class="seg seg-current" style="flex: {{ overview.current }}"></span>{% endif %}
         {% if overview.updates %}<span class="seg seg-update" style="flex: {{ overview.updates }}"></span>{% endif %}
         {% if overview.errors %}<span class="seg seg-error" style="flex: {{ overview.errors }}"></span>{% endif %}
-        {% if overview.unchecked %}<span class="seg seg-empty" style="flex: {{ overview.unchecked }}"></span>{% endif %}
+        {% if overview.unchecked + overview.not_watched %}<span class="seg seg-empty" style="flex: {{ overview.unchecked + overview.not_watched }}"></span>{% endif %}
         {% if not overview.total %}<span class="seg seg-empty" style="flex: 1"></span>{% endif %}
       </div>
     </div>
@@ -121,7 +159,7 @@
   <h2 id="attention-heading">Needs attention</h2>
   <div class="attention">
     {% for card in attention %}
-    <article class="card attention-card">
+    <article class="card attention-card" {% if card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
       <div class="card-head">
         <span class="pill pill-{{ card.state }}">{{ card.badge }}</span>
         <span class="mono card-tag">{{ card.tag }}</span>
@@ -129,9 +167,10 @@
       <div>
         <h3 class="card-title">{{ card.name }}</h3>
         <p class="card-text">{{ card.text }}</p>
+        {% if card.cs %}{{ release_notes_link(card.cs) }}{% endif %}
       </div>
       <div class="card-actions">
-        {% if card.cs %}{{ actions(card.cs) }}{% elif card.state == "update" %}{{ mailcow_action() }}{% endif %}
+        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs)) }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result)) }}{% endif %}
       </div>
     </article>
     {% endfor %}
@@ -144,16 +183,19 @@
   <div class="block-head">
     <h2 id="all-heading">All containers</h2>
     <div class="table-tools" id="table-tools" hidden>
-      <div class="segmented" role="group" aria-label="Filter">
-        <button type="button" data-filter="all" aria-pressed="true">All <span class="count">{{ overview.total }}</span></button>
-        <button type="button" data-filter="update" aria-pressed="false">Updates <span class="count">{{ overview.updates }}</span></button>
-        <button type="button" data-filter="error" aria-pressed="false">Errors <span class="count">{{ overview.errors }}</span></button>
-        <button type="button" data-filter="current" aria-pressed="false">Current <span class="count">{{ overview.current }}</span></button>
+      <div class="chips" role="group" aria-label="Filter containers">
+        <button type="button" class="chip" data-chip="needs-update" aria-pressed="false">Needs update <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="major" aria-pressed="false">Major only <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="error" aria-pressed="false">Errors <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="stopped" aria-pressed="false">Stopped <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="not-checkable" aria-pressed="false">Not checkable <span class="count"></span></button>
+        <button type="button" class="chip" data-chip="skipped" aria-pressed="false">Skipped <span class="count"></span></button>
+        {% if has_layout %}<button type="button" class="chip" data-chip="layout" aria-pressed="false">Layout problems <span class="count"></span></button>{% endif %}
       </div>
       <label class="search">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <span class="visually-hidden">Search containers</span>
-        <input type="search" id="container-search" placeholder="Search containers" autocomplete="off">
+        <input type="search" id="container-search" placeholder="Search name, image or project" autocomplete="off">
       </label>
     </div>
   </div>
@@ -166,7 +208,7 @@
       <tbody>
         {% if result and result.mailcow %}
         {% set mc = result.mailcow %}{% set mstate = mailcow_state(mc) %}
-        <tr data-state="{{ mstate }}" data-search="mailcow">
+        <tr {{ filter_attrs("mailcow", "", "", {"update": "needs-update", "current": "up-to-date", "error": "error"}[mstate], "mailcow" in hidden_by_id, 0) }}>
           <td data-label="Container">
             <div class="who"><span class="tile mono" aria-hidden="true">mc</span><div><div class="who-name">Mailcow</div><div class="meta">Installed {{ mc.current_version or "unknown" }}</div></div></div>
           </td>
@@ -175,48 +217,86 @@
           <td data-label="Status">
             {% if mc.error %}{{ status_badge("error", "Error") }}<div class="meta">{{ mc.error }}</div>
             {% elif mc.update_available %}{{ status_badge("update", "Update available") }}
+            {% elif hidden_by_id.get("mailcow") %}{{ status_badge("muted", skip_badge(hidden_by_id["mailcow"])) }}
             {% elif mc.update_available is sameas false %}{{ status_badge("current", "Up to date") }}
             {% else %}{{ status_badge("muted", "Unknown") }}{% endif %}
           </td>
-          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.ADMIN)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}{{ mailcow_action("button-small") }}{% else %}<span class="faint">–</span>{% endif %}</td>
+          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.OPERATOR)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}<div class="row-actions">{{ mailcow_action("button-small") }}{{ skip_menu(mailcow_skip_items(result)) }}</div>{% elif mc.update_available and can(user, Role.OPERATOR) %}<div class="row-actions">{{ skip_menu(mailcow_skip_items(result)) }}</div>{% else %}<span class="faint">–</span>{% endif %}</td>
         </tr>
         {% endif %}
         {% for cs in rows %}
         {% set c = cs.container %}{% set state = row_state(cs) %}
-        <tr data-state="{{ state }}" data-search="{{ (c.name ~ ' ' ~ c.image_ref ~ ' ' ~ (c.project or '')) | lower }}">
+        <tr {{ filter_attrs(c.name, c.image_ref, c.project or "", filter_state(cs), c.id in hidden_by_id, layout_problems(result, cs)) }}>
           <td data-label="Container">
             <div class="who">
               <span class="tile mono" aria-hidden="true">{{ initials(c.service or c.name) }}</span>
               <div>
                 <div class="who-name">{{ c.name }}{% if c.is_self %} <span class="tag">This dashboard</span>{% endif %}{% if c.state != "running" %} <span class="meta">({{ c.state }})</span>{% endif %}</div>
                 <div class="meta">{% if c.project %}stack · {{ c.project }}{% else %}no stack{% endif %}{% if c.service and c.service != c.project %} · {{ c.service }}{% endif %}</div>
+                {% if can(user, Role.OPERATOR) %}<div class="meta"><a href="/containers/{{ container_key(c) | urlencode }}/rules">Watch settings</a></div>{% endif %}
+                {% if cs.rule_warnings %}<div class="meta" role="note">{{ cs.rule_warnings | join(" ") }}</div>{% endif %}
+                {% set n_layout = layout_problems(result, cs) %}{% if n_layout %}{% set n_mounts = layout_mounts(result, cs) %}<div class="meta"><a class="pill pill-major" href="/layout#{{ layout_anchor(c.project) }}">{% if n_mounts %}{{ n_mounts }} {{ "mount" if n_mounts == 1 else "mounts" }} outside {{ compose_root }}{% else %}Layout: {{ n_layout }} to review{% endif %}</a></div>{% endif %}
               </div>
             </div>
           </td>
           <td data-label="Image">
             <span class="mono image">{{ c.image_ref }}</span>
+            {{ release_notes_link(cs) }}
             {% if cs.minor_update %}<div class="meta">Newer version <span class="mono">{{ cs.minor_update }}</span></div>{% endif %}
             {% if cs.major_update %}<div class="meta">Major <span class="mono">{{ cs.major_update }}</span> <span class="pill pill-major">Major version – may need a data migration. Update by hand.</span></div>{% endif %}
           </td>
           <td data-label="Digest"><span class="mono meta">{{ short_digest(cs) }}</span></td>
           <td data-label="Status">
-            {{ status_badge("muted" if state == "unchecked" else state, STATUS_LABELS[cs.status]) }}
+            {% if c.id in hidden_by_id and state == "current" %}{{ status_badge("muted", skip_badge(hidden_by_id[c.id])) }}
+            {% else %}{{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}{% endif %}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
-          {% set has_action = (not cs.updatable and state != "unchecked") or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update)) %}
+          {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}
           <td data-label="Action" class="col-action{% if not has_action %} no-action{% endif %}">
-            {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}</div>{% else %}<span class="faint">–</span>{% endif %}
+            {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}{{ skip_menu(skip_items(cs)) }}</div>{% else %}<span class="faint">–</span>{% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    <p class="empty-filter" id="no-matches" hidden>Nothing matches this filter.</p>
+    <p class="empty-filter" id="no-matches" hidden>No containers match.</p>
   </div>
   <p class="footnote">Sorted by urgency. Digests show the first 12 characters.</p>
 </section>
 {% elif result %}
 <p class="empty">No containers found.</p>
+{% endif %}
+
+{% if skipped %}
+<section class="block" id="skipped" aria-labelledby="skipped-heading">
+  <h2 id="skipped-heading">Skipped <span class="count">{{ skipped | length }}</span></h2>
+  <div class="table-wrap">
+    <table class="data skipped-list">
+      <thead>
+        <tr><th scope="col">Container</th><th scope="col">What</th><th scope="col">By</th><th scope="col">Until</th><th scope="col">Reason</th>{% if can(user, Role.OPERATOR) %}<th scope="col" class="col-action">Action</th>{% endif %}</tr>
+      </thead>
+      <tbody>
+        {% for s in skipped %}
+        <tr>
+          <td data-label="Container"><span class="who-name">{{ s.key }}</span></td>
+          <td data-label="What">{{ skip_kind_labels[s.kind] }}{% if s.value %} <span class="mono">{{ s.value | truncate(19, True, "") if s.kind == "build" else s.value }}</span>{% endif %}</td>
+          <td data-label="By">{{ s.user }}<div class="meta">{{ s.created_at | uk_date }}</div></td>
+          <td data-label="Until">{% if s.until %}Snoozed until {{ s.until | uk_date }}{% else %}A newer version shows again{% endif %}</td>
+          <td data-label="Reason">{{ s.reason or "–" }}</td>
+          {% if can(user, Role.OPERATOR) %}
+          <td data-label="Action" class="col-action">
+            <form method="post" action="/skips/{{ s.id }}/remove">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="button button-quiet button-small">Remove</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endif %}
 
 <dialog id="preview-dialog">

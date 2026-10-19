@@ -1,5 +1,5 @@
 import json
-from datetime import timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -264,3 +264,37 @@ async def test_round_trip(tmp_path, settings):
     assert restored.checked_at.utcoffset() == timezone.utc.utcoffset(None)
     assert isinstance(restored.containers[0], ContainerStatus)
     assert restored.containers[0].status is Status.NEWER_BUILD
+
+
+def test_from_dict_loads_04_shaped_result():
+    data = {
+        "checked_at": "2026-10-01T00:00:00+00:00",
+        "containers": [{
+            "container": {
+                "id": "a", "name": "n", "image_ref": "i", "image_id": "x",
+                "running_repo_digests": [], "local_tag_image_id": None, "project": None,
+                "working_dir": None, "config_files": [], "service": None, "state": "running",
+                "is_self": False, "local_tag_repo_digests": [], "env_files": [],
+            },
+            "status": "up_to_date",
+        }],
+        "mailcow": None,
+    }
+    r = CheckResult.from_dict(data)
+    c = r.containers[0].container
+    assert c.labels == {} and c.mounts == [] and c.image_source is None
+
+
+def test_mounts_round_trip():
+    from app.inventory import Mount
+    ci = ContainerInfo(
+        id="a", name="n", image_ref="i", image_id="x", running_repo_digests=[],
+        local_tag_image_id=None, project=None, working_dir=None, config_files=[],
+        service=None, state="running", is_self=False,
+        labels={"docker-manager.enable": "false"},
+        mounts=[Mount("bind", "/s", "/d", True, None)], image_source="https://github.com/o/r",
+    )
+    r = CheckResult(datetime(2026, 1, 1, tzinfo=timezone.utc), [ContainerStatus(ci, Status.UP_TO_DATE)])
+    restored = CheckResult.from_dict(json.loads(json.dumps(r.to_dict())))
+    assert restored == r
+    assert isinstance(restored.containers[0].container.mounts[0], Mount)

@@ -6,7 +6,7 @@ from app.main import create_app
 from app.roles import Role
 from app.store import Store
 from notify_fakes import FakeProvider, providers_for
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client
+from auth_helpers import CHECKING_FORM, CSRF, assert_all_routes_guarded, logged_in_client
 
 SECRET_STRING = "endpoint=https://x;accesskey=TOPSECRET"
 GOOD_DIGEST = {"csrf_token": CSRF, "digest_schedule": "0 8 * * MON"}
@@ -54,8 +54,7 @@ def test_save_requires_csrf(client):
 
 def test_save_applies_and_redirects(client, app):
     r = client.post("/settings/checking", data={
-        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300",
-        "mailcow_dir": "/opt/mailcow-dockerized"})
+        "csrf_token": CSRF, **CHECKING_FORM, "check_interval_hours": "3"})
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?msg=saved#checking"
     assert app.state.settings.check_interval_hours == 3
@@ -184,8 +183,7 @@ def test_registry_bad_host(client):
 
 def test_history_changes_view(client):
     client.post("/settings/checking", data={
-        "csrf_token": CSRF, "check_interval_hours": "3", "health_timeout_seconds": "300",
-        "mailcow_dir": "/opt/mailcow-dockerized"})
+        "csrf_token": CSRF, **CHECKING_FORM, "check_interval_hours": "3"})
     page = client.get("/history?view=changes").text
     assert "Checking: Check every (hours) 6 → 3" in page
     assert "test@example.com" in page
@@ -285,3 +283,13 @@ def test_admin_legacy_option_only_while_current(client, app):
     apply_settings(app)
     text = client.get("/settings").text
     assert '<option value="admin_legacy" selected>Admin (as in 0.1)</option>' in text
+
+
+def test_new_checking_options_show_ticked_when_never_saved(client):
+    import re
+    html = client.get("/settings").text
+    for name in ("check_on_startup", "layout_check"):
+        tag = re.search(rf'<input[^>]*id="f-{name}"[^>]*>', html).group(0)
+        assert " checked" in tag
+    for name in ("named_volumes_allowed",):
+        assert " checked" not in re.search(rf'<input[^>]*id="f-{name}"[^>]*>', html).group(0)

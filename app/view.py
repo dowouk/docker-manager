@@ -8,6 +8,7 @@ and the "Needs attention" cards, so the numbers on the page always agree:
 - "current"   – up to date
 - "unchecked" – can't be checked: a local image, or one pinned by digest. Neutral:
                 not a problem, and left out of the fleet-health percentage.
+- "not_watched" – switched off by a watch rule. Neutral, like "unchecked".
 """
 import re
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.imageref import parse_image_ref
 
 BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
-_ORDER = {"update": 0, "error": 1, "current": 2, "unchecked": 3}
+_ORDER = {"update": 0, "error": 1, "current": 2, "unchecked": 3, "not_watched": 4}
 
 
 def has_update(cs: ContainerStatus) -> bool:
@@ -25,6 +26,8 @@ def has_update(cs: ContainerStatus) -> bool:
 
 
 def row_state(cs: ContainerStatus) -> str:
+    if cs.status == Status.NOT_WATCHED:
+        return "not_watched"
     if cs.status == Status.NOT_CHECKABLE:
         return "unchecked"
     if cs.status == Status.ERROR:
@@ -32,6 +35,63 @@ def row_state(cs: ContainerStatus) -> str:
     if has_update(cs):
         return "update"
     return "current"
+
+
+def filter_state(cs: ContainerStatus) -> str:
+    """Space-separated tokens the dashboard filters match on (`data-state`)."""
+    state = row_state(cs)
+    tokens = {"update": ["needs-update"], "error": ["error"], "current": ["up-to-date"],
+              "unchecked": ["not-checkable"], "not_watched": ["not-watched"]}[state]
+    if cs.major_update:
+        tokens = tokens + ["major"]
+    if cs.container.state != "running":
+        tokens = tokens + ["stopped"]
+    return " ".join(tokens)
+
+
+def has_layout_data(result: CheckResult | None) -> bool:
+    """Whether the check result carries file-layout findings (the Layout chip needs them)."""
+    return bool(result is not None and getattr(result, "layout", None))
+
+
+def layout_problems(result: CheckResult | None, cs: ContainerStatus) -> int:
+    """How many layout findings one container has (0 when there are none or no layout data)."""
+    if result is None:
+        return 0
+    return sum(1 for p in getattr(result, "layout", None) or [] if p.container == cs.container.name)
+
+
+def layout_mounts(result: CheckResult | None, cs: ContainerStatus) -> int:
+    """How many of them are mounts outside the compose root."""
+    if result is None:
+        return 0
+    return sum(1 for p in getattr(result, "layout", None) or []
+               if p.container == cs.container.name and p.kind in ("bind_outside", "named_volume"))
+
+
+def layout_anchor(project: str | None) -> str:
+    """A safe fragment id for a project's section on the Layout page."""
+    if not project:
+        return "~no-project"  # "~" can't come out of a slug, so no project can collide with it
+    slug = re.sub(r"[^a-z0-9_-]+", "-", (project or "").lower()).strip("-")
+    return slug or "~unnamed"
+
+
+def hint_parts(hint: str) -> list[tuple[bool, str]]:
+    """Split a hint on backticks into (is_code, text) pieces; the template escapes each one."""
+    return [(i % 2 == 1, part) for i, part in enumerate(hint.split("`")) if part]
+
+
+def layout_groups(problems) -> list[dict]:
+    """Problems grouped by project (containers without one last), problems before notices."""
+    groups: dict[str, dict] = {}
+    for p in problems:
+        g = groups.setdefault(p.project or "", {
+            "project": p.project, "anchor": layout_anchor(p.project), "problems": []})
+        g["problems"].append(p)
+    for g in groups.values():
+        g["problems"].sort(key=lambda p: (p.severity != "problem", p.container, p.key))
+    return sorted(groups.values(), key=lambda g: (g["project"] is None, (g["project"] or "").lower()))
 
 
 def mailcow_state(mc: MailcowStatus) -> str:
@@ -56,6 +116,7 @@ class Overview:
     majors: int
     errors: int
     unchecked: int
+    not_watched: int = 0
 
     @property
     def attention(self) -> int:
@@ -63,7 +124,7 @@ class Overview:
 
     @property
     def percent_current(self) -> int:
-        checked = self.total - self.unchecked
+        checked = self.total - self.unchecked - self.not_watched
         return round(100 * self.current / checked) if checked else 0
 
 
@@ -80,6 +141,7 @@ def overview(result: CheckResult) -> Overview:
         majors=sum(1 for cs in result.containers if cs.major_update),
         errors=states.count("error"),
         unchecked=states.count("unchecked"),
+        not_watched=states.count("not_watched"),
     )
 
 

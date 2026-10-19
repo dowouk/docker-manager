@@ -1,10 +1,11 @@
 """FastAPI app: dashboard pages, update actions and live job logs."""
 import asyncio
+import dataclasses
 import functools
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -32,8 +33,10 @@ from app.notify.providers import (
     shutdown_notify_executor,
 )
 from app.imageref import parse_image_ref
-from app.inventory import detect_self_id, list_containers
+from app.inventory import container_key, detect_self_id, list_containers
+from app.links import release_notes_url
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
+from app.layout import layout_problems
 from app.mailcow import check_mailcow, run_capture, update_mailcow
 from app.keys import KeyUnusable, load_secret_box
 from app.registry import RegistryClient, RegistryError
@@ -44,6 +47,9 @@ from app.registry_logins import (
     write_docker_config,
 )
 from app.roles import Role
+from app.rules import RulesError, RulesStore, shutdown_tag_executor
+from app import skips as skips_mod
+from app.skips import SkipStore
 from app.sessions import COOKIE, SessionStore
 from app.setup import Setup, setup_routes
 from app.admin_pages import setup_admin_pages
@@ -82,6 +88,9 @@ FLASH = {
     "digest_nothing": ("Digest skipped – nothing to report", "ok"),
     "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
     "digest_failed": ("The digest could not be sent – check the server logs", "error"),
+    "skipped": ("Update hidden – it's listed under Skipped below", "ok"),
+    "skip_removed": ("Skip removed – the update shows again", "ok"),
+    "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
 }
 
 # Same idea for the Settings page.
@@ -118,6 +127,7 @@ STATUS_LABELS = {
     Status.PULLED_NOT_RECREATED: "Pulled – not recreated",
     Status.NOT_CHECKABLE: "Can't check",
     Status.ERROR: "Error",
+    Status.NOT_WATCHED: "Not watched",
 }
 JOB_STATUS_LABELS = {"running": "Running", "succeeded": "Succeeded", "failed": "Failed"}
 JOB_KIND_LABELS = {
@@ -145,6 +155,7 @@ async def run_check(app: FastAPI) -> CheckResult:
         async with state.check_lock:
             await asyncio.to_thread(remove_finished_helpers, state.docker)
             containers = await asyncio.to_thread(list_containers, state.docker, detect_self_id())
+            rules_for = state.rules.snapshot()
             result = await check_all(
                 containers,
                 state.registry,
@@ -152,7 +163,12 @@ async def run_check(app: FastAPI) -> CheckResult:
                 mailcow_check=functools.partial(
                     check_mailcow, state.settings.mailcow_dir, run_capture, state.http
                 ),
+                rules_for=rules_for,
             )
+            result.layout = layout_problems(
+                containers, state.settings, rules_for,
+                state.settings.data_dir, state.settings.mailcow_dir,
+            ) if state.settings.layout_check else None
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
         state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
@@ -191,6 +207,44 @@ def _find(app: FastAPI, container_id: str) -> ContainerStatus:
         if cs.container.id == container_id:
             return cs
     raise HTTPException(status_code=404, detail="Unknown container")
+
+
+def _find_key(app: FastAPI, key: str) -> ContainerStatus:
+    result = _latest(app)
+    for cs in result.containers if result else []:
+        if container_key(cs.container) == key:
+            return cs
+    raise HTTPException(status_code=404, detail="Unknown container")
+
+
+def _rule_fields(rules, form: Mapping[str, str] | None, errors: dict) -> list[dict]:
+    """What the watch-settings form shows: the submitted text when re-showing errors,
+    else the effective value (a label's value for a field a label sets)."""
+    def text(field: str):
+        value = getattr(rules, field)
+        return "; ".join(value) if isinstance(value, tuple) else (value or "")
+
+    specs = [
+        ("watch", "Watch this container", "bool", "Switch off to skip registry checks for it."),
+        ("include_tags", "Only consider these tags", "text",
+         "Patterns separated by semicolons, matched against the whole tag. Empty means all tags."),
+        ("exclude_tags", "Ignore these tags", "text",
+         "Patterns separated by semicolons, matched against the whole tag."),
+        ("notify", "Include in the digest and Updates found", "bool",
+         "Switch off to see its updates here without being told about them."),
+        ("release_notes", "Release notes link", "text", "A link starting with https:// or http://."),
+        ("layout_ignore", "Leave out of the layout check", "bool", "Skip the file-layout checks for it."),
+    ]
+    fields = []
+    for name, label, kind, help_ in specs:
+        locked = name in rules.from_label
+        value = text(name) if form is None or locked or name not in form else form[name]
+        if kind == "bool":
+            value = ("yes" if getattr(rules, name) else "no") if form is None or locked or name not in form \
+                else str(form[name])
+        fields.append({"name": name, "label": label, "kind": kind, "help": help_,
+                       "locked": locked, "value": value, "error": errors.get(name)})
+    return fields
 
 
 def _require_updatable(cs: ContainerStatus) -> None:
@@ -292,6 +346,7 @@ def create_app(
                     scheduler.shutdown(wait=False)
             finally:
                 shutdown_notify_executor()
+                shutdown_tag_executor()
                 if owns_http:
                     await http.aclose()
 
@@ -316,12 +371,15 @@ def create_app(
     # Before anything is served: migrate old allow rules, or open first-start setup.
     app.state.setup = Setup(store, app.state.users, settings_service, settings.data_dir)
     app.state.setup.prepare(settings)
+    app.state.rules = RulesStore(store)
+    app.state.skips = SkipStore(store)
     app.state.channels = ChannelStore(store, settings_service._box, lambda: settings)
     app.state.channels.migrate_0_2_email()
     app.state.notifier = Notifier(
         store, app.state.channels, lambda: app.state.settings, http,
         providers if providers is not None else PROVIDERS,
-        background=app.state.background, kind_labels=JOB_KIND_LABELS)
+        background=app.state.background, kind_labels=JOB_KIND_LABELS,
+        skips_getter=lambda: app.state.skips, rules_snapshot=lambda: app.state.rules.snapshot())
     app.state.settings = settings_service.effective()  # the migrations may have changed it
     app.state.entra_setup_hook = app.state.setup.complete_with_entra
     app.state.setup.on_close.append(lambda: setattr(app.state, "entra_setup_hook", None))
@@ -350,7 +408,16 @@ def create_app(
         JOB_KIND_LABELS=JOB_KIND_LABELS,
         BUILD_UPDATE=view.BUILD_UPDATE,
         short_digest=_short_digest,
+        container_key=container_key,
+        skip_items=skips_mod.container_items,
+        skip_kind_labels=skips_mod.KIND_LABELS,
+        mailcow_skip_items=lambda result: [i for i in [skips_mod.mailcow_item(result)] if i],
         row_state=view.row_state,
+        filter_state=view.filter_state,
+        layout_problems=view.layout_problems,
+        layout_mounts=view.layout_mounts,
+        layout_anchor=view.layout_anchor,
+        hint_parts=view.hint_parts,
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
@@ -426,12 +493,23 @@ def create_app(
             except Exception as exc:  # noqa: BLE001 – show the page even if docker is down
                 log.exception("Check failed while loading the dashboard")
                 error = f"The check could not be completed: {str(exc) or type(exc).__name__}"
+        shown, hidden = skips_mod.visible_result(result, app.state.skips) if result else (None, [])
+        if shown is not None and not app.state.settings.layout_check:
+            shown = dataclasses.replace(shown, layout=None)  # switched off: no badges or chip
+        rules_for = app.state.rules.snapshot()
+        notes = {cs.container.id: release_notes_url(cs.container, rules_for(cs.container))
+                 for cs in (shown.containers if shown else [])}
         return render(
             request, "dashboard.html", user,
-            result=result,
-            rows=view.by_urgency(result) if result else [],
-            overview=view.overview(result) if result else None,
-            attention=view.attention(result) if result else [],
+            result=shown,
+            skipped=app.state.skips.active(),
+            notes_by_id={k: v for k, v in notes.items() if v},
+            has_layout=view.has_layout_data(shown),
+            compose_root=app.state.settings.compose_root,
+            hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
+            rows=view.by_urgency(shown) if shown else [],
+            overview=view.overview(shown) if shown else None,
+            attention=view.attention(shown) if shown else [],
             greeting=view.greeting(datetime.now(ZoneInfo(app.state.settings.tz))),
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
@@ -479,6 +557,75 @@ def create_app(
         whole = mode == "project"
         target = info.project if whole else info.name
         return submit(mode, target, user, lambda ctx: update_build(ctx, info, whole_project=whole))
+
+    @app.post("/containers/{container_id}/skip", dependencies=[Depends(verify_csrf)])
+    async def skip_update(
+        container_id: str, kind: str = Form(...), mode: str = Form(...),
+        value: str = Form(""), reason: str = Form(""),
+        user: User = Depends(require_role(Role.OPERATOR)),
+    ):
+        result = _latest(app)
+        if container_id == "mailcow":
+            offered = [i for i in [skips_mod.mailcow_item(result)] if i] if result else []
+            if not offered:
+                raise HTTPException(status_code=404, detail="Mailcow not found")
+        else:
+            offered = skips_mod.container_items(_find(app, container_id))
+        if kind not in skips_mod.KINDS or mode not in ("skip", "snooze7", "snooze30"):
+            raise HTTPException(status_code=400, detail="Unknown skip option")
+        item = next((i for i in offered if i.kind == kind), None)
+        if item is None:
+            raise HTTPException(status_code=400, detail="That update is not offered")
+        if value and value != item.value:
+            raise HTTPException(status_code=400, detail="That update is not offered")
+        reason = skips_mod.clean_reason(reason)
+        note = f" – reason: {reason}" if reason else ""
+        label = skips_mod.KIND_LABELS[kind].lower()
+        if mode == "skip":
+            app.state.skips.skip(item.container_key, kind, item.value, user.email, reason)
+            summary = f"Skipped {label} {item.value} for {item.container_key}{note}"
+        else:
+            days = 7 if mode == "snooze7" else 30
+            app.state.skips.snooze(item.container_key, kind, days, user.email, reason)
+            summary = f"Snoozed {label} updates for {item.container_key} for {days} days{note}"
+        app.state.store.add_audit(user.email, "updates", summary)
+        return _redirect("/?msg=skipped")
+
+    @app.post("/skips/{skip_id}/remove", dependencies=[Depends(verify_csrf)])
+    async def remove_skip(skip_id: int, user: User = Depends(require_role(Role.OPERATOR))):
+        skip = app.state.skips.remove(skip_id)
+        if skip is None:
+            raise HTTPException(status_code=404, detail="Unknown skip")
+        what = "snooze" if skip.snoozed else "skip"
+        app.state.store.add_audit(
+            user.email, "updates",
+            f"Removed {what} of {skips_mod.KIND_LABELS[skip.kind].lower()} for {skip.key}")
+        return _redirect("/?msg=skip_removed")
+
+    def _rules_page(request: Request, user: User, key: str, form=None, errors=None, status_code=200):
+        cs = _find_key(app, key)
+        rules = app.state.rules.effective(cs.container)
+        return render(
+            request, "container_rules.html", user, status_code=status_code,
+            cs=cs, key=key, rules=rules,
+            fields=_rule_fields(rules, form, errors or {}),
+        )
+
+    @app.get("/containers/{key:path}/rules", response_class=HTMLResponse)
+    async def container_rules(request: Request, key: str,
+                              user: User = Depends(require_role(Role.OPERATOR))):
+        return _rules_page(request, user, key)
+
+    @app.post("/containers/{key:path}/rules", dependencies=[Depends(verify_csrf)])
+    async def container_rules_save(request: Request, key: str,
+                                   user: User = Depends(require_role(Role.OPERATOR))):
+        _find_key(app, key)
+        form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+        try:
+            app.state.rules.save(key, form, user.email)
+        except RulesError as exc:
+            return _rules_page(request, user, key, form, exc.errors, status_code=400)
+        return _redirect("/?msg=rules_saved")
 
     @app.get("/containers/{container_id}/version-preview", response_class=HTMLResponse)
     async def version_preview(
@@ -969,6 +1116,18 @@ def create_app(
                           change_kinds=CHANGE_KINDS, changes=store.list_audit(kind=kind or None))
         return render(request, "history.html", user, view="updates", jobs=store.list_jobs())
 
+    @app.get("/layout", response_class=HTMLResponse)
+    async def layout_page(request: Request, user: User = Depends(require_role(Role.VIEWER))):
+        settings = app.state.settings
+        result = _latest(app)
+        problems = result.layout if (result and settings.layout_check) else None
+        return render(
+            request, "layout.html", user,
+            enabled=settings.layout_check, checked=problems is not None,
+            compose_root=settings.compose_root,
+            groups=view.layout_groups(problems or []),
+        )
+
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
         """Liveness for the container HEALTHCHECK: public, no detail, never cached."""
@@ -993,6 +1152,9 @@ class HealthzAccessFilter(logging.Filter):
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO)
+    # httpx logs every request URL at INFO, and the heartbeat URL carries a secret ping token.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, HealthzAccessFilter) for f in access.filters):
         access.addFilter(HealthzAccessFilter())

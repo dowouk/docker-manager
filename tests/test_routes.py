@@ -17,7 +17,7 @@ from app.config import Settings
 from app.main import apply_settings, create_app
 from app.store import Store
 from notify_fakes import FakeProvider, providers_for
-from auth_helpers import CSRF, assert_all_routes_guarded, logged_in_client, sign_in
+from auth_helpers import CHECKING_FORM, CSRF, assert_all_routes_guarded, logged_in_client, sign_in
 
 CHECKED_AT = datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc)  # 08:00 BST
 
@@ -190,7 +190,7 @@ def test_not_compose_row_has_no_update_button(client_for, seeded):
     web_id = seeded.containers[0].container.id
     assert f"/containers/{web_id}/update" in html
     assert lone_id in html or "lone" in html
-    assert f"/containers/{lone_id}/" not in html
+    assert f"/containers/{lone_id}/update" not in html  # the skip form is fine
     assert "Not started by compose" in html
 
 
@@ -756,7 +756,7 @@ def test_health_timeout_read_at_call_time(client_for, seeded, monkeypatch):
     c, app = client_for(result=seeded, runner=runner)
     app.state.settings_service.save(
         "checking",
-        {"check_interval_hours": "6", "health_timeout_seconds": "77", "mailcow_dir": "/opt/mailcow"},
+        {**CHECKING_FORM, "health_timeout_seconds": "77", "mailcow_dir": "/opt/mailcow"},
         "me",
     )
     apply_settings(app)
@@ -889,3 +889,72 @@ async def test_failing_checks_alert_on_second(settings, tmp_path):
             await run_check(app)
     await asyncio.gather(*app.state.background, return_exceptions=True)
     assert len(fake.sent) == 1 and "failing" in fake.sent[0][1].subject
+
+
+def _rows(html: str) -> list[str]:
+    return re.findall(r"<tr data-name[^>]*>", _table(html))
+
+
+def test_dashboard_rows_and_cards_carry_filter_data(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    rows = _rows(html)
+    assert len(rows) == 5  # Mailcow and four containers
+    web_row = next(r for r in rows if 'data-name="web"' in r)
+    assert 'data-image="nginx:latest"' in web_row
+    assert 'data-project="site"' in web_row
+    assert 'data-skipped="0"' in web_row and 'data-layout="0"' in web_row
+    assert "needs-update" in re.search(r'data-state="([^"]*)"', web_row).group(1).split()
+    db_row = next(r for r in rows if 'data-name="db"' in r)
+    assert {"needs-update", "major"} <= set(re.search(r'data-state="([^"]*)"', db_row).group(1).split())
+    # the attention cards carry the same attributes
+    card = re.search(r'<article class="card attention-card"[^>]*data-name="web"[^>]*>', html)
+    assert card and 'data-state="' in card.group(0) and 'data-project="site"' in card.group(0)
+
+
+def test_dashboard_state_tokens_cover_every_kind(client_for, tmp_path):
+    items = [
+        status(info(tmp_path, "stopped", state="exited")),
+        status(info(tmp_path, "cur")),
+        status(info(tmp_path, "nocheck"), Status.NOT_CHECKABLE),
+        status(info(tmp_path, "nowatch"), Status.NOT_WATCHED),
+    ]
+    c, _ = client_for(result=CheckResult(checked_at=CHECKED_AT, containers=items))
+    html = c.get("/").text
+    states = {re.search(r'data-name="([^"]+)"', r).group(1): re.search(r'data-state="([^"]*)"', r).group(1).split()
+              for r in _rows(html)}
+    assert "stopped" in states["stopped"]
+    assert "up-to-date" in states["cur"]
+    assert "not-checkable" in states["nocheck"]
+    assert "not-watched" in states["nowatch"]
+
+
+def test_dashboard_chips_are_hidden_buttons(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    tools = re.search(r'<div class="table-tools" id="table-tools"[^>]*>', html).group(0)
+    assert " hidden" in tools
+    for label in ("Needs update", "Major only", "Errors", "Stopped", "Not checkable", "Skipped"):
+        assert re.search(r'<button type="button"[^>]*aria-pressed="false"[^>]*>\s*' + label, html)
+    assert "Layout problems" not in html  # no layout data until the layout check exists
+    assert 'id="container-search"' in html
+
+
+def test_dashboard_release_notes_link(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    # web: nginx on Docker Hub, newer build -> library link; opens safely in a new tab
+    link = re.search(r'<a [^>]*href="https://hub\.docker\.com/_/nginx/tags"[^>]*>Release notes</a>', html)
+    assert link
+    assert 'target="_blank"' in link.group(0) and 'rel="noopener noreferrer"' in link.group(0)
+    assert "https://hub.docker.com/r/library" not in html
+
+
+def test_release_notes_link_uses_rule_and_only_for_updates(client_for, tmp_path):
+    web = info(tmp_path, "web", labels={"docker-manager.release_notes": "https://example.com/web-notes"})
+    cur = info(tmp_path, "cur")
+    c, _ = client_for(result=CheckResult(checked_at=CHECKED_AT, containers=[
+        status(web, Status.NEWER_BUILD), status(cur)]))
+    html = c.get("/").text
+    assert 'href="https://example.com/web-notes"' in html
+    assert html.count(">Release notes</a>") == 2  # row and card of web; none for the current one

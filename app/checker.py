@@ -2,17 +2,18 @@
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 
 from app.config import Settings
 from app.imageref import parse_image_ref
-from app.inventory import ContainerInfo
+from app.inventory import ContainerInfo, Mount, is_mailcow
+from app.layout import LayoutProblem
 from app.registry import NotFoundError, RegistryClient
+from app.rules import Rules, TagFilter, tag_executor
 from app.versions import find_version_updates, parse_version_tag
 
-_MAILCOW_PROJECT = "mailcowdockerized"
 _UPDATABLE_STATES = ("running", "exited")
 
 
@@ -22,6 +23,7 @@ class Status(StrEnum):
     PULLED_NOT_RECREATED = "pulled_not_recreated"
     NOT_CHECKABLE = "not_checkable"
     ERROR = "error"
+    NOT_WATCHED = "not_watched"
 
 
 @dataclass
@@ -42,6 +44,14 @@ class ContainerStatus:
     message: str | None = None
     updatable: bool = True
     not_updatable_reason: str | None = None
+    rule_warnings: list[str] = field(default_factory=list)
+    notify: bool = True
+
+
+def _container_from_dict(data: dict) -> ContainerInfo:
+    # Older stored results lack labels, mounts and image_source: the defaults apply.
+    mounts = [Mount(**m) for m in data.get("mounts") or []]
+    return ContainerInfo(**{**data, "mounts": mounts})
 
 
 @dataclass
@@ -49,6 +59,7 @@ class CheckResult:
     checked_at: datetime
     containers: list[ContainerStatus]
     mailcow: MailcowStatus | None = None
+    layout: list[LayoutProblem] | None = None  # None: no layout check has run
 
     def to_dict(self) -> dict:
         return {
@@ -57,26 +68,32 @@ class CheckResult:
                 {**asdict(cs), "status": cs.status.value} for cs in self.containers
             ],
             "mailcow": asdict(self.mailcow) if self.mailcow else None,
+            "layout": None if self.layout is None else [asdict(p) for p in self.layout],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "CheckResult":
         containers = [
             ContainerStatus(
-                **{**cs, "container": ContainerInfo(**cs["container"]), "status": Status(cs["status"])}
+                **{
+                    **cs,
+                    "container": _container_from_dict(cs["container"]),
+                    "status": Status(cs["status"]),
+                }
             )
             for cs in data["containers"]
         ]
         mailcow = MailcowStatus(**data["mailcow"]) if data.get("mailcow") else None
-        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow)
+        layout = None if data.get("layout") is None else [LayoutProblem(**p) for p in data["layout"]]
+        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow, layout)
 
     def summary(self) -> dict[str, int]:
         updates = majors = errors = up_to_date = 0
         for cs in self.containers:
             if cs.major_update:
                 majors += 1
-            if cs.status == Status.NOT_CHECKABLE:
-                continue  # local or pinned images: neither current nor a problem
+            if cs.status in (Status.NOT_CHECKABLE, Status.NOT_WATCHED):
+                continue  # local, pinned or unwatched: neither current nor a problem
             if cs.status == Status.ERROR:
                 errors += 1
             elif (
@@ -99,7 +116,7 @@ class _Remote:
     digest: str | None = None
     digest_error: str | None = None
     not_found: bool = False
-    versions: tuple[str | None, str | None] = (None, None)
+    tags: list[str] | None = None
     tags_error: str | None = None
 
 
@@ -108,9 +125,7 @@ def _sha(digest: str) -> str:
 
 
 def _is_mailcow(c: ContainerInfo, settings: Settings) -> bool:
-    return c.project == _MAILCOW_PROJECT or (
-        c.working_dir is not None and c.working_dir == settings.mailcow_dir
-    )
+    return is_mailcow(c, settings.mailcow_dir)
 
 
 def _updatable(c: ContainerInfo) -> tuple[bool, str | None]:
@@ -140,18 +155,25 @@ async def _check_image(image_ref: str, registry: RegistryClient) -> _Remote:
         if isinstance(results[1], BaseException):
             remote.tags_error = f"Could not list tags: {results[1] or type(results[1]).__name__}"
         else:
-            updates = find_version_updates(ref.tag, results[1])
-            remote.versions = (updates.minor, updates.major)
+            remote.tags = list(results[1])
     return remote
 
 
-def _status_for(c: ContainerInfo, remote: _Remote | None) -> ContainerStatus:
+def _status_for(
+    c: ContainerInfo, remote: _Remote | None, rules: Rules,
+    allowed_tags: list[str] | None = None, tag_warnings: list[str] | None = None,
+) -> ContainerStatus:
     updatable, reason = _updatable(c)
+    warnings = [*rules.warnings, *(tag_warnings or [])]
 
     def make(status: Status, **kw) -> ContainerStatus:
         return ContainerStatus(
-            container=c, status=status, updatable=updatable, not_updatable_reason=reason, **kw
+            container=c, status=status, updatable=updatable, not_updatable_reason=reason,
+            rule_warnings=warnings, notify=rules.notify, **kw
         )
+
+    if not rules.watch:
+        return make(Status.NOT_WATCHED, message="Not watched")
 
     ref = parse_image_ref(c.image_ref)
     if ref.digest:
@@ -172,7 +194,10 @@ def _status_for(c: ContainerInfo, remote: _Remote | None) -> ContainerStatus:
         status = Status.PULLED_NOT_RECREATED
     else:
         status = Status.NEWER_BUILD
-    minor, major = remote.versions
+    minor = major = None
+    if allowed_tags is not None:
+        updates = find_version_updates(ref.tag, allowed_tags)
+        minor, major = updates.minor, updates.major
     return make(
         status,
         remote_digest=remote.digest,
@@ -191,14 +216,30 @@ async def check_all(
     registry: RegistryClient,
     settings: Settings,
     mailcow_check: Callable[[], Awaitable[MailcowStatus]] | None,
+    rules_for: Callable[[ContainerInfo], Rules] | None = None,
 ) -> CheckResult:
     mailcow_containers = [c for c in containers if _is_mailcow(c, settings)]
     regular = [c for c in containers if not _is_mailcow(c, settings)]
 
-    refs = list(dict.fromkeys(c.image_ref for c in regular if _checkable(c)))
+    rules_of = rules_for or (lambda _c: Rules())
+    rules = {c.id: rules_of(c) for c in regular}
+    # An image is only looked up if some container using it is watched.
+    refs = list(dict.fromkeys(c.image_ref for c in regular if _checkable(c) and rules[c.id].watch))
     remotes = dict(
         zip(refs, await asyncio.gather(*(_check_image(r, registry) for r in refs)))
     )
+
+    # Pattern matching is CPU work: do it off the event loop, on its own small pool.
+    async def filtered(c: ContainerInfo) -> tuple[list[str] | None, list[str]]:
+        remote = remotes.get(c.image_ref)
+        if not (rules[c.id].watch and remote is not None and remote.tags is not None):
+            return None, []
+        tag_filter = TagFilter(rules[c.id])
+        allowed = await asyncio.get_running_loop().run_in_executor(
+            tag_executor(), tag_filter.filter, remote.tags)
+        return allowed, tag_filter.warnings
+
+    tag_results = await asyncio.gather(*(filtered(c) for c in regular))
 
     mailcow = None
     if mailcow_containers and not os.path.isdir(settings.mailcow_dir):
@@ -214,6 +255,9 @@ async def check_all(
 
     return CheckResult(
         checked_at=datetime.now(timezone.utc),
-        containers=[_status_for(c, remotes.get(c.image_ref)) for c in regular],
+        containers=[
+            _status_for(c, remotes.get(c.image_ref), rules[c.id], *tag_results[i])
+            for i, c in enumerate(regular)
+        ],
         mailcow=mailcow,
     )

@@ -344,3 +344,183 @@ async def test_unknown_provider_is_logged_and_recorded(settings, tmp_path, caplo
         assert await rig.notifier.send("job_failed", ("S", "p", "h")) == 0
     assert "Notification to Ops skipped (unknown provider)" in caplog.text
     assert rig.notifier.last_result(ch.id)["reason"] == notifier_mod.UNKNOWN_PROVIDER
+
+
+# ---- skips, watch rules and layout (0.5) ----
+
+from app.layout import LayoutProblem
+from app.rules import RulesStore
+from app.skips import SkipStore
+
+
+def prob(key, container="web", detail="Bind mount outside /srv"):
+    return LayoutProblem(key, container, "site", "bind_outside", detail, "hint", "problem")
+
+
+def layout_result(*problems, containers=None):
+    r = result(*(containers or [cs("web")]))
+    r.layout = list(problems)
+    return r
+
+
+@pytest.fixture
+def rig2(settings, tmp_path):
+    rig = Rig(settings, tmp_path)
+    rig.skips = SkipStore(rig.store)
+    rig.rules = RulesStore(rig.store)
+    rig.notifier = Notifier(rig.store, rig.channels, lambda: settings, rig.http,
+                            providers_for(rig.provider), background=rig.bg,
+                            skips_getter=lambda: rig.skips, rules_snapshot=rig.rules.snapshot)
+    return rig
+
+
+async def test_skipped_update_not_notified_nor_in_digest_until_removed(rig2):
+    rig2.channel(events=("updates_found", "digest"))
+    r = result(cs("web", minor_update="1.26"))
+    sk = rig2.skips.skip("site/web", "minor", "1.26", "me")
+    rig2.notifier.after_check(r, False)
+    await rig2.settle()
+    assert rig2.subjects == []
+    assert await rig2.notifier.digest(r) == "sent"
+    assert "web" not in rig2.provider.sent[-1][1].html
+    assert "1 update skipped or snoozed" in rig2.provider.sent[-1][1].plain
+    rig2.skips.remove(sk.id)
+    rig2.notifier.after_check(r, False)
+    await rig2.settle()
+    assert len(rig2.subjects) == 2 and "1 new update available" in rig2.subjects[1]
+
+
+async def test_newer_version_after_skip_notifies(rig2):
+    rig2.channel(events=("updates_found",))
+    rig2.skips.skip("site/web", "minor", "1.26", "me")
+    rig2.notifier.after_check(result(cs("web", minor_update="1.26")), False)
+    rig2.notifier.after_check(result(cs("web", minor_update="1.27")), False)
+    await rig2.settle()
+    assert len(rig2.subjects) == 1
+
+
+async def test_hidden_mailcow_update_is_handled(rig2):
+    rig2.channel(events=("updates_found", "digest"))
+    mc = MailcowStatus(update_available=True, current_version="a", latest_release="b")
+    rig2.skips.skip("mailcow", "mailcow", "b", "me")
+    rig2.notifier.after_check(result(cs("web"), mailcow=mc), False)
+    await rig2.settle()
+    assert rig2.subjects == []
+    assert await rig2.notifier.digest(result(cs("web"), mailcow=mc)) == "sent"
+    assert "1 update skipped" in rig2.provider.sent[-1][1].plain
+
+
+async def test_notify_false_container_left_out_of_updates_and_digest(rig2):
+    rig2.channel(events=("updates_found", "digest"))
+    r = result(cs("quiet", minor_update="1.1", notify=False), cs("loud", minor_update="1.2"))
+    rig2.notifier.after_check(r, False)
+    await rig2.settle()
+    assert "1 new update available" in rig2.subjects[0]
+    assert "quiet" not in rig2.provider.sent[0][1].html
+    await rig2.notifier.digest(r)
+    assert "quiet" not in rig2.provider.sent[-1][1].html
+
+
+async def test_release_notes_in_updates_found(rig2):
+    rig2.channel(events=("updates_found",))
+    rig2.rules.save("site/web", {"release_notes": "https://notes.test/web"}, "me")
+    rig2.notifier.after_check(result(cs("web", minor_update="1.26")), False)
+    await rig2.settle()
+    assert "https://notes.test/web" in rig2.provider.sent[0][1].html
+
+
+async def test_layout_baseline_then_new_then_same_then_return(rig2):
+    rig2.channel(events=("layout_problems",))
+    n = rig2.notifier
+    a, b = prob("a"), prob("b", detail="Second")
+    n.after_check(layout_result(a), False)  # first run with a list: baseline only
+    await rig2.settle()
+    assert rig2.subjects == []
+    n.after_check(layout_result(a, b), False)
+    await rig2.settle()
+    assert len(rig2.subjects) == 1
+    plain = rig2.provider.sent[0][1].plain
+    assert "web: Second" in plain and "Bind mount" not in plain
+    n.after_check(layout_result(a, b), False)  # the same again
+    await rig2.settle()
+    assert len(rig2.subjects) == 1
+    n.after_check(layout_result(a), False)  # b fixed
+    n.after_check(layout_result(a, b), False)  # ...and back
+    await rig2.settle()
+    assert len(rig2.subjects) == 2
+
+
+async def test_layout_none_does_nothing_and_keeps_the_baseline(rig2):
+    rig2.channel(events=("layout_problems",))
+    n = rig2.notifier
+    n.after_check(layout_result(prob("a")), False)
+    n.after_check(result(cs("web")), False)  # layout None: not checked
+    assert rig2.store.get_meta("notified_layout") == '["a"]'
+    n.after_check(layout_result(prob("a")), False)
+    await rig2.settle()
+    assert rig2.subjects == []
+
+
+async def test_layout_none_first_does_not_baseline(rig2):
+    rig2.channel(events=("layout_problems",))
+    rig2.notifier.after_check(result(cs("web")), False)
+    assert rig2.store.get_meta("notified_layout") is None
+    rig2.notifier.after_check(layout_result(prob("a")), False)  # this is the baseline
+    await rig2.settle()
+    assert rig2.subjects == []
+
+
+async def test_layout_caps_lines_and_leaves_out_quiet_containers(rig2):
+    rig2.channel(events=("layout_problems",))
+    n = rig2.notifier
+    containers = [cs("web"), cs("quiet", notify=False)]
+    n.after_check(layout_result(containers=containers), False)
+    many = [prob(f"k{i}", detail=f"d{i}") for i in range(13)] + [prob("q", "quiet", "hidden")]
+    n.after_check(layout_result(*many, containers=containers), False)
+    await rig2.settle()
+    plain = rig2.provider.sent[0][1].plain
+    assert "web: d9" in plain and "web: d10" not in plain and "and 3 more" in plain
+    assert "hidden" not in plain
+
+
+async def test_only_quiet_layout_problems_send_nothing(rig2):
+    rig2.channel(events=("layout_problems",))
+    containers = [cs("quiet", notify=False)]
+    rig2.notifier.after_check(layout_result(containers=containers), False)
+    rig2.notifier.after_check(layout_result(prob("q", "quiet"), containers=containers), False)
+    await rig2.settle()
+    assert rig2.subjects == []
+
+
+async def test_digest_leaves_out_layout_when_the_check_is_off(rig2, settings):
+    rig2.channel(events=("digest",))
+    r = layout_result(prob("a"), containers=[cs("web", minor_update="1.1")])
+    assert await rig2.notifier.digest(r) == "sent"
+    assert "layout problem" in rig2.provider.sent[-1][1].plain
+    rig2.notifier._settings = lambda: settings.model_copy(update={"layout_check": False})
+    assert await rig2.notifier.digest(r) == "sent"
+    assert "layout" not in rig2.provider.sent[-1][1].plain.lower()
+    only = layout_result(prob("a"), containers=[cs("web")])
+    rig2.notifier._settings = lambda: settings.model_copy(
+        update={"layout_check": False, "digest_when_none": False})
+    assert await rig2.notifier.digest(only) == "skipped – nothing to report"
+
+
+async def test_skipped_count_leaves_out_quiet_containers(rig2):
+    rig2.channel(events=("digest",))
+    rig2.skips.skip("site/web", "minor", "1.26", "me")
+    rig2.skips.skip("site/quiet", "minor", "1.26", "me")
+    r = result(cs("web", minor_update="1.26"), cs("quiet", minor_update="1.26", notify=False))
+    assert await rig2.notifier.digest(r) == "sent"
+    plain = rig2.provider.sent[-1][1].plain
+    assert "1 update skipped or snoozed" in plain and "2 updates" not in plain
+
+
+async def test_layout_notification_counts_problems_and_notices_separately(rig2):
+    rig2.channel(events=("layout_problems",))
+    n = rig2.notifier
+    n.after_check(layout_result(), False)  # baseline
+    notice = LayoutProblem("n", "web", None, "not_compose", "Not started by compose", "h", "notice")
+    n.after_check(layout_result(prob("a"), prob("b"), notice), False)
+    await rig2.settle()
+    assert "2 layout problems and 1 notice" in rig2.provider.sent[0][1].plain

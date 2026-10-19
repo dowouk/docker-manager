@@ -134,3 +134,18 @@ def test_subject_is_collapsed_to_one_line(settings):
     assert "\n" not in check_recovered_message(s).subject
     assert check_recovered_message(s).subject == "my server name: update check recovered"
     assert digest_message(_result(), s).subject.startswith("my server name: ")
+
+
+def test_updates_found_release_notes_link(settings):
+    from app.notify.messages import updates_found_message
+    with_notes = UpdateItem("a:minor", "a", "img", "1 → 2", 'https://x.test/?a=1&b=2')
+    m = updates_found_message([with_notes, UpdateItem("b:minor", "b", "img", "1 → 2")], settings)
+    assert 'href="https://x.test/?a=1&amp;b=2"' in m.html and 'rel="noopener noreferrer"' in m.html
+    assert m.html.count("Release notes") == 1 and m.plain.count("release notes:") == 1
+
+
+def test_layout_message_escapes_html(settings):
+    from app.notify.messages import layout_message
+    m = layout_message(["web: <b>x</b> & y"], settings)
+    assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in m.html and "<b>x</b>" not in m.html
+    assert "<b>x</b> & y" in m.plain
