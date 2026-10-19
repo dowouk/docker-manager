@@ -353,7 +353,9 @@ def test_self_update_runs_as_job(client_for, seeded, monkeypatch):
     c, _ = client_for(result=seeded, runner=runner)
     r = c.post("/self/update", data={"csrf_token": CSRF})
     assert r.status_code == 200
-    assert "Updating the dashboard – reload in a minute" in r.text
+    assert "refresh by itself" in r.text
+    # The page waits for the restart (polling /healthz) and then opens the job's log.
+    assert 'data-await-restart' in r.text and 'data-job="7"' in r.text
     assert 'href="/jobs/7"' in r.text
     kind, target, user, work = runner.submitted[0]
     assert (kind, target, user) == ("self", "dash", "test@example.com")

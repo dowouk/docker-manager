@@ -89,6 +89,9 @@ def complete_sign_in(request: Request, rec: UserRecord, method: str = "local") -
     return RedirectResponse(landing_page(rec, state.settings), status_code=303)
 
 
+SIGNIN_NOTES = {"signed_out": "You have been signed out."}
+
+
 def setup_signin(app: FastAPI) -> None:
     def page(request: Request, name: str, status: int = 200, **ctx) -> HTMLResponse:
         response = app.state.templates.TemplateResponse(
@@ -99,7 +102,9 @@ def setup_signin(app: FastAPI) -> None:
     def signin_page(request: Request, status: int = 200, error: str | None = None):
         s = app.state.settings
         entra = bool(s.entra_enabled)
-        return page(request, "signin.html", status, error=error, entra=entra,
+        # Only fixed notes, picked by a key – never text from the address.
+        note = SIGNIN_NOTES.get(request.query_params.get("msg", "")) if status == 200 else None
+        return page(request, "signin.html", status, error=error, entra=entra, note=note,
                     local=bool(s.local_sign_in),
                     disclosure=bool(s.hide_local_for_non_admins and entra))
 

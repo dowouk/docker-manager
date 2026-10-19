@@ -1,0 +1,4 @@
+{# The codes as a list, plus a .txt to save. A data: link, so nothing is stored anywhere. #}
+{% set codes_text = "Docker Manager recovery codes – " ~ server_name ~ "\nEach code works once if you lose your authenticator app.\n\n" ~ codes | join("\n") ~ "\n" %}
+<ul class="recovery-codes">{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+<p class="card-actions"><a class="button button-quiet" download="docker-manager-recovery-codes.txt" href="data:text/plain;charset=utf-8,{{ codes_text | urlencode }}">Download codes</a></p>

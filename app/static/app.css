@@ -251,6 +251,7 @@ table.data { width: 100%; border-collapse: collapse; }
 
 /* ---- Notices ------------------------------------------------------------------- */
 .notice { margin: 0; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+.restart-status { margin: 12px 0 0; color: var(--muted); }
 .notice-ok { background: var(--ok-tint); border-color: transparent; color: var(--ok-text); }
 .notice-error { background: var(--err-tint); border-color: transparent; color: var(--err-text); }
 

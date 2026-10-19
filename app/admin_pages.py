@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import totp
 from app.auth import (
+    SIGNED_OUT_URL,
     User, csrf_token, current_user, require_role, verify_csrf,
 )
 from app.passwords import hash_password, password_problem, verify_password
@@ -386,4 +387,4 @@ def setup_admin_pages(app: FastAPI) -> None:
         app.state.users.end_sessions(user.id)
         app.state.store.add_audit(user.email, "account", "Signed out everywhere")
         request.session.clear()
-        return RedirectResponse("/auth/signed-out", status_code=303)
+        return RedirectResponse(SIGNED_OUT_URL, status_code=303)

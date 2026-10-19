@@ -411,6 +411,7 @@ def test_enrolment_flow_shows_recovery_codes_once(app, client):
     assert r.status_code == 200
     codes = re.findall(r"<code>([a-z0-9]{5}-[a-z0-9]{5})</code>", r.text)
     assert len(codes) == 10
+    assert_codes_download(r.text, codes)
     assert ("account", "Two-step sign-in turned on") in audit(app)
     assert secret not in str(audit(app)) and not any(c in str(audit(app)) for c in codes)
     stored = app.state.users.get(rec.id)
@@ -550,3 +551,32 @@ def test_forced_user_is_sent_back_from_the_other_page(app, client):
     app.state.users.set_password_hash(
         app.state.users.by_email("local", "ann@example.com").id, hash_password(PASSWORD), False)
     assert client.get("/account/password", headers=HTML).headers["location"] == "/account/two-step"
+
+
+def assert_codes_download(html, codes):
+    """The page offers the codes as a text file to save (a data: link, nothing stored)."""
+    import html as html_mod
+    from urllib.parse import unquote
+    m = re.search(r'<a [^>]*download="([^"]+)"[^>]*href="data:text/plain;charset=utf-8,([^"]+)"', html)
+    assert m, "no download link for the recovery codes"
+    assert m.group(1).endswith(".txt")
+    text = unquote(html_mod.unescape(m.group(2)))
+    assert all(code in text for code in codes)
+
+
+def test_signing_out_lands_on_the_sign_in_page_with_a_note(app, client):
+    add_user(app)
+    login(client)
+    token = csrf_of(client, "/account")
+    r = client.post("/auth/logout", data={"csrf_token": token})
+    assert r.status_code == 303 and r.headers["location"] == "/auth/login?msg=signed_out"
+    page = client.get(r.headers["location"])
+    assert page.status_code == 200
+    assert "You have been signed out" in page.text
+    assert 'name="password"' in page.text  # the normal sign-in form, styled
+    assert "You have been signed out" not in client.get("/auth/login").text
+
+
+def test_sign_in_note_is_never_reflected(client):
+    page = client.get("/auth/login?msg=%3Cscript%3Ealert(1)%3C%2Fscript%3E")
+    assert page.status_code == 200 and "<script>alert" not in page.text

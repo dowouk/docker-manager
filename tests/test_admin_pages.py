@@ -437,6 +437,8 @@ def test_recovery_codes_regenerate_and_old_ones_fail(app):
         r = post(c, "/account/recovery-codes", current_password=PASSWORD)
         new = re.findall(r"<code>([a-z0-9]{5}-[a-z0-9]{5})</code>", r.text)
         assert len(new) == 10 and not set(new) & set(old)
+        from test_signin_routes import assert_codes_download
+        assert_codes_download(r.text, new)
         assert "no-store" in r.headers["cache-control"]
         users = app.state.users
         assert not users.use_recovery_code(me.id, totp.hash_recovery_code(old[0]))

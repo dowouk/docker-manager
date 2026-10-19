@@ -23,6 +23,9 @@ from auth_helpers import BARE_AUTH_ROUTES, CSRF, assert_all_routes_guarded, logg
 CALLS: list[str] = []
 
 
+SIGNED_OUT = "/auth/login?msg=signed_out"
+
+
 def make_app(settings, setup_open=lambda: False) -> FastAPI:
     app = FastAPI()
     store = Store(os.path.join(settings.data_dir, "dashboard.db"))
@@ -228,7 +231,7 @@ def test_pending_user_only_reaches_pending_page(settings):
         assert r.status_code == 200
         assert "Your account is waiting for an Admin to approve it" in r.text
         assert 'action="/auth/logout"' in r.text and CSRF in r.text
-        assert c.get("/auth/signed-out").status_code == 200
+        assert c.get("/auth/signed-out").headers["location"] == SIGNED_OUT
     assert CALLS == []
 
 
@@ -251,7 +254,7 @@ def test_setup_path_only_public_while_setup_open(settings):
         r = c.get("/", headers=HTML)
         assert r.status_code == 302 and r.headers["location"] == "/setup"
         assert c.post("/check").status_code == 401
-        assert c.get("/auth/signed-out").status_code == 200
+        assert c.get("/auth/signed-out").headers["location"] == SIGNED_OUT
     assert CALLS == []
 
 
@@ -375,9 +378,10 @@ def test_logout_is_post_with_csrf(logged_in_client_):
     assert c.post("/auth/logout").status_code == 403
     assert c.get("/").status_code == 200
     r = c.post("/auth/logout", data={"csrf_token": CSRF})
-    assert r.status_code == 302 and r.headers["location"] == "/auth/signed-out"
-    page = c.get("/auth/signed-out")
-    assert page.status_code == 200 and "Signed out" in page.text
+    assert r.status_code == 303 and r.headers["location"] == SIGNED_OUT
+    # The old address (bookmarks, links in older pages) goes to the same place.
+    old = c.get("/auth/signed-out")
+    assert old.status_code == 303 and old.headers["location"] == SIGNED_OUT
     assert c.get("/", headers={"Accept": "application/json"}).status_code == 401
 
 

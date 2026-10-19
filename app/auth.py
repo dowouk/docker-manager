@@ -18,6 +18,7 @@ from app.sessions import ServerSessionMiddleware, SessionStore
 from app.users import UserRecord, UserStore
 
 _PUBLIC_PREFIXES = ("/auth/", "/static/")
+SIGNED_OUT_URL = "/auth/login?msg=signed_out"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
@@ -225,15 +226,12 @@ def _finish_setup(app: FastAPI, sessions: SessionStore,
     @app.post("/auth/logout", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def logout(request: Request):
         request.session.clear()
-        return RedirectResponse("/auth/signed-out", status_code=302)
+        return RedirectResponse(SIGNED_OUT_URL, status_code=303)
 
     @app.get("/auth/signed-out", include_in_schema=False)
     async def signed_out():
-        return _page(
-            "Signed out",
-            "You have been signed out. <a href=\"/auth/login\">Sign in again</a>.",
-            200,
-        )
+        # Kept for old links; signing out now lands on the sign-in page with a note.
+        return RedirectResponse(SIGNED_OUT_URL, status_code=303)
 
     @app.get("/pending", include_in_schema=False)
     async def pending(request: Request):

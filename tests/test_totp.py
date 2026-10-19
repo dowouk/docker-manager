@@ -69,3 +69,11 @@ def test_qr_svg():
     assert svg.startswith("<svg")
     assert "<?xml" not in svg
     assert "#fff" in svg.lower()  # light background so it scans in dark theme
+
+
+def test_qr_svg_scales_to_its_box():
+    # A viewBox and no fixed size, so CSS can stretch it to fill the white box.
+    svg = totp.qr_svg("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP")
+    head = svg.split(">", 1)[0]
+    assert "viewBox=" in head
+    assert "width=" not in head and "height=" not in head
