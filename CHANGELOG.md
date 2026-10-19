@@ -2,6 +2,14 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.1] - 19th October 2026
+
+- Signing Out Returns to the Sign-In Page with a Note
+- Download Button for Two-Step Recovery Codes
+- QR Code Fills Its Box
+- Dashboard Self-Update Page Refreshes by Itself When It's Back
+- Build Pipeline Moved to Node 24 Actions
+
 ## [0.5.0] - 18th October 2026
 
 - Watch Rules per Container – from Labels or the Dashboard
