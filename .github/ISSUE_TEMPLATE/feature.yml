@@ -1,0 +1,18 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+name: Feature
+description: A request, idea or new functionality
+type: Feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What's needed?
+      description: The change, and who it's for.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem it solves or the outcome it enables.

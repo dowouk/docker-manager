@@ -1,0 +1,11 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+name: Task
+description: A specific piece of work – content, maintenance, tooling or admin
+type: Task
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing?
+    validations:
+      required: true

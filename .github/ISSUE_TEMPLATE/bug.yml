@@ -1,0 +1,25 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+name: Bug
+description: Something isn't working
+type: Bug
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. Click …
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: URL, page, device or browser, if relevant.

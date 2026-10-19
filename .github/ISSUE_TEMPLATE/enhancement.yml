@@ -1,0 +1,23 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+name: Enhancement
+description: An improvement to something that already exists
+type: Task
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change?
+      description: What it does now, and what it should do instead.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem it solves or the outcome it enables.
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: URL, page or screen, if relevant.
