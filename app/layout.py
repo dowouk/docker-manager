@@ -101,6 +101,11 @@ def layout_problems(
 def _check_mount(c, m: Mount, folder, root, fine, data_dir, settings, add) -> None:
     if c.is_self and _norm(m.destination) == _norm(data_dir):
         return
+    # The dashboard's own REGISTRY_AUTH_FILE folder (the README mounts /root/.docker, where
+    # `docker login` writes) – moving it would stop new logins reaching the dashboard.
+    auth = settings.registry_auth_file
+    if c.is_self and auth and _under(_norm(auth), _norm(m.destination)):
+        return
     if m.type == "bind":
         src = _norm(m.source)
         if src in _ALWAYS_ALLOWED or _under(src, "/dev") or _under(src, "/proc"):

@@ -190,6 +190,7 @@ These are never flagged:
 - anonymous volumes and tmpfs mounts;
 - anything under `/docker` and, for Mailcow, its own folder – Mailcow's containers and `mailcowdockerized_` volumes are left alone;
 - the dashboard's own `/data` mount;
+- the dashboard's own `REGISTRY_AUTH_FILE` folder (for example `/root/.docker:/run/docker-auth`, as set up under [Private images](#private-images));
 - anything under a path in **Allowed folders**, and containers with the `docker-manager.layout.ignore` label.
 
 A system path such as `/etc` or `/usr` gets "System path – if this is intended, add it to the allowed paths" instead of a move suggestion. Add a folder to **Allowed folders** (Settings → Checking, full paths, one per line, up to 50) when it is intentional – for example a media disk at `/mnt/media`. For a volume you don't want flagged, tick **Allow named volumes**, or put the label on the container:
