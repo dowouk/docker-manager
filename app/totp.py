@@ -25,10 +25,11 @@ def provisioning_uri(secret: str, account: str, issuer: str) -> str:
 
 def qr_svg(uri: str) -> str:
     # Explicit dark-on-white (with quiet zone) so it scans in both page themes.
+    # omitsize leaves only a viewBox, so the page's CSS can scale it to fill its box.
     out = io.BytesIO()
     segno.make(uri, error="m").save(
         out, kind="svg", xmldecl=False, svgns=True, scale=4, border=2,
-        dark="#000", light="#fff",
+        dark="#000", light="#fff", omitsize=True,
     )
     return out.getvalue().decode("utf-8")
 
