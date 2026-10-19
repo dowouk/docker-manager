@@ -2,6 +2,7 @@
 {% block title %}Sign in{% endblock %}
 {% block content %}
 <h1 class="auth-title">Sign in</h1>
+{% if note %}<p class="notice notice-ok" role="status">{{ note }}</p>{% endif %}
 {% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
 {% if not entra and not local %}
 <p class="lede">Sign-in isn't set up – see the README (reset-admin).</p>
