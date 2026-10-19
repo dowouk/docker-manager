@@ -3,7 +3,6 @@ name: Test and build
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -24,14 +23,32 @@ jobs:
 
   image:
     needs: test
-    # Only publish from pushes to the main branch or version tags, never from pull requests.
+    # Only publish from pushes to the main branch, never from pull requests.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # pushes the vX.Y.Z git tag
       packages: write
     steps:
       - uses: actions/checkout@v7
+
+      # Every image is tagged with the version in app/__init__.py (0.5.2) and its minor line
+      # (0.5), as well as latest. A version is published once: a later push with the same
+      # version (docs, CI tweaks) only moves latest and adds its sha tag, so 0.5.2 never
+      # changes under anyone who pinned it.
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' app/__init__.py)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::No X.Y.Z __version__ in app/__init__.py"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "minor=${version%.*}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v$version is already published – only latest and the sha tag move."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Image name (lower case)
         env:
@@ -53,8 +70,8 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.release }}
+            type=raw,value=${{ steps.version.outputs.minor }},enable=${{ steps.version.outputs.release }}
             type=sha
 
       - uses: docker/build-push-action@v7
@@ -66,3 +83,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The git tag and a GitHub release whose notes are the version's CHANGELOG section –
+      # the dashboard's release-notes link opens this repository's releases page.
+      - name: Tag and release
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v h="## [$VERSION]" 'index($0, h) == 1 {f = 1; next} /^## \[/ {f = 0} f' CHANGELOG.md \
+            | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          [[ -s "$RUNNER_TEMP/notes.md" ]] || { echo "::error::No CHANGELOG.md section for $VERSION"; exit 1; }
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" --verify-tag --title "$VERSION" --notes-file "$RUNNER_TEMP/notes.md"

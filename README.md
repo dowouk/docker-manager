@@ -618,7 +618,15 @@ docker compose pull
 docker compose up -d
 ```
 
-**For the repository owner:** the image is built by GitHub Actions on every push to `main`/`master` (tagged `latest`) and on version tags like `v1.2.0`. The first time it's published, go to the `dowouk` organisation on GitHub → **Packages → docker-manager → Package settings** and set the visibility to **Public**, so the servers can pull it without signing in.
+**Image tags** – pick how closely you follow releases in your compose file:
+
+| Tag | Follows |
+| --- | --- |
+| `ghcr.io/dowouk/docker-manager:latest` | every release |
+| `ghcr.io/dowouk/docker-manager:0.5` | the newest 0.5.x – fixes only |
+| `ghcr.io/dowouk/docker-manager:0.5.2` | exactly 0.5.2 – never changes |
+
+**For the repository owner:** the image is built by GitHub Actions on every push to `main`/`master`. Each image is tagged `latest` and `sha-<commit>`; the first push of a new version in `app/__init__.py` also tags it `X.Y.Z` and `X.Y`, adds the `vX.Y.Z` git tag and publishes a GitHub release with that version's CHANGELOG notes (what the dashboard's **Release notes** link shows). Later pushes with the same version only move `latest`, so a version tag never changes once published. The first time it's published, go to the `dowouk` organisation on GitHub → **Packages → docker-manager → Package settings** and set the visibility to **Public**, so the servers can pull it without signing in.
 
 ## Docker Hub limits
 
