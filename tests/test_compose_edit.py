@@ -3,7 +3,10 @@ from datetime import datetime
 
 import pytest
 
-from app.compose_edit import EditRefused, apply_tag_change, plan_tag_change, restore_backup
+from app.compose_edit import (
+    EditRefused, apply_options_change, apply_tag_change, plan_service_options, plan_tag_change,
+    restore_backup,
+)
 
 TWO = """services:
   web:
@@ -216,3 +219,75 @@ def test_backup_not_overwritten_and_mode_copied(tmp_path):
     assert open(b1).read() == TWO
     assert "nginx:1.27" in open(b2).read()
     assert os.stat(b1).st_mode & 0o777 == 0o600
+
+
+# --- the dashboard's own service: Mailcow options --------------------------------
+
+_EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
+
+
+def _write(tmp_path, text, name="compose.yml"):
+    path = tmp_path / name
+    path.write_bytes(text.encode())
+    return str(path)
+
+
+@pytest.mark.parametrize("proxy", ["caddy", "traefik"])
+def test_options_uncomment_the_mailcow_lines_in_the_examples(tmp_path, proxy):
+    with open(os.path.join(_EXAMPLES, proxy, "compose.yml"), "rb") as f:
+        original = f.read().decode()
+    path = _write(tmp_path, original)
+    change = plan_service_options([path], "docker-manager")
+    assert "-    # [Mailcow] pid: host" in change.diff and "+    pid: host" in change.diff
+    assert "+    privileged: true" in change.diff
+    new = change.new_text.splitlines()
+    old = original.splitlines()
+    assert len(new) == len(old)  # replaced in place, nothing else moved
+    assert sum(a != b for a, b in zip(old, new)) == 2
+    backup = apply_options_change(change, str(tmp_path / "bak"), "dm", datetime(2026, 10, 19, 12))
+    assert open(backup).read() == original
+    assert plan_service_options([path], "docker-manager") is None  # now nothing to do
+
+
+def test_options_added_after_the_service_name_when_not_commented(tmp_path):
+    path = _write(tmp_path, "services:\n  dm:\n    image: x\n    restart: always\n  other:\n    image: y\n")
+    change = plan_service_options([path], "dm")
+    assert change.new_text == ("services:\n  dm:\n    pid: host\n    privileged: true\n"
+                               "    image: x\n    restart: always\n  other:\n    image: y\n")
+
+
+def test_options_keeps_what_is_already_right(tmp_path):
+    path = _write(tmp_path, "services:\n  dm:\n    image: x\n    privileged: \"true\"\n")
+    change = plan_service_options([path], "dm")
+    assert change.new_text == "services:\n  dm:\n    pid: host\n    image: x\n    privileged: \"true\"\n"
+
+
+def test_options_never_overwrite_a_different_value(tmp_path):
+    path = _write(tmp_path, "services:\n  dm:\n    image: x\n    pid: \"service:db\"\n")
+    with pytest.raises(EditRefused, match="already sets pid"):
+        plan_service_options([path], "dm")
+
+
+def test_options_use_the_file_that_has_the_service_and_keep_crlf(tmp_path):
+    base = _write(tmp_path, "services:\r\n  dm:\r\n    image: x\r\n", "a.yml")
+    other = _write(tmp_path, "services:\r\n  web:\r\n    image: y\r\n", "b.yml")
+    change = plan_service_options([base, other], "dm")
+    assert change.path == base and "    pid: host\r\n" in change.new_text
+    with pytest.raises(EditRefused):
+        plan_service_options([other], "dm")
+
+
+def test_options_refuse_a_file_changed_since_the_preview(tmp_path):
+    path = _write(tmp_path, "services:\n  dm:\n    image: x\n")
+    change = plan_service_options([path], "dm")
+    _write(tmp_path, "services:\n  dm:\n    image: z\n")
+    with pytest.raises(EditRefused, match="changed since preview"):
+        apply_options_change(change, str(tmp_path / "bak"), "dm", datetime(2026, 10, 19, 12))
+
+
+def test_options_find_mailcow_comments_at_the_end_of_the_service(tmp_path):
+    path = _write(tmp_path, "services:\n  dm:\n    image: x\n    # [Mailcow] pid: host\n"
+                            "  # about the next one\n  web:\n    image: y\n")
+    change = plan_service_options([path], "dm")
+    assert change.new_text == ("services:\n  dm:\n    privileged: true\n    image: x\n"
+                               "    pid: host\n  # about the next one\n  web:\n    image: y\n")

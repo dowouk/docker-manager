@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
+from app.mailcow import NO_HOST_ACCESS
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.jobs import BUSY_MESSAGE, BusyError
@@ -393,6 +394,70 @@ def test_self_update_failure_is_logged(client_for, seeded, monkeypatch, caplog):
             asyncio.run(work(ctx))
     assert "Could not start the dashboard self-update" in caplog.text
     assert "socket gone" in caplog.text
+
+
+def _no_host_access(tmp_path, compose_text):
+    """A Mailcow row that can't reach the server, and the dashboard's own compose file."""
+    path = tmp_path / "dash-compose.yml"
+    path.write_text(compose_text)
+    me = info(tmp_path, "dash", image="ghcr.io/x/docker-manager:latest", project="dash",
+              is_self=True, config_files=[str(path)])
+    result = CheckResult(CHECKED_AT, [status(me)], MailcowStatus(
+        update_available=None, current_version=None, latest_release="2026-10",
+        error=NO_HOST_ACCESS))
+    return result, path
+
+
+def test_mailcow_host_access_is_offered_previewed_and_applied(client_for, tmp_path, monkeypatch):
+    original = ("services:\n  dash:\n    image: ghcr.io/x/docker-manager:latest\n"
+                "    # [Mailcow] pid: host\n    # [Mailcow] privileged: true\n")
+    result, path = _no_host_access(tmp_path, original)
+    calls = []
+    monkeypatch.setattr("app.main.start_self_update", lambda *a: calls.append(a) or ExitedHelper())
+    monkeypatch.setattr("app.main.SELF_UPDATE_GRACE", 0)
+    monkeypatch.setattr("app.main.run_check", lambda app: asyncio.sleep(0))
+    runner = FakeRunner()
+    c, app = client_for(result=result, runner=runner)
+    assert 'href="/mailcow/host-access"' in c.get("/").text
+    preview = c.get("/mailcow/host-access").text
+    assert "+    pid: host" in preview and "+    privileged: true" in preview
+    sha = re.search(r'name="sha" value="([0-9a-f]+)"', preview).group(1)
+    assert path.read_text() == original  # nothing changes on preview
+
+    r = c.post("/mailcow/host-access", data={"csrf_token": CSRF, "sha": sha})
+    assert r.status_code == 200 and "refresh by itself" in r.text
+    kind, target, _, work = runner.submitted[0]
+    assert kind == "self" and "Mailcow" in target
+    assert path.read_text() == original  # the job does the edit
+
+    logged = []
+    ctx = type("Ctx", (), {"log": staticmethod(logged.append)})()
+    asyncio.run(work(ctx))
+    assert path.read_text().endswith("    pid: host\n    privileged: true\n")
+    assert calls and calls[0][1].is_self
+    assert "backup:" in "".join(logged)
+    assert any("host access for Mailcow" in a.summary for a in app.state.store.list_audit())
+
+
+def test_mailcow_host_access_refuses_a_stale_preview(client_for, tmp_path):
+    result, path = _no_host_access(tmp_path, "services:\n  dash:\n    image: x\n")
+    runner = FakeRunner()
+    c, _ = client_for(result=result, runner=runner)
+    r = c.post("/mailcow/host-access", data={"csrf_token": CSRF, "sha": "0" * 64})
+    assert r.status_code == 303 and r.headers["location"] == "/?msg=changed"
+    assert runner.submitted == []
+
+
+def test_mailcow_host_access_explains_what_it_cant_change(client_for, tmp_path):
+    result, _ = _no_host_access(tmp_path, "services:\n  dash:\n    image: x\n    pid: \"service:db\"\n")
+    c, _ = client_for(result=result)
+    html = c.get("/mailcow/host-access").text
+    assert "already sets pid" in html and 'action="/mailcow/host-access"' not in html
+
+
+def test_mailcow_without_host_problem_offers_no_fix(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    assert "/mailcow/host-access" not in c.get("/").text
 
 
 def test_history_lists_jobs(client_for, seeded):

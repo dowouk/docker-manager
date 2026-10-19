@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Mailcow access{% endblock %}
+{% block content %}
+<p class="back-link"><a href="/">← Dashboard</a></p>
+<section class="intro">
+  <div>
+    <h1>Let the dashboard run Mailcow's update.sh</h1>
+    <p class="lede">The dashboard runs Mailcow's own <code>update.sh</code> directly on the server. For that its container needs <code>pid: host</code> and <code>privileged: true</code>.</p>
+  </div>
+</section>
+<section class="card manage-card">
+  {% if refused %}
+  <p class="notice notice-error" role="alert">{{ refused }}</p>
+  <p class="card-text">Add these two lines to the dashboard's service in its compose file yourself, then run <code>docker compose up -d</code>:</p>
+  <pre class="diff">pid: host
+privileged: true</pre>
+  {% elif change is none %}
+  <p class="notice notice-ok" role="status">The compose file already has both options. If Mailcow still can't be reached, recreate the dashboard with <code>docker compose up -d</code> on the server, and check Docker isn't using user-namespace remapping.</p>
+  {% else %}
+  <p class="card-text">This changes <code>{{ change.path }}</code> (a backup is kept), then recreates the dashboard so the options take effect. The page comes back by itself after a few seconds.</p>
+  <pre class="diff">{% for line in change.diff.splitlines() %}<span class="{% if line.startswith('+') and not line.startswith('+++') %}add{% elif line.startswith('-') and not line.startswith('---') %}del{% endif %}">{{ line }}</span>
+{% endfor %}</pre>
+  <p class="field-help">These options give the dashboard root-level access to the server. The Docker socket it already has gives the same – see Security in the README.</p>
+  <form method="post" action="/mailcow/host-access">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="sha" value="{{ change.file_sha256 }}">
+    <div class="card-actions"><button type="submit" class="button button-accent">Change and restart</button></div>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

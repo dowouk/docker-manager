@@ -212,7 +212,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
             {% elif mc.update_available is sameas false %}{{ status_badge("current", "Up to date") }}
             {% else %}{{ status_badge("muted", "Unknown") }}{% endif %}
           </td>
-          <td data-label="Action" class="col-action{% if not (mc.update_available and can(user, Role.OPERATOR)) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}<div class="row-actions">{{ mailcow_action("button-small") }}{{ skip_menu(mailcow_skip_items(result)) }}</div>{% elif mc.update_available and can(user, Role.OPERATOR) %}<div class="row-actions">{{ skip_menu(mailcow_skip_items(result)) }}</div>{% else %}<span class="faint">–</span>{% endif %}</td>
+          <td data-label="Action" class="col-action{% if not ((mc.update_available and can(user, Role.OPERATOR)) or (mailcow_needs_host(mc) and can(user, Role.ADMIN))) %} no-action{% endif %}">{% if mc.update_available and can(user, Role.ADMIN) %}<div class="row-actions">{{ mailcow_action("button-small") }}{{ skip_menu(mailcow_skip_items(result)) }}</div>{% elif mc.update_available and can(user, Role.OPERATOR) %}<div class="row-actions">{{ skip_menu(mailcow_skip_items(result)) }}</div>{% elif mailcow_needs_host(mc) and can(user, Role.ADMIN) %}<div class="row-actions"><a class="button button-accent button-small" href="/mailcow/host-access">Fix compose file</a></div>{% else %}<span class="faint">–</span>{% endif %}</td>
         </tr>
         {% endif %}
         {% for cs in rows %}

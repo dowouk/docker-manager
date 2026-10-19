@@ -25,7 +25,9 @@ from app.auth import RoleDenied, User, csrf_token, require_role, setup_auth, ver
 from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.photos import Photos, setup_photos
 from app.checker import CheckResult, ContainerStatus, Status, check_all
-from app.compose_edit import EditRefused, plan_tag_change
+from app.compose_edit import (
+    EditRefused, apply_options_change, plan_service_options, plan_tag_change,
+)
 from app.config import Settings, get_settings
 from app.notify.channels import (
     DEFAULT_EVENTS, EVENTS, Channel, ChannelError, ChannelStore,
@@ -36,11 +38,11 @@ from app.notify.providers import (
     shutdown_notify_executor,
 )
 from app.imageref import parse_image_ref
-from app.inventory import container_key, detect_self_id, list_containers
+from app.inventory import ContainerInfo, container_key, detect_self_id, list_containers
 from app.links import release_notes_url
 from app.jobs import BUSY_MESSAGE, BusyError, JobContext, JobRunner, set_docker_config_dir
 from app.layout import layout_problems
-from app.mailcow import check_mailcow, run_capture, update_mailcow
+from app.mailcow import NO_HOST_ACCESS, check_mailcow, run_capture, update_mailcow
 from app.keys import KeyUnusable, load_secret_box
 from app.registry import RegistryClient, RegistryError
 from app.registry_logins import (
@@ -434,6 +436,7 @@ def create_app(
         layout_anchor=view.layout_anchor,
         hint_parts=view.hint_parts,
         mailcow_state=view.mailcow_state,
+        mailcow_needs_host=lambda mc: mc is not None and mc.error == NO_HOST_ACCESS,
         initials=view.initials,
         user_initials=view.user_initials,
         photo_url=lambda person: app.state.photos.url(person),
@@ -709,17 +712,21 @@ def create_app(
             "mailcow", "Mailcow", user, lambda ctx: update_mailcow(ctx, app.state.settings.mailcow_dir)
         )
 
-    @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
-    async def self_update(request: Request, user: User = Depends(require_role(Role.ADMIN))):
+    def _dashboard_container() -> ContainerInfo:
         result = _latest(app)
         me = next((cs for cs in result.containers if cs.container.is_self), None) if result else None
         if me is None:
             raise HTTPException(status_code=404, detail="The dashboard container was not found")
         if not me.updatable:
             raise HTTPException(status_code=400, detail="This container can't be updated here")
-        info = me.container
+        return me.container
 
+    def _restart_dashboard(request: Request, user: User, info: ContainerInfo, target: str,
+                           before: Callable[[JobContext], None] | None = None):
+        """Recreate the dashboard with a helper container, as a "self" job."""
         async def work(ctx: JobContext) -> None:
+            if before is not None:
+                before(ctx)
             ctx.log("Starting a helper container to pull and recreate the dashboard\n")
             try:
                 helper = await asyncio.to_thread(
@@ -739,7 +746,7 @@ def create_app(
             )
 
         try:
-            job_id = submit_job("self", info.name, user, work)
+            job_id = submit_job("self", target, user, work)
         except BusyError:
             return _redirect("/?msg=busy")
         return render(
@@ -749,6 +756,50 @@ def create_app(
             job_id=job_id,
             await_restart=True,
         )
+
+    @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
+    async def self_update(request: Request, user: User = Depends(require_role(Role.ADMIN))):
+        info = _dashboard_container()
+        return _restart_dashboard(request, user, info, info.name)
+
+    def _plan_mailcow_access(info: ContainerInfo):
+        """(change or None, refusal message or None) for the dashboard's own compose file."""
+        try:
+            return plan_service_options(info.config_files, info.service), None
+        except EditRefused as exc:
+            return None, str(exc)
+        except OSError as exc:
+            return None, f"The compose file could not be read ({exc.strerror or exc}) – update by hand"
+
+    @app.get("/mailcow/host-access", response_class=HTMLResponse)
+    async def mailcow_access_preview(request: Request,
+                                     user: User = Depends(require_role(Role.ADMIN))):
+        info = _dashboard_container()
+        change, refused = await asyncio.to_thread(_plan_mailcow_access, info)
+        return render(request, "mailcow_access.html", user, change=change, refused=refused)
+
+    @app.post("/mailcow/host-access", response_class=HTMLResponse,
+              dependencies=[Depends(verify_csrf)])
+    async def mailcow_access(request: Request, sha: str = Form(...),
+                             user: User = Depends(require_role(Role.ADMIN))):
+        info = _dashboard_container()
+        change, _ = await asyncio.to_thread(_plan_mailcow_access, info)
+        if change is None or change.file_sha256 != sha:
+            # Only ever apply the exact diff the user saw in the preview.
+            return _redirect("/?msg=changed")
+
+        def edit(ctx: JobContext) -> None:
+            try:
+                backup = apply_options_change(change, backup_dir, info.project or info.name,
+                                              datetime.now(ZoneInfo(app.state.settings.tz)))
+            except (EditRefused, OSError) as exc:
+                raise UpdateFailed(f"The compose file wasn't changed ({exc})") from exc
+            ctx.log(f"Added pid: host and privileged: true to {change.path}"
+                    f" (backup: {backup})\n{change.diff}\n")
+            store.add_audit(user.email, "settings",
+                            f"Gave the dashboard host access for Mailcow in {change.path}")
+
+        return _restart_dashboard(request, user, info, f"{info.name} – Mailcow access", edit)
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_page(request: Request, job_id: int, user: User = Depends(require_role(Role.OPERATOR))):

@@ -29,6 +29,8 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("POST", "/digest/send", Role.ADMIN),
     ("POST", "/mailcow/update", Role.ADMIN),
     ("POST", "/self/update", Role.ADMIN),
+    ("GET", "/mailcow/host-access", Role.ADMIN),
+    ("POST", "/mailcow/host-access", Role.ADMIN),
     ("GET", "/settings", Role.ADMIN),
     ("GET", "/settings/channels/new", Role.ADMIN),
     ("GET", "/settings/channels/1", Role.ADMIN),
