@@ -126,7 +126,7 @@ def test_digest_send_failure_does_not_log_secret(email_settings, tmp_path, caplo
     app.state.store.save_check(CheckResult(checked_at=now, containers=[]).to_dict(), now)
     with logged_in_client(app, follow_redirects=False) as c:
         r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/?msg=digest_failed"
+    assert r.headers["location"] == "/settings?msg=digest_failed#digest"
     assert "TOPSECRET" not in caplog.text and "RuntimeError" in caplog.text
 
 

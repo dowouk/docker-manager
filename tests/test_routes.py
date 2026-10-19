@@ -587,10 +587,10 @@ def test_digest_send_sends_latest_check(settings, tmp_path, seeded):
     fake = FakeProvider()
     c = digest_app(settings, tmp_path, fake, seeded)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.status_code == 303 and r.headers["location"] == "/?msg=digest_sent"
+    assert r.status_code == 303 and r.headers["location"] == "/settings?msg=digest_sent#digest"
     assert fake.sent[0][1].subject == "test-server: 5 updates available"
     assert fake.sent[0][1].recipients == ("ops@example.com",)
-    assert "Digest sent" in c.get("/?msg=digest_sent").text
+    assert "Digest sent" in c.get("/settings?msg=digest_sent#digest").text
     c.__exit__(None, None, None)
 
 
@@ -598,7 +598,7 @@ def test_digest_send_runs_check_when_none_stored(settings, tmp_path):
     fake = FakeProvider()
     c = digest_app(settings, tmp_path, fake)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/?msg=digest_sent"
+    assert r.headers["location"] == "/settings?msg=digest_sent#digest"
     assert fake.sent[0][1].subject == "test-server: all up to date"
     c.__exit__(None, None, None)
 
@@ -607,17 +607,17 @@ def test_digest_send_nothing_to_report(settings, tmp_path):
     fake = FakeProvider()
     c = digest_app(settings, tmp_path, fake, digest_when_none=False)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/?msg=digest_nothing"
+    assert r.headers["location"] == "/settings?msg=digest_nothing#digest"
     assert fake.sent == []
-    assert "nothing to report" in c.get("/?msg=digest_nothing").text
+    assert "nothing to report" in c.get("/settings?msg=digest_nothing#digest").text
     c.__exit__(None, None, None)
 
 
 def test_digest_send_not_configured(client_for, seeded):
     c, _ = client_for(result=seeded)
     r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/?msg=digest_unconfigured"
-    assert "no channel gets the digest" in c.get("/?msg=digest_unconfigured").text
+    assert r.headers["location"] == "/settings?msg=digest_unconfigured#digest"
+    assert "no channel gets the digest" in c.get("/settings?msg=digest_unconfigured#digest").text
 
 
 def test_digest_send_failure_logged(settings, tmp_path, seeded, caplog):
@@ -625,10 +625,10 @@ def test_digest_send_failure_logged(settings, tmp_path, seeded, caplog):
                    seeded)
     with caplog.at_level(logging.WARNING):
         r = c.post("/digest/send", data={"csrf_token": CSRF})
-    assert r.headers["location"] == "/?msg=digest_failed"
+    assert r.headers["location"] == "/settings?msg=digest_failed#digest"
     assert "Notification to Email (from environment) failed (RuntimeError)" in caplog.text
     assert "acs down" not in caplog.text and "TOPSECRET" not in caplog.text
-    assert "could not be sent" in c.get("/?msg=digest_failed").text
+    assert "could not be sent" in c.get("/settings?msg=digest_failed#digest").text
     c.__exit__(None, None, None)
 
 
@@ -640,11 +640,15 @@ def test_digest_send_requires_csrf(settings, tmp_path, seeded):
     c.__exit__(None, None, None)
 
 
-def test_digest_button_only_when_enabled(client_for, settings, tmp_path, seeded):
+def test_digest_button_is_on_settings_only_when_enabled(client_for, settings, tmp_path, seeded):
     c, _ = client_for(result=seeded)
-    assert "/digest/send" not in c.get("/").text
+    assert "/digest/send" not in c.get("/settings").text
     c2 = digest_app(settings, tmp_path, FakeProvider(), seeded)
-    assert 'action="/digest/send"' in c2.get("/").text
+    page = c2.get("/settings").text
+    assert 'action="/digest/send"' in page
+    # On the Weekly digest card, and no longer in the dashboard's header.
+    assert page.index('id="digest"') < page.index('action="/digest/send"') < page.index('id="notifications"')
+    assert "/digest/send" not in c2.get("/").text
     c2.__exit__(None, None, None)
 
 
@@ -711,7 +715,7 @@ def test_unreadable_stored_check_treated_as_none(client_for, tmp_path, caplog):
 @pytest.mark.parametrize("code", ["digest_sent", "digest_nothing", "digest_unconfigured"])
 def test_success_flashes_are_not_errors(client_for, seeded, code):
     c, _ = client_for(result=seeded)
-    html = c.get(f"/?msg={code}").text
+    html = c.get(f"/settings?msg={code}").text
     assert re.search(r'<p class="notice notice-ok" role="status">Digest (sent|skipped)', html)
     assert "notice-error" not in html
 
@@ -960,3 +964,27 @@ def test_release_notes_link_uses_rule_and_only_for_updates(client_for, tmp_path)
     html = c.get("/").text
     assert 'href="https://example.com/web-notes"' in html
     assert html.count(">Release notes</a>") == 2  # row and card of web; none for the current one
+
+
+def test_footer_shows_copyright_link_and_version(client_for, seeded):
+    import app as app_pkg
+    from datetime import datetime
+    c, _ = client_for(result=seeded)
+    for path in ("/", "/history"):
+        html = c.get(path).text
+        footer = html[html.index('<footer class="site-footer"'):]
+        assert f"© Copyright {datetime.now().year}" in footer
+        assert '<a href="https://github.com/dowouk/docker-manager"' in footer and ">DOWO UK</a>" in footer
+        assert f"v{app_pkg.__version__}" in footer
+    # The sign-in page (no one signed in) has it too.
+    anon = c.__class__(c.app, base_url="https://testserver")
+    page = anon.get("/auth/login").text
+    assert '<footer class="site-footer"' in page and f"v{app_pkg.__version__}" in page
+
+
+def test_last_checked_is_in_the_page_not_the_header(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    header = html[html.index("<header"):html.index("</header>")]
+    assert "Last checked" not in header
+    assert "Last checked" in html[html.index("</header>"):]

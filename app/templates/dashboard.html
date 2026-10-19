@@ -1,20 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Updates{% endblock %}
 
-{% block header_meta %}
-<div class="last-checked">
-  <span class="dot dot-{{ 'current' if result else 'muted' }}" aria-hidden="true"></span>
-  Last checked {{ result.checked_at | uk_date if result else "never" }}
-</div>
-{% endblock %}
-
 {% block header_actions %}
-{% if digest_enabled and can(user, Role.ADMIN) %}
-<form method="post" action="/digest/send">
-  <input type="hidden" name="csrf_token" value="{{ csrf }}">
-  <button type="submit" class="button button-quiet">Send digest now</button>
-</form>
-{% endif %}
 {% if can(user, Role.OPERATOR) %}
 <form method="post" action="/check">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -80,10 +67,10 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
 {% macro skip_badge(skip) %}{% if skip.until %}Snoozed until {{ skip.until | uk_date }}{% else %}Skipped{% endif %}{% endmacro %}
 
 {# "Skip…" disclosure: one small form per update on offer. Operator and above. #}
-{% macro skip_menu(items) %}
+{% macro skip_menu(items, size="button-small") %}
 {% if items and can(user, Role.OPERATOR) %}
 <details class="skip-menu">
-  <summary class="button button-quiet button-small">Skip…</summary>
+  <summary class="button button-quiet {{ size }}">Skip…</summary>
   <div class="skip-panel">
     {% for item in items %}
     <form method="post" action="/containers/{{ item.container_id or 'mailcow' }}/skip">
@@ -123,6 +110,10 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
       · {% if overview.attention %}{{ overview.attention }} need{{ "s" if overview.attention == 1 }} your attention{% else %}everything is up to date{% endif %}
     </p>
     {% endif %}
+    <p class="last-checked">
+      <span class="dot dot-{{ 'current' if result else 'muted' }}" aria-hidden="true"></span>
+      Last checked {{ result.checked_at | uk_date if result else "never" }}
+    </p>
   </div>
 
   {% if overview %}
@@ -170,7 +161,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
         {% if card.cs %}{{ release_notes_link(card.cs) }}{% endif %}
       </div>
       <div class="card-actions">
-        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs)) }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result)) }}{% endif %}
+        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs), "") }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result), "") }}{% endif %}
       </div>
     </article>
     {% endfor %}
