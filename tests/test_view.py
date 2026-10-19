@@ -108,6 +108,9 @@ def test_initials(name, expected):
 def test_user_name_helpers():
     assert view.user_initials("Steven Hardy") == "SH"
     assert view.user_initials("Cher") == "C"
+    assert view.user_initials("Steve Hardy (DOWO Digital)") == "SH"
+    assert view.user_initials("Ann Lee [Contractor]") == "AL"
+    assert view.user_initials("(Shared)") == "S"
     assert view.user_initials("") == "?"
     assert view.first_name("Steven Hardy") == "Steven"
     assert view.first_name("") == "there"

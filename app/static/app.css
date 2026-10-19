@@ -50,7 +50,9 @@
 /* ---- Base ---------------------------------------------------------------------- */
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--fg);
+/* Full-height column so the footer sits at the bottom of the window on short pages. */
+body { margin: 0; background: var(--bg); color: var(--fg); min-height: 100vh; min-height: 100dvh;
+  display: flex; flex-direction: column;
   font: 15px/1.5 "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: var(--link); }
 a:hover { color: var(--link-hover); }
@@ -127,7 +129,7 @@ h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .account-menu form { margin: 0; }
 
 /* ---- Page ---------------------------------------------------------------------- */
-.page { max-width: 1280px; margin: 0 auto; padding: 40px 32px 64px; display: flex; flex-direction: column; gap: 40px; }
+.page { flex: 1 0 auto; width: 100%; box-sizing: border-box; max-width: 1280px; margin: 0 auto; padding: 40px 32px 64px; display: flex; flex-direction: column; gap: 40px; }
 .page > .notice { margin: 0; }
 .intro { display: flex; flex-direction: column; gap: 20px; }
 .lede { margin: 4px 0 0; color: var(--muted); }
@@ -322,7 +324,7 @@ dialog form[method="dialog"] { margin-top: 12px; }
 }
 
 /* ---- Sign-in and account forms ------------------------------------------------- */
-.auth-wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+.auth-wrap { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 20px; padding: 24px 16px; }
 .auth-brand { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 16px; color: var(--fg-strong); }
 .auth-card { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 16px; }
@@ -331,6 +333,9 @@ dialog form[method="dialog"] { margin-top: 12px; }
 .auth-disclosure > summary { cursor: pointer; color: var(--link); font-weight: 500; padding: 8px 0; }
 .auth-disclosure[open] > summary { margin-bottom: 12px; }
 .form-card { max-width: 480px; display: flex; flex-direction: column; gap: 16px; }
+.add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 760px) { .add-grid { grid-template-columns: 1fr; } }
+.add-grid .form-card { max-width: none; }
 .qr { width: 100%; max-width: 220px; background: #fff; border-radius: 8px; line-height: 0; }
 .qr svg { width: 100%; height: auto; display: block; }
 .secret-key { display: block; word-break: break-all; letter-spacing: 0.05em; }

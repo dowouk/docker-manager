@@ -54,10 +54,10 @@
     <h2>Local account</h2>
     <div class="button-row">
       <form method="post" action="/users/{{ r.id }}/reset-password">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset password</button></form>
-      <form method="post" action="/users/{{ r.id }}/invite">{{ csrf_field() }}<button type="submit" class="button button-quiet">New invite link</button></form>
+      {% if local_on %}<form method="post" action="/users/{{ r.id }}/invite">{{ csrf_field() }}<button type="submit" class="button button-quiet">New invite link</button></form>{% endif %}
       <form method="post" action="/users/{{ r.id }}/reset-two-step">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset two-step</button></form>
     </div>
-    <p class="field-help">Each shows a one-time password or link once, and signs them out.</p>
+    <p class="field-help">{% if local_on %}Each shows a one-time password or link once, and signs them out.{% else %}Local sign-in is turned off in Settings, so this account can't sign in until it's turned back on.{% endif %}</p>
   </section>
   {% endif %}
 

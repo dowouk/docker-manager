@@ -2,6 +2,12 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.3] - 19th October 2026
+
+- Footer Stays at the Bottom of the Window
+- Users Page – Add Local and Microsoft Users Side by Side, Shown Only When That Sign-In Is On
+- Initials Ignore a Bracketed Company Name
+
 ## [0.5.2] - 19th October 2026
 
 - Layout Check No Longer Flags the Dashboard's Own Registry Login Folder

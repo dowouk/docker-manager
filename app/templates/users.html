@@ -66,6 +66,8 @@
 </table>
 </div>
 
+<div class="add-grid">
+{% if local_on %}
 <section class="card form-card">
   <h2>Add a local user</h2>
   <form method="post" action="/users/local" class="auth-form">
@@ -78,7 +80,8 @@
     <div class="card-actions"><button type="submit" class="button button-accent">Add user</button></div>
   </form>
 </section>
-
+{% endif %}
+{% if entra_on %}
 <section class="card form-card">
   <h2>Add a Microsoft user</h2>
   <p class="card-text">Pre-create an account so they have this role the first time they sign in with Microsoft.</p>
@@ -89,5 +92,7 @@
     <div class="card-actions"><button type="submit" class="button button-accent">Add user</button></div>
   </form>
 </section>
+{% endif %}
+</div>
 {% endif %}
 {% endblock %}
