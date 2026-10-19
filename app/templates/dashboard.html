@@ -231,7 +231,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
             </div>
           </td>
           <td data-label="Image">
-            <span class="mono image">{{ c.image_ref }}</span>
+            <span class="mono image">{{ c.image_ref | breakable }}</span>
             {{ release_notes_link(cs) }}
             {% if cs.minor_update %}<div class="meta">Newer version <span class="mono">{{ cs.minor_update }}</span></div>{% endif %}
             {% if cs.major_update %}<div class="meta">Major <span class="mono">{{ cs.major_update }}</span> <span class="pill pill-major">Major version – may need a data migration. Update by hand.</span></div>{% endif %}

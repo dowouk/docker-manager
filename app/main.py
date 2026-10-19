@@ -14,6 +14,7 @@ import docker
 import docker.errors
 import httpx
 import jinja2
+from markupsafe import Markup, escape
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -402,6 +403,12 @@ def create_app(
         return f"{local.day} {local:%b %Y, %H:%M}"
 
     env.filters["uk_date"] = uk_date
+
+    def breakable(text) -> Markup:
+        # Long image names wrap after / and : rather than mid-word. Escaped first.
+        return Markup(str(escape(text)).replace("/", "/<wbr>").replace(":", ":<wbr>"))
+
+    env.filters["breakable"] = breakable
     env.globals.update(
         server_name=app.state.settings.server_name,
         app_version=__version__,

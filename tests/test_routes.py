@@ -988,3 +988,10 @@ def test_last_checked_is_in_the_page_not_the_header(client_for, seeded):
     header = html[html.index("<header"):html.index("</header>")]
     assert "Last checked" not in header
     assert "Last checked" in html[html.index("</header>"):]
+
+
+def test_image_names_break_only_after_slashes_and_colons(client_for, tmp_path):
+    web = info(tmp_path, "web", image="ghcr.io/<b>x</b>/chromium:latest")
+    c, _ = client_for(result=CheckResult(CHECKED_AT, [status(web)]))
+    html = c.get("/").text
+    assert "ghcr.io/<wbr>&lt;b&gt;x&lt;/<wbr>b&gt;/<wbr>chromium:<wbr>latest" in html

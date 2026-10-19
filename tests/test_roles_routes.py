@@ -53,6 +53,7 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("POST", "/account/recovery-codes", Role.PENDING),
     ("POST", "/account/sign-out-everywhere", Role.PENDING),
     ("GET", "/users", Role.ADMIN),
+    ("GET", "/users/1", Role.ADMIN),
     ("POST", "/users/local", Role.ADMIN),
     ("POST", "/users/entra", Role.ADMIN),
     ("POST", "/users/1/role", Role.ADMIN),

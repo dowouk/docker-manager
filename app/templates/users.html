@@ -31,49 +31,33 @@
 </section>
 
 <div class="table-wrap">
-<table class="data">
-  <thead><tr><th>Name</th><th>Email</th><th>Kind</th><th>Role</th><th>Two-step</th><th>Last sign-in</th><th>Status</th><th class="col-action">Actions</th></tr></thead>
+<table class="data users-table">
+  <thead><tr><th scope="col">User</th><th scope="col">Sign-in</th><th scope="col">Role</th><th scope="col">Last sign-in</th><th scope="col" class="col-action">Action</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
-    <td><span class="who-name">{{ r.name }}</span></td>
-    <td>{{ r.email }}</td>
-    <td>{{ "Microsoft" if r.kind == "entra" else "Local" }}</td>
-    <td>{{ role_labels[r.role] }}{% if r.role != "pending" %} <span class="meta">{{ "Pinned" if r.role_pinned else "From Entra" }}</span>{% endif %}</td>
-    <td>{% if r.kind == "local" %}{{ "On" if r.totp_enabled else "Off" }}{% else %}–{% endif %}</td>
-    <td>{{ r.last_sign_in | uk_date }}</td>
-    <td>{% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% elif r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>{% else %}<span class="badge badge-current">Active</span>{% endif %}</td>
-    <td class="col-action">
+    <td data-label="User">
+      <div class="who">
+        <span class="avatar avatar-small" aria-hidden="true">{{ user_initials(r.name) }}</span>
+        <div>
+          <a class="who-name" href="/users/{{ r.id }}">{{ r.name }}</a>
+          {% if r.name != r.email %}<span class="meta">{{ r.email }}</span>{% endif %}
+        </div>
+      </div>
+    </td>
+    <td data-label="Sign-in">{{ "Microsoft" if r.kind == "entra" else "Local" }}{% if r.kind == "local" %}<span class="meta">Two-step {{ "on" if r.totp_enabled else "off" }}</span>{% endif %}</td>
+    <td data-label="Role">
+      {% if r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>
+      {% else %}{{ role_labels[r.role] }}{% if r.kind == "entra" %}<span class="meta">{{ "Pinned" if r.role_pinned else "From Entra" }}</span>{% endif %}{% endif %}
+      {% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% endif %}
+    </td>
+    <td data-label="Last sign-in"><span class="nowrap">{{ r.last_sign_in | uk_date }}</span></td>
+    <td data-label="Action" class="col-action">
       <div class="row-actions">
         {% if r.role == "pending" %}
-        {% for role in assignable %}
-        <form method="post" action="/users/{{ r.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="role" value="{{ role }}"><button type="submit" class="button button-accent button-small">Approve as {{ role_labels[role] }}</button></form>
-        {% endfor %}
-        {% else %}
-        <form method="post" action="/users/{{ r.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-          <select class="input" name="role" aria-label="Role for {{ r.email }}">{% for role in assignable %}<option value="{{ role }}"{% if role == r.role %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select>
-          <button type="submit" class="button button-quiet button-small">Set role</button></form>
+        <form method="post" action="/users/{{ r.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="role" value="viewer"><button type="submit" class="button button-accent button-small">Approve as {{ role_labels["viewer"] }}</button></form>
         {% endif %}
-        <details>
-          <summary class="button button-quiet button-small">More</summary>
-          {% if r.kind == "entra" and r.role_pinned %}
-          <form method="post" action="/users/{{ r.id }}/unpin"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Let Entra decide</button></form>
-          {% endif %}
-          {% if r.disabled %}
-          <form method="post" action="/users/{{ r.id }}/enable"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Enable</button></form>
-          {% else %}
-          <form method="post" action="/users/{{ r.id }}/disable"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Disable</button></form>
-          {% endif %}
-          {% if r.kind == "local" %}
-          <form method="post" action="/users/{{ r.id }}/reset-password"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset password</button></form>
-          <form method="post" action="/users/{{ r.id }}/invite"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">New invite link</button></form>
-          <form method="post" action="/users/{{ r.id }}/reset-two-step"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Reset two-step</button></form>
-          {% endif %}
-          <form method="post" action="/users/{{ r.id }}/sign-out"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="button button-quiet button-small">Sign out everywhere</button></form>
-          <form method="post" action="/users/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-            <input class="input" name="confirm_email" type="text" autocomplete="off" placeholder="Type their email to delete" aria-label="Type {{ r.email }} to delete this user" required>
-            <button type="submit" class="button button-quiet button-small">Delete</button></form>
-        </details>
+        <a class="button button-quiet button-small" href="/users/{{ r.id }}">Manage</a>
       </div>
     </td>
   </tr>
