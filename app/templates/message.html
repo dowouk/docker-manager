@@ -5,6 +5,9 @@
   <h1>{{ title }}</h1>
 </section>
 <p class="notice">{{ message }}</p>
+{% if await_restart and job_id %}
+<p class="restart-status" data-await-restart data-job="{{ job_id }}" role="status" aria-live="polite" hidden></p>
+{% endif %}
 <p class="back">
   {% if job_id %}<a class="button button-quiet" href="/jobs/{{ job_id }}">View the log</a>{% endif %}
   <a class="button button-quiet" href="/">Back to dashboard</a>

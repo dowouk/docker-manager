@@ -730,8 +730,9 @@ def create_app(
         return render(
             request, "message.html", user,
             title="Updating the dashboard",
-            message="Updating the dashboard – reload in a minute",
+            message="Updating the dashboard – this page will refresh by itself once it's back.",
             job_id=job_id,
+            await_restart=True,
         )
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)

@@ -208,6 +208,54 @@
   }
 
   // SMTP presets on the channel form: fill host, port and security. Hidden without JS.
+  // After "Update the dashboard": the container is replaced, so wait for /healthz to go
+  // away and come back, then open the job's log (which records how it went). If it never
+  // goes down (nothing to update), open the log after a while anyway.
+  function initAwaitRestart() {
+    var el = document.querySelector("[data-await-restart]");
+    if (!el) return;
+    var job = el.getAttribute("data-job");
+    if (!/^[0-9]+$/.test(job || "")) return;
+    var target = "/jobs/" + job;
+    var started = Date.now();
+    var wentDown = false;
+    var GIVE_UP_MS = 90000;   // never went down: probably nothing to restart
+    var LIMIT_MS = 600000;    // matches the server's own wait for the restart
+    el.hidden = false;
+    function say(text) { el.textContent = text; }
+    function check() {
+      var controller = window.AbortController ? new AbortController() : null;
+      var timer = controller ? setTimeout(function () { controller.abort(); }, 4000) : null;
+      fetch("/healthz", { cache: "no-store", credentials: "same-origin",
+                          signal: controller ? controller.signal : undefined })
+        .then(function (r) { return r.ok; }, function () { return false; })
+        .then(function (up) {
+          if (timer) clearTimeout(timer);
+          var waited = Date.now() - started;
+          if (!up) {
+            wentDown = true;
+            say("Restarting the dashboard…");
+          } else if (wentDown) {
+            say("The dashboard is back – opening the log…");
+            window.location.assign(target);
+            return;
+          } else if (waited > GIVE_UP_MS) {
+            window.location.assign(target);
+            return;
+          } else {
+            say("Waiting for the new version to start…");
+          }
+          if (waited > LIMIT_MS) {
+            say("The dashboard hasn't come back yet – check the server, then reload this page.");
+            return;
+          }
+          setTimeout(check, 3000);
+        });
+    }
+    say("Waiting for the new version to start…");
+    setTimeout(check, 3000);
+  }
+
   function initPresets() {
     var box = document.querySelector("[data-presets]");
     if (!box) return;
@@ -227,6 +275,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     initPresets();
+    initAwaitRestart();
     initCopy();
     initTheme();
     initAccountMenu();
