@@ -5,12 +5,7 @@ All notable changes to Docker Manager are recorded here.
 ## [0.5.2] - 19th October 2026
 
 - Layout Check No Longer Flags the Dashboard's Own Registry Login Folder
-- Tidier Dashboard – Badges Stay on One Line, Update and Skip Line Up, Header Fits on One Row
-- "Send Digest Now" Moved from the Header to Settings
-- Footer with Copyright on the Left and Version on the Right
-- Users Page Redesigned – One Tidy Row per User, with a Manage Page for Each
-- Image Names Wrap at Slashes and Colons, Not Mid-Word
-- Pages Fit Phone Screens Without Sideways Scrolling
+- Dashboard Updates
 
 ## [0.5.1] - 19th October 2026
 
