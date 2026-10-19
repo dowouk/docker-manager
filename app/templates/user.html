@@ -6,7 +6,10 @@
 
 <section class="intro">
   <div>
-    <h1 class="user-title">{{ r.name }}</h1>
+    <div class="who">
+      {% set photo = photo_url(r) %}<span class="avatar avatar-large" aria-hidden="true">{% if photo %}<img src="{{ photo }}" alt="">{% else %}{{ user_initials(r.name) }}{% endif %}</span>
+      <h1 class="user-title">{{ r.name }}</h1>
+    </div>
     <p class="lede">
       {% if r.name != r.email %}{{ r.email }} · {% endif %}{{ "Microsoft sign-in" if r.kind == "entra" else "Local account" }}
       · {% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% elif r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>{% else %}<span class="badge badge-current">Active</span>{% endif %}

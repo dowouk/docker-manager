@@ -101,8 +101,20 @@ def _migration_4(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX skips_key ON skips (key, kind)")
 
 
+def _migration_5(db: sqlite3.Connection) -> None:
+    # Profile photos (Microsoft or Gravatar), fetched and served by the dashboard itself.
+    have = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+    for column in ("photo_etag", "photo_source", "photo_checked_at"):
+        if column not in have:
+            db.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS user_photos (user_id INTEGER PRIMARY KEY, "
+        "content_type TEXT NOT NULL, data BLOB NOT NULL)"
+    )
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
-    _migration_1, _migration_2, _migration_3, _migration_4]
+    _migration_1, _migration_2, _migration_3, _migration_4, _migration_5]
 
 
 def _now() -> str:

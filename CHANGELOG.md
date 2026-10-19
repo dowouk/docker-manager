@@ -8,6 +8,7 @@ All notable changes to Docker Manager are recorded here.
 - Users Page – Add Local and Microsoft Users Side by Side, Shown Only When That Sign-In Is On
 - Initials Ignore a Bracketed Company Name
 - Delete User Shows the Email to Type in Full
+- Profile Pictures – Microsoft Photo, or Gravatar for Everyone Else
 
 ## [0.5.2] - 19th October 2026
 

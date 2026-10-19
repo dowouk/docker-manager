@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from app import __version__
 from app.auth import RoleDenied, User, csrf_token, require_role, setup_auth, verify_csrf
 from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
+from app.photos import Photos, setup_photos
 from app.checker import CheckResult, ContainerStatus, Status, check_all
 from app.compose_edit import EditRefused, plan_tag_change
 from app.config import Settings, get_settings
@@ -334,6 +335,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         scheduler = None
+        app.state.photos.loop = asyncio.get_running_loop()  # for lookups from worker threads
         if start_scheduler:
             from app.scheduler import build_scheduler  # deferred: scheduler imports this module
 
@@ -388,7 +390,10 @@ def create_app(
     if not app.state.setup.is_open():
         app.state.entra_setup_hook = None
     setup_auth(app, settings, app.state.sessions, setup_open=app.state.setup.is_open)
+    app.state.photos = Photos(lambda: app.state.users, lambda: app.state.http,
+                              lambda: app.state.settings.gravatar)
     setup_entra(app)
+    setup_photos(app)
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
 
     env = jinja2.Environment(
@@ -431,6 +436,7 @@ def create_app(
         mailcow_state=view.mailcow_state,
         initials=view.initials,
         user_initials=view.user_initials,
+        photo_url=lambda person: app.state.photos.url(person),
         Role=Role,
         can=lambda user, role: user is not None and user.role >= role,
         legacy_banner=lambda user: bool(

@@ -51,6 +51,9 @@ class UserRecord:
     entra_oid: str | None
     created_at: datetime
     last_sign_in: datetime | None
+    photo_etag: str | None = None  # set while a profile photo is stored
+    photo_source: str | None = None  # "microsoft", "gravatar", "none" (none found) or unchecked
+    photo_checked_at: datetime | None = None
 
     @property
     def active(self) -> bool:
@@ -59,7 +62,7 @@ class UserRecord:
 
 _COLS = ("id, kind, email, name, password_hash, totp_secret, totp_enabled, totp_last_step, "
          "recovery_codes, role, role_pinned, disabled, must_change_password, entra_tid, "
-         "entra_oid, created_at, last_sign_in")
+         "entra_oid, created_at, last_sign_in, photo_etag, photo_source, photo_checked_at")
 
 _BOOLS = {"totp_enabled", "role_pinned", "disabled", "must_change_password"}
 # Columns update() may write. Secrets and credentials (password_hash, totp_*, recovery_codes)
@@ -86,7 +89,8 @@ def _record(r) -> UserRecord:
         totp_enabled=bool(r[6]), totp_last_step=r[7], recovery_codes=json.loads(r[8]),
         role=r[9], role_pinned=bool(r[10]), disabled=bool(r[11]),
         must_change_password=bool(r[12]), entra_tid=r[13], entra_oid=r[14],
-        created_at=_from_iso(r[15]), last_sign_in=_from_iso(r[16]),
+        created_at=_from_iso(r[15]), last_sign_in=_from_iso(r[16]), photo_etag=r[17],
+        photo_source=r[18], photo_checked_at=_from_iso(r[19]),
     )
 
 
@@ -229,7 +233,41 @@ class UserStore:
                 raise LastAdminError("there must be at least one active admin")
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             db.execute("DELETE FROM invites WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM user_photos WHERE user_id = ?", (user_id,))
             db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    # --- profile photo -----------------------------------------------------
+
+    def set_photo(self, user_id: int, source: str, content_type: str, data: bytes, *,
+                  checked_at: datetime) -> str:
+        """Store the photo; returns its etag (part of the image URL, so caches never go stale)."""
+        etag = hashlib.sha256(data).hexdigest()[:16]
+        with self._store.write_tx() as db:
+            db.execute("INSERT OR REPLACE INTO user_photos (user_id, content_type, data) "
+                       "VALUES (?, ?, ?)", (user_id, content_type, data))
+            db.execute("UPDATE users SET photo_etag = ?, photo_source = ?, photo_checked_at = ? "
+                       "WHERE id = ?", (etag, source, _to_iso(checked_at), user_id))
+        return etag
+
+    def clear_photo(self, user_id: int, *, source: str | None,
+                    checked_at: datetime | None) -> None:
+        with self._store.write_tx() as db:
+            db.execute("DELETE FROM user_photos WHERE user_id = ?", (user_id,))
+            db.execute("UPDATE users SET photo_etag = NULL, photo_source = ?, "
+                       "photo_checked_at = ? WHERE id = ?",
+                       (source, _to_iso(checked_at) if checked_at else None, user_id))
+
+    def touch_photo_check(self, user_id: int, checked_at: datetime) -> None:
+        with self._store.write_tx() as db:
+            db.execute("UPDATE users SET photo_checked_at = ? WHERE id = ?",
+                       (_to_iso(checked_at), user_id))
+
+    def photo(self, user_id: int) -> tuple[str, bytes] | None:
+        with self._store._lock:
+            row = self._store._db.execute(
+                "SELECT content_type, data FROM user_photos WHERE user_id = ?",
+                (user_id,)).fetchone()
+        return (row[0], bytes(row[1])) if row else None
 
     # --- TOTP and recovery codes -------------------------------------------
 

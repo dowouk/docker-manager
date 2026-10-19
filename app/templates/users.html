@@ -38,7 +38,7 @@
   <tr>
     <td data-label="User">
       <div class="who">
-        <span class="avatar avatar-small" aria-hidden="true">{{ user_initials(r.name) }}</span>
+        {% set photo = photo_url(r) %}<span class="avatar avatar-small" aria-hidden="true">{% if photo %}<img src="{{ photo }}" alt="">{% else %}{{ user_initials(r.name) }}{% endif %}</span>
         <div>
           <a class="who-name" href="/users/{{ r.id }}">{{ r.name }}</a>
           {% if r.name != r.email %}<span class="meta">{{ r.email }}</span>{% endif %}

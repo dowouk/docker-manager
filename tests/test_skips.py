@@ -7,7 +7,7 @@ from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.notify.notifier import current_updates
 from app.roles import Role
 from app.skips import ItemRef, SkipStore, update_items, visible_result
-from app.store import Store
+from app.store import MIGRATIONS, Store
 from app.view import attention, overview
 from auth_helpers import CSRF, logged_in_client
 from test_routes import CHECKED_AT, compose_file, info, make_app, seeded, status  # noqa: F401
@@ -171,7 +171,7 @@ def test_migration_4_on_a_0_4_database(tmp_path):
         db.execute("UPDATE schema_version SET version = 3")
     s.close()
     s = Store(path)
-    assert sqlite3.connect(path).execute("SELECT version FROM schema_version").fetchone()[0] == 4
+    assert sqlite3.connect(path).execute("SELECT version FROM schema_version").fetchone()[0] == len(MIGRATIONS)
     assert s.get_meta("existing_install") == "1" and s.get_meta("upgraded_from_0_1") == "1"
     assert s.load_settings() == {"server_name": "box"}
     assert [j.target for j in s.list_jobs()] == ["web"]
