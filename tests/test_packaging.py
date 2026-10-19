@@ -113,3 +113,10 @@ def test_credential_helper_entry_point():
 
     found = {e.name: e.value for e in entry_points(group="console_scripts")}
     assert found["docker-credential-docker-manager"] == "app.credhelper:main_cli"
+
+
+def test_version_matches_the_changelog():
+    import re
+    import app
+    top = re.search(r"^## \[(\d+\.\d+\.\d+)\]", open(ROOT / "CHANGELOG.md").read(), re.M).group(1)
+    assert app.__version__ == top

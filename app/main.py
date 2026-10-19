@@ -14,11 +14,13 @@ import docker
 import docker.errors
 import httpx
 import jinja2
+from markupsafe import Markup, escape
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app import __version__
 from app.auth import RoleDenied, User, csrf_token, require_role, setup_auth, verify_csrf
 from app.entra import build_oauth, check_settings, redirect_uri, setup_entra
 from app.checker import CheckResult, ContainerStatus, Status, check_all
@@ -84,10 +86,6 @@ FLASH = {
     "check_failed": ("The check could not be completed – see the server logs", "error"),
     "edit_refused": ("The compose file can't be edited automatically – update by hand", "error"),
     "changed": ("The compose file changed since the preview – review the change again", "error"),
-    "digest_sent": ("Digest sent", "ok"),
-    "digest_nothing": ("Digest skipped – nothing to report", "ok"),
-    "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
-    "digest_failed": ("The digest could not be sent – check the server logs", "error"),
     "skipped": ("Update hidden – it's listed under Skipped below", "ok"),
     "skip_removed": ("Skip removed – the update shows again", "ok"),
     "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
@@ -107,6 +105,10 @@ SETTINGS_FLASH = {
     "entra_failed": ("Couldn't reach Microsoft with these settings – check the tenant ID", "error"),
     "group_saved": ("Group role saved", "ok"),
     "group_removed": ("Group role removed", "ok"),
+    "digest_sent": ("Digest sent", "ok"),
+    "digest_nothing": ("Digest skipped – nothing to report", "ok"),
+    "digest_unconfigured": ("Digest skipped – no channel gets the digest", "ok"),
+    "digest_failed": ("The digest could not be sent – check the server logs", "error"),
 }
 
 # Every reason a send can fail with, by position: the test result travels in the redirect as
@@ -401,8 +403,16 @@ def create_app(
         return f"{local.day} {local:%b %Y, %H:%M}"
 
     env.filters["uk_date"] = uk_date
+
+    def breakable(text) -> Markup:
+        # Long image names wrap after / and : rather than mid-word. Escaped first.
+        return Markup(str(escape(text)).replace("/", "/<wbr>").replace(":", ":<wbr>"))
+
+    env.filters["breakable"] = breakable
     env.globals.update(
         server_name=app.state.settings.server_name,
+        app_version=__version__,
+        current_year=lambda: datetime.now(ZoneInfo(app.state.settings.tz)).year,
         STATUS_LABELS=STATUS_LABELS,
         JOB_STATUS_LABELS=JOB_STATUS_LABELS,
         JOB_KIND_LABELS=JOB_KIND_LABELS,
@@ -514,7 +524,6 @@ def create_app(
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
             offers_project=functools.partial(_offers_project, result),
-            digest_enabled=bool(app.state.channels.subscribed("digest")),
             error=error,
         )
 
@@ -533,7 +542,7 @@ def create_app(
             result = _latest(app) or await run_check(app)
         except Exception:  # noqa: BLE001
             log.exception("The check before sending the digest failed")
-            return _redirect("/?msg=digest_failed")
+            return _redirect("/settings?msg=digest_failed#digest")
         outcome = await app.state.notifier.digest(result)  # never raises
         code = {
             "sent": "digest_sent",
@@ -541,7 +550,7 @@ def create_app(
             "skipped – no channel gets the digest": "digest_unconfigured",
             "failed": "digest_failed",
         }[outcome]
-        return _redirect(f"/?msg={code}")
+        return _redirect(f"/settings?msg={code}#digest")
 
     @app.post("/containers/{container_id}/update", dependencies=[Depends(verify_csrf)])
     async def update_container(
@@ -828,6 +837,7 @@ def create_app(
             channels=channel_rows(),
             channels_unreadable=app.state.channels.unreadable,
             providers=PROVIDERS,
+            digest_enabled=bool(app.state.channels.subscribed("digest")),
             flash=flash or SETTINGS_FLASH.get(msg),
         )
 

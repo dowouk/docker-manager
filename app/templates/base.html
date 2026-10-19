@@ -37,7 +37,6 @@
         {% endif %}
       </nav>
       <div class="header-spacer"></div>
-      {% block header_meta %}{% endblock %}
       <div class="header-actions">
         {% block header_actions %}{% endblock %}
         <button type="button" class="icon-button theme-toggle" id="theme-toggle" aria-label="Switch to dark theme" hidden>
@@ -63,5 +62,6 @@
     {% if legacy_banner(user) %}<p class="notice notice-error" role="alert">Everyone who can sign in is an Admin, as in 0.1 – review Users and the default role in Settings. <a href="/settings">Open Settings</a></p>{% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% include "_footer.html" %}
 </body>
 </html>

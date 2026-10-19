@@ -267,3 +267,18 @@ def test_own_data_dir_with_a_trailing_slash_is_still_allowed():
     me = make("dash", is_self=True, mounts=[bind("/home/me/dm", "/data")])
     found = layout_problems([me], Settings(_env_file=None), lambda c: Rules(), "/data/", MAILCOW)
     assert found == []
+
+
+def test_own_registry_login_mount_is_allowed():
+    # The README's REGISTRY_AUTH_FILE set-up mounts /root/.docker, where `docker login` writes.
+    settings = Settings(_env_file=None).model_copy(
+        update={"registry_auth_file": "/run/docker-auth/config.json"})
+    me = make("dash", is_self=True, mounts=[bind("/root/.docker", "/run/docker-auth", ro=True)])
+    assert layout_problems([me], settings, lambda c: Rules(), "/data", MAILCOW) == []
+    # Only for the dashboard itself, and only the folder holding that file.
+    other = make("app", mounts=[bind("/root/.docker", "/run/docker-auth", ro=True)])
+    assert [p.kind for p in layout_problems([other], settings, lambda c: Rules(), "/data", MAILCOW)] == ["bind_outside"]
+    elsewhere = make("dash", is_self=True, mounts=[bind("/root/.docker", "/run/other", ro=True)])
+    assert [p.kind for p in layout_problems([elsewhere], settings, lambda c: Rules(), "/data", MAILCOW)] == ["bind_outside"]
+    unset = Settings(_env_file=None)
+    assert [p.kind for p in layout_problems([me], unset, lambda c: Rules(), "/data", MAILCOW)] == ["bind_outside"]

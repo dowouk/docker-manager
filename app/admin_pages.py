@@ -85,6 +85,12 @@ def setup_admin_pages(app: FastAPI) -> None:
     async def users_list(request: Request, msg: str = "", user: User = Depends(admin)):
         return users_page(request, user, msg=msg)
 
+    @app.get("/users/{user_id}", include_in_schema=False, response_class=HTMLResponse)
+    async def user_detail(request: Request, user_id: int, user: User = Depends(admin)):
+        rec = target(user_id)
+        return page(request, "user.html", 200, user=user, r=rec, assignable=ASSIGNABLE,
+                    role_labels={r.value: ROLE_LABELS[r] for r in Role})
+
     @app.post("/users/local", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def users_add_local(request: Request, user: User = Depends(admin),
                               name: str = Form(""), email: str = Form(""),

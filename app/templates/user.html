@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ r.name }} – Users{% endblock %}
+{% macro csrf_field() %}<input type="hidden" name="csrf_token" value="{{ csrf }}">{% endmacro %}
+{% block content %}
+<p class="back-link"><a href="/users">← All users</a></p>
+
+<section class="intro">
+  <div>
+    <h1 class="user-title">{{ r.name }}</h1>
+    <p class="lede">
+      {% if r.name != r.email %}{{ r.email }} · {% endif %}{{ "Microsoft sign-in" if r.kind == "entra" else "Local account" }}
+      · {% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% elif r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>{% else %}<span class="badge badge-current">Active</span>{% endif %}
+    </p>
+  </div>
+</section>
+
+<div class="manage-grid">
+  <section class="card manage-card">
+    <h2>Role</h2>
+    <p class="card-text">
+      Now: <strong>{{ role_labels[r.role] }}</strong>{% if r.role != "pending" and r.kind == "entra" %} · {{ "Pinned – Microsoft sign-in won't change it" if r.role_pinned else "Set by Entra mappings at each sign-in" }}{% endif %}
+    </p>
+    <form method="post" action="/users/{{ r.id }}/role" class="inline-form">
+      {{ csrf_field() }}
+      <label class="visually-hidden" for="role">Role</label>
+      <select class="input" id="role" name="role">{% for role in assignable %}<option value="{{ role }}"{% if role == r.role %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select>
+      <button type="submit" class="button button-accent">{{ "Approve" if r.role == "pending" else "Save role" }}</button>
+    </form>
+    {% if r.kind == "entra" and r.role_pinned %}
+    <form method="post" action="/users/{{ r.id }}/unpin">
+      {{ csrf_field() }}
+      <button type="submit" class="button button-quiet">Let Entra decide</button>
+      <p class="field-help">Their role then follows your Entra app roles and group mappings at each sign-in.</p>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="card manage-card">
+    <h2>Access</h2>
+    <p class="card-text">Last sign-in: {{ r.last_sign_in | uk_date }}{% if r.kind == "local" %} · Two-step sign-in {{ "on" if r.totp_enabled else "off" }}{% endif %}</p>
+    <div class="button-row">
+      {% if r.disabled %}
+      <form method="post" action="/users/{{ r.id }}/enable">{{ csrf_field() }}<button type="submit" class="button button-quiet">Enable</button></form>
+      {% else %}
+      <form method="post" action="/users/{{ r.id }}/disable">{{ csrf_field() }}<button type="submit" class="button button-quiet">Disable</button></form>
+      {% endif %}
+      <form method="post" action="/users/{{ r.id }}/sign-out">{{ csrf_field() }}<button type="submit" class="button button-quiet">Sign out everywhere</button></form>
+    </div>
+    <p class="field-help">Disabling also signs them out straight away.</p>
+  </section>
+
+  {% if r.kind == "local" %}
+  <section class="card manage-card">
+    <h2>Local account</h2>
+    <div class="button-row">
+      <form method="post" action="/users/{{ r.id }}/reset-password">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset password</button></form>
+      <form method="post" action="/users/{{ r.id }}/invite">{{ csrf_field() }}<button type="submit" class="button button-quiet">New invite link</button></form>
+      <form method="post" action="/users/{{ r.id }}/reset-two-step">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset two-step</button></form>
+    </div>
+    <p class="field-help">Each shows a one-time password or link once, and signs them out.</p>
+  </section>
+  {% endif %}
+
+  <section class="card manage-card manage-danger">
+    <h2>Delete</h2>
+    <p class="card-text">Removes the account and its sessions. This can't be undone.</p>
+    <form method="post" action="/users/{{ r.id }}/delete" class="inline-form">
+      {{ csrf_field() }}
+      <label class="visually-hidden" for="confirm_email">Type {{ r.email }} to confirm</label>
+      <input class="input" id="confirm_email" name="confirm_email" type="text" autocomplete="off" placeholder="Type {{ r.email }} to confirm" required>
+      <button type="submit" class="button button-quiet">Delete user</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

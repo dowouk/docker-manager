@@ -81,9 +81,35 @@ def test_users_table_lists_pending_first_with_approve_buttons(app, admin):
     local(app, "zed@example.com")
     html = admin.get("/users", headers=HTML).text
     assert html.index("wait@example.com") < html.index("zed@example.com")
-    for role in ("Viewer", "Operator", "Admin"):
-        assert f"Approve as {role}" in html
+    # One quick approve as the least role; other roles are on the user's own page.
+    assert "Approve as Viewer" in html and "Approve as Admin" not in html
     assert "Waiting for approval" in html and "Local" in html and "Microsoft" in html
+
+
+def test_users_list_is_one_tidy_row_per_user_with_manage(app, admin):
+    ann = local(app, "ann@example.com")
+    pre = app.state.users.create("entra", "pre@example.com", "pre@example.com", "viewer", pinned=True)
+    html = admin.get("/users", headers=HTML).text
+    table = html[html.index("<table"):html.index("</table>")]
+    assert f'href="/users/{ann.id}"' in table and f'href="/users/{pre.id}"' in table
+    assert "Manage" in table
+    # No per-row forms other than approving: the actions live on each user's page.
+    assert "<select" not in table and "Type their email" not in table
+    assert table.count("pre@example.com") == 1  # name equal to the email shows once
+    assert "From Entra" not in table  # a local user's role never comes from Entra
+
+
+def test_user_page_groups_the_actions(app, admin):
+    ann = local(app, "ann@example.com")
+    html = admin.get(f"/users/{ann.id}", headers=HTML).text
+    for action in ("role", "disable", "reset-password", "invite", "reset-two-step", "sign-out", "delete"):
+        assert f'action="/users/{ann.id}/{action}"' in html
+    assert "ann@example.com" in html and "Local" in html and "Entra" not in html
+    ms = app.state.users.create("entra", "ms@example.com", "Ms", "viewer", pinned=True)
+    html = admin.get(f"/users/{ms.id}", headers=HTML).text
+    assert f'action="/users/{ms.id}/unpin"' in html
+    assert "reset-password" not in html and "reset-two-step" not in html
+    assert admin.get("/users/99999", headers=HTML).status_code == 404
 
 
 def test_approve_pins_role_and_lets_user_in(app, admin):

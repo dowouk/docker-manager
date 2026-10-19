@@ -53,6 +53,17 @@
         <button type="submit" class="button button-accent">Save {{ title | lower }} settings</button>
       </div>
     </form>
+    {% if key == "digest" %}
+    {% if digest_enabled %}
+    <form method="post" action="/digest/send" class="settings-test">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="button button-quiet">Send digest now</button>
+      <p class="field-help">Sends the digest of the latest check to every channel that gets it.</p>
+    </form>
+    {% else %}
+    <p class="field-help">No notification channel gets the weekly digest yet – tick "Weekly digest" on a channel below.</p>
+    {% endif %}
+    {% endif %}
     {% if key == "signin" %}
     <div class="field">
       <label for="redirect-uri">Redirect URI for your Microsoft Entra app</label>
