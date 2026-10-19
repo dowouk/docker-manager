@@ -692,6 +692,8 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 
 **"Mailcow folder not mounted (MAILCOW_DIR=…)"** – Mailcow is running but the dashboard can't see its folder. Uncomment the `[Mailcow]` mount (`/opt/mailcow-dockerized:/opt/mailcow-dockerized`) in your compose file, or set `MAILCOW_DIR` to where Mailcow really is.
 
+**"The dashboard can't run commands on the server"** (or `nsenter: … Operation not permitted`) – the Mailcow row needs the dashboard to run with `pid: host` and `privileged: true`. Uncomment the `[Mailcow]` lines in your compose file and run `docker compose up -d` so the container is recreated with them. If they're already there, check Docker isn't using user-namespace remapping (`userns-remap` in `/etc/docker/daemon.json`), which blocks this even for a privileged container.
+
 **Mailcow update fails with local changes or merge conflicts** – the dashboard never tries to fix this. Log in to the server, go to `/opt/mailcow-dockerized`, and sort it out by hand as you would normally (`git status` shows what changed).
 
 **The page shows "502 Bad Gateway"** – the proxy can't reach the dashboard. Check `docker compose logs` for errors (a missing required setting is reported there by name), and that the dashboard and the proxy share the network named in the compose file.

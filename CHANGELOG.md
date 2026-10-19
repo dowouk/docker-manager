@@ -9,6 +9,7 @@ All notable changes to Docker Manager are recorded here.
 - Initials Ignore a Bracketed Company Name
 - Delete User Shows the Email to Type in Full
 - Profile Pictures – Microsoft Photo, or Gravatar for Everyone Else
+- Mailcow Says What to Add When It Can't Reach the Server
 
 ## [0.5.2] - 19th October 2026
 

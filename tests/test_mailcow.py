@@ -63,6 +63,15 @@ async def test_check_error_includes_code_and_last_lines(respx_mock, http):
     assert "line3" not in st.error
 
 
+async def test_check_explains_missing_host_access(respx_mock, http):
+    respx_mock.get(RELEASE_URL).mock(return_value=httpx.Response(200, json={"tag_name": "x"}))
+    run, _ = fake_run(1, "nsenter: reassociate to namespaces failed: Operation not permitted\n",
+                      describe=(1, "nsenter: reassociate to namespaces failed\n"))
+    st = await check_mailcow(DIR, run, http)
+    assert "pid: host" in st.error and "privileged: true" in st.error
+    assert "nsenter" not in st.error and st.current_version is None
+
+
 @pytest.mark.parametrize(
     "response",
     [httpx.Response(500), httpx.Response(200, json={}), httpx.ConnectError("boom")],
@@ -137,6 +146,12 @@ async def test_update_failure_without_hint():
     with pytest.raises(UpdateFailed) as ei:
         await update_mailcow(ctx, DIR)
     assert "local changes" not in str(ei.value)
+
+
+async def test_update_explains_missing_host_access():
+    ctx, _, _ = make_ctx([1], "nsenter: reassociate to namespaces failed: Operation not permitted")
+    with pytest.raises(UpdateFailed, match="privileged: true"):
+        await update_mailcow(ctx, DIR)
 
 
 async def test_run_capture_output_and_exit_code():
