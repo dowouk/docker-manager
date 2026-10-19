@@ -7,6 +7,7 @@ All notable changes to Docker Manager are recorded here.
 - Footer Stays at the Bottom of the Window
 - Users Page – Add Local and Microsoft Users Side by Side, Shown Only When That Sign-In Is On
 - Initials Ignore a Bracketed Company Name
+- Delete User Shows the Email to Type in Full
 
 ## [0.5.2] - 19th October 2026
 

@@ -365,6 +365,11 @@ dialog form[method="dialog"] { margin-top: 12px; }
 .inline-form .input { flex: 1 1 180px; width: auto; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .manage-danger { border-color: var(--err-tint); }
+.stack-form { display: flex; flex-direction: column; gap: 8px; }
+.stack-form label { margin: 0; overflow-wrap: anywhere; }
+.manage-card form > .field-help { margin: 8px 0 0; }
+.button.button-danger { background: var(--err-tint); color: var(--err-text); border-color: transparent; }
+.button.button-danger:hover { background: var(--err); color: #fff; }
 .details { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
 .details dt { color: var(--subtle); }
 .details dd { margin: 0; color: var(--fg-strong); word-break: break-word; }
