@@ -1,0 +1,200 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+# Weekly dependency drift report, synced to every repo from dowouk/.github
+# (workflows/). Dependabot raises alerts only – no .github/dependabot.yml, and
+# automated security fixes off in the repository settings – so this workflow
+# covers what its version-update PRs would have: it keeps one issue listing
+# the direct Composer, npm and Python dependencies, and the SHA-pinned GitHub
+# Actions, that have a newer release. The body is rewritten each week, so it is
+# always the current list, and the issue closes itself once everything is
+# current.
+#
+# Each ecosystem runs only when its lock file (for Python, pyproject.toml or
+# requirements*.txt) exists, so the same file works in a repo with any mix of them or none.
+
+name: Dependency updates
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Mondays, 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PHP_VERSION: "8.4"
+  NODE_VERSION: "lts/*"
+  PYTHON_VERSION: "3.x"
+  ISSUE_TITLE: "Dependency updates available"
+  # The organisation's issue type. It can only be set once the issue exists,
+  # so it is a second call after `gh issue create`; a failure there warns
+  # rather than losing the issue.
+  ISSUE_TYPE: Task
+
+jobs:
+  outdated:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up PHP
+        if: hashFiles('composer.lock') != ''
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer
+          coverage: none
+
+      # Scripts stay off – nothing here needs to build or boot the app. A repo
+      # can define a `deps` script (composer outdated with --ignore for
+      # packages it holds back on purpose); it is used in place of plain
+      # composer outdated, with these options passed through after `--`.
+      - name: List outdated Composer dependencies
+        if: hashFiles('composer.lock') != ''
+        shell: bash
+        run: |
+          composer install --no-interaction --prefer-dist --no-scripts --no-progress
+          if jq -e '.scripts.deps' composer.json > /dev/null; then
+            outdated=(composer deps --no-interaction --)
+          else
+            outdated=(composer outdated --no-interaction)
+          fi
+          "${outdated[@]}" --direct --format=json \
+            | jq -r '.installed // [] | .[] | "- [ ] `\(.name)` \(.version) → \(.latest)"' \
+            > "$RUNNER_TEMP/php.md"
+
+      - name: Set up Node
+        if: hashFiles('package-lock.json') != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: List outdated npm dependencies
+        if: hashFiles('package-lock.json') != ''
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          # npm outdated exits 1 whenever anything is outdated.
+          { npm outdated --json || true; } \
+            | jq -r 'to_entries[] | "- [ ] `\(.key)` \(.value.current) → \(.value.latest)"' \
+            > "$RUNNER_TEMP/npm.md"
+
+      - name: Set up Python
+        if: hashFiles('pyproject.toml', 'requirements*.txt') != ''
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # There is no lock file to install from, so each pin in [project]
+      # dependencies and optional-dependencies, and in requirements*.txt at the
+      # repo root, is checked against the latest release on PyPI: a pin such as
+      # fastapi==0.143.* is outdated once a release falls outside it. A
+      # pyproject.toml with no [project] table (tool settings only) lists
+      # nothing, and unpinned packages, -r/-e/-- lines and URLs are skipped.
+      - name: List outdated Python dependencies
+        if: hashFiles('pyproject.toml', 'requirements*.txt') != ''
+        shell: bash
+        run: |
+          pip install --quiet --disable-pip-version-check packaging
+          python - > "$RUNNER_TEMP/python.md" <<'EOF'
+          import glob, json, os, tomllib, urllib.request
+          from packaging.requirements import InvalidRequirement, Requirement
+          from packaging.version import Version
+
+          specs = []
+          if os.path.exists("pyproject.toml"):
+              project = tomllib.load(open("pyproject.toml", "rb")).get("project", {})
+              specs += project.get("dependencies", [])
+              for group in project.get("optional-dependencies", {}).values():
+                  specs += group
+          for path in sorted(glob.glob("requirements*.txt")):
+              for line in open(path):
+                  line = line.split(" #")[0].strip()
+                  if line and not line.startswith(("#", "-")):
+                      specs.append(line)
+
+          seen = set()
+          for spec in specs:
+              try:
+                  req = Requirement(spec)
+              except InvalidRequirement:
+                  continue
+              if not req.specifier or req.name in seen:
+                  continue
+              seen.add(req.name)
+              try:
+                  with urllib.request.urlopen(f"https://pypi.org/pypi/{req.name}/json") as r:
+                      latest = json.load(r)["info"]["version"]
+              except Exception:
+                  continue
+              if not req.specifier.contains(Version(latest), prereleases=True):
+                  print(f"- [ ] `{req.name}` {req.specifier} → {latest}")
+          EOF
+
+      # Compare each SHA pin's version comment with the action's latest
+      # release, and give the new release's SHA so both can be updated
+      # together. Sub-path actions (owner/repo/path) share the repository's
+      # releases. Actions pinned by tag (@v4) or with no GitHub release are
+      # skipped rather than failing the run.
+      - name: List outdated GitHub Actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A repo with no SHA pins matches nothing; that is not a failure.
+          { grep -hoE 'uses: [^ ]+@[0-9a-f]{40} # [^ ]+' .github/workflows/*.y*ml || true; } | sort -u \
+            | while read -r _ ref _ pinned; do
+                # actions/cache/restore is released from actions/cache.
+                repo=$(cut -d/ -f1-2 <<< "${ref%@*}")
+                latest=$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null) || continue
+                [[ "${latest#v}" == "${pinned#v}" ]] && continue
+                sha=$(gh api "repos/$repo/commits/$latest" --jq .sha)
+                echo "- [ ] \`$repo\` $pinned → $latest (\`$sha\`)"
+              done > "$RUNNER_TEMP/actions.md"
+
+      - name: Report to the issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+
+          if [[ ! -s "$RUNNER_TEMP/php.md" && ! -s "$RUNNER_TEMP/npm.md" && ! -s "$RUNNER_TEMP/python.md" && ! -s "$RUNNER_TEMP/actions.md" ]]; then
+            echo "All direct dependencies are up to date." >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "$existing" ]]; then
+              gh issue close "$existing" --comment "Everything is current as of $RUN_URL – closing."
+            fi
+            exit 0
+          fi
+
+          section() {
+            [[ -s "$2" ]] || return 0
+            printf '### %s\n\n' "$1"
+            cat "$2"
+            echo
+          }
+          {
+            echo "Direct dependencies and GitHub Actions with a newer release, as of $RUN_URL. Apply them, run the suite, and this issue closes itself on the next clean run."
+            echo
+            section Composer "$RUNNER_TEMP/php.md"
+            section npm "$RUNNER_TEMP/npm.md"
+            section Python "$RUNNER_TEMP/python.md"
+            section "GitHub Actions" "$RUNNER_TEMP/actions.md"
+            echo "Actions are pinned by SHA with a version comment – update both, in every workflow that uses the action."
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$existing" ]]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            url=$(gh issue create --title "$ISSUE_TITLE" --body-file "$RUNNER_TEMP/body.md" \
+              --label dependencies,automated)
+            gh api -X PATCH "repos/$GH_REPO/issues/${url##*/}" -f type="$ISSUE_TYPE" --silent \
+              || echo "::warning::Could not set the $ISSUE_TYPE issue type on $url"
+          fi
