@@ -309,6 +309,16 @@ docker exec docker-manager docker-manager reset-admin you@example.com
 
 It creates the local Admin (or resets the existing one), and prints a **one-time password**. It also clears that account's failed attempts and lock, turns off its two-step sign-in so they enrol again, ends all of their sessions, and turns **local sign-in back on** if it had been switched off – restart the container (`docker compose restart`) for that last part to apply. The person must choose a new password at their next sign-in. The change is recorded in History.
 
+### Profile pictures
+
+The avatar at the top right, and on the Users pages, shows:
+
+1. the person's **Microsoft profile photo**, fetched each time they sign in with Microsoft;
+2. otherwise their **Gravatar** picture, if they have one – this covers local accounts and Microsoft users without a photo;
+3. otherwise their initials. Anything in brackets in a name is skipped, so "Steve Hardy (DOWO Digital)" is SH.
+
+The dashboard fetches the pictures and serves them itself, so browsers never contact Microsoft or Gravatar. A Gravatar lookup sends Gravatar a hash of the email address. The answer, picture or none, is kept for 24 hours before the next lookup. To stop Gravatar lookups, untick **Show Gravatar pictures** under **Settings → Sign-in**.
+
 ## Set up the Azure app registration for Microsoft sign-in
 
 This is only needed if you want people to sign in with Microsoft; local accounts work without it. You need one app registration. You can use the same one for all your servers – just add a redirect URI for each.
@@ -347,7 +357,11 @@ For each extra server, go to **Authentication → Web → Redirect URIs → Add 
 2. Go to **Properties**, set **Assignment required?** to **Yes**, and click **Save**.
 3. Go to **Users and groups → Add user/group**, choose yourself (and anyone else who should have access), and click **Assign**.
 
-### 6. Optional: app roles and groups
+### 6. Profile photos (User.Read)
+
+Microsoft sign-in also asks for **User.Read**, so the dashboard can show each person's Microsoft profile photo. New app registrations already have it: check **API permissions** lists **Microsoft Graph → User.Read (Delegated)**, and add it if not. If it's missing, sign-in still works – people just get initials or a Gravatar picture instead.
+
+### 7. Optional: app roles and groups
 
 See [Roles from Microsoft: app roles and groups](#roles-from-microsoft-app-roles-and-groups) above. The old `ALLOWED_EMAILS` and `ALLOWED_GROUP_ID` settings are gone from day-to-day use; see [Upgrading from an earlier version](#upgrading-from-an-earlier-version).
 
@@ -485,7 +499,7 @@ Mailcow isn't a separate kind of server – it runs alongside Caddy or Traefik. 
 Open **Settings** from the top of the dashboard. Most options can be changed there, with no file editing or restart:
 
 - **General** – server name, time zone and the dashboard's address.
-- **Sign-in** – Microsoft sign-in (tenant ID, client ID, client secret and the redirect URI to copy), roles from Microsoft groups, local sign-in, two-step sign-in for Admins and the default role. See [Accounts and sign-in](#accounts-and-sign-in).
+- **Sign-in** – Microsoft sign-in (tenant ID, client ID, client secret and the redirect URI to copy), roles from Microsoft groups, local sign-in, two-step sign-in for Admins, the default role and Gravatar pictures. See [Accounts and sign-in](#accounts-and-sign-in).
 - **Checking** – how often to check for updates, how long a version update waits for the service to come up healthy, the Mailcow folder, [startup, random delay and heartbeat](#checking-settings), and the [layout check](#layout-check).
 - **Weekly digest** – the schedule, and whether to send it when everything is up to date. The digest goes to every notification channel that has it ticked.
 - **Notifications** – channels (Azure Communication Services, SMTP2GO or SMTP), the events each one carries, and a **Test** button for each. See [Notifications](#notifications).
@@ -507,7 +521,7 @@ What this does and doesn't do:
 
 **Upgrading from 0.1.** If you copy the new example compose file over your old one, your `AZURE_*` values (now commented out in the example) and the `ACS_CONNECTION_STRING`, `DIGEST_FROM` and `DIGEST_TO` lines (and `DIGEST_SCHEDULE`, `DIGEST_WHEN_NONE`) that 0.1 passed through are dropped. Either keep those lines in your compose file, or add an email channel on the Settings page. A variable that is set but empty (for example `ACS_CONNECTION_STRING=`) is ignored; only a variable with a value counts.
 
-Nothing is needed in the environment to start the dashboard any more: `PUBLIC_URL` and the `AZURE_*` values are optional because they can be set on the Settings page. Only `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` are set with environment variables alone. The four sign-in settings (local sign-in, hiding local sign-in, two-step sign-in for Admins and the default role) are on the Settings page only.
+Nothing is needed in the environment to start the dashboard any more: `PUBLIC_URL` and the `AZURE_*` values are optional because they can be set on the Settings page. Only `DATA_DIR`, `COMPOSE_ROOT` and `SECRET_KEY_FILE` are set with environment variables alone. The five sign-in settings (local sign-in, hiding local sign-in, two-step sign-in for Admins, the default role and Gravatar pictures) are on the Settings page only.
 
 ## Configuration reference
 
@@ -677,6 +691,8 @@ If the limit is reached, the update stops with the message **"Docker Hub rate li
 **"Project uses an env file that isn't mounted – update by hand"** – the project was started with `--env-file` pointing at a file the dashboard can't see. Mount it at the **same path** (or move it under `/docker`), or update that project by hand.
 
 **"Mailcow folder not mounted (MAILCOW_DIR=…)"** – Mailcow is running but the dashboard can't see its folder. Uncomment the `[Mailcow]` mount (`/opt/mailcow-dockerized:/opt/mailcow-dockerized`) in your compose file, or set `MAILCOW_DIR` to where Mailcow really is.
+
+**"The dashboard can't run commands on the server"** (or `nsenter: … Operation not permitted`) – the Mailcow row needs the dashboard to run with `pid: host` and `privileged: true`. An Admin can press **Fix compose file** on the Mailcow row: it shows the change to the dashboard's own compose file (uncommenting the `[Mailcow]` lines if they're there, otherwise adding the two options), keeps a backup in `data/backups`, and recreates the dashboard. Or do it by hand: uncomment the `[Mailcow]` lines and run `docker compose up -d` so the container is recreated with them. If they're already there, check Docker isn't using user-namespace remapping (`userns-remap` in `/etc/docker/daemon.json`), which blocks this even for a privileged container.
 
 **Mailcow update fails with local changes or merge conflicts** – the dashboard never tries to fix this. Log in to the server, go to `/opt/mailcow-dockerized`, and sort it out by hand as you would normally (`git status` shows what changed).
 

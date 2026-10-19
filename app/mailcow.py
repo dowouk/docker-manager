@@ -14,6 +14,19 @@ from app.jobs import JobContext, subprocess_env
 from app.updaters import UpdateFailed
 
 RELEASE_URL = "https://api.github.com/repos/mailcow/mailcow-dockerized/releases/latest"
+# nsenter can't enter the server's namespaces without these two compose options.
+NO_HOST_ACCESS = (
+    "The dashboard can't run commands on the server – its compose file needs "
+    "\"pid: host\" and \"privileged: true\" (the [Mailcow] lines in the example). "
+    "Add them, then run docker compose up -d"
+)
+
+
+def _no_host_access(output: str) -> bool:
+    low = output.lower()
+    return "nsenter" in low and ("operation not permitted" in low or "permission denied" in low)
+
+
 _HINT = (
     " – the Mailcow git tree may have local changes or merge conflicts;"
     " resolve them by hand on the server"
@@ -85,9 +98,12 @@ async def check_mailcow(
         available = False
     else:
         lines = [ln.strip() for ln in output.splitlines() if ln.strip()][-5:]
-        error = f"Mailcow check failed (exit code {rc})"
-        if lines:
-            error += ": " + " | ".join(lines)
+        if _no_host_access(output):
+            error = NO_HOST_ACCESS
+        else:
+            error = f"Mailcow check failed (exit code {rc})"
+            if lines:
+                error += ": " + " | ".join(lines)
 
     current: str | None = None
     drc, dout = await run(host_cmd(mailcow_dir, "git describe --tags --always"))
@@ -109,6 +125,8 @@ async def update_mailcow(ctx: JobContext, mailcow_dir: str) -> None:
         ctx.log("update.sh updated itself – running it again\n")
         rc = await ctx.run(cmd, timeout=3600)
     if rc != 0:
+        if _no_host_access(ctx.last_output):
+            raise UpdateFailed(NO_HOST_ACCESS)
         low = ctx.last_output.lower()
         hint = _HINT if "conflict" in low or "local changes" in low else ""
         raise UpdateFailed(f"Mailcow update stopped – see log{hint}")

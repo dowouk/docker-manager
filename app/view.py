@@ -217,7 +217,8 @@ def initials(name: str) -> str:
 
 
 def user_initials(name: str) -> str:
-    words = name.split()
+    # "Steve Hardy (DOWO Digital)" is SH: a bracketed company or department isn't part of the name.
+    words = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", name).split() or re.sub(r"[()\[\]]", "", name).split()
     if not words:
         return "?"
     letters = words[0][0] + (words[-1][0] if len(words) > 1 else "")

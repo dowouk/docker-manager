@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 REGISTRY_LOGINS = "registry_logins"
 GROUP_MAPPINGS = "group_mappings"
 # Set on the page only: an environment value must not preset (or lock) these.
-UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins",
+UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins", "gravatar",
                      "require_totp_admins", "default_role", "check_on_startup",
                      "random_delay_minutes", "heartbeat_url", "layout_check",
                      "named_volumes_allowed", "layout_allowlist"})
@@ -60,6 +60,9 @@ FIELDS: list[Field] = [
     Field("hide_local_for_non_admins",
           "Show local sign-in only behind an \"Admin sign-in\" link", "signin", "bool",
           "Keeps the sign-in page to Microsoft for everyone else."),
+    Field("gravatar", "Show Gravatar pictures", "signin", "bool",
+          "For anyone without a Microsoft photo, the dashboard looks up a picture on "
+          "Gravatar once a day, using a hash of their email address."),
     Field("require_totp_admins", "Require two-step sign-in for local Admin accounts",
           "signin", "bool", "Local Admins must set up an authenticator app."),
     Field("default_role", "Role for new Microsoft sign-ins", "signin", "choice",

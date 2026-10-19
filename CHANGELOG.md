@@ -2,6 +2,11 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.3] - 19th October 2026
+
+- Dashboard Improvements
+- Mailcow Container Fixes
+
 ## [0.5.2] - 19th October 2026
 
 - Layout Check No Longer Flags the Dashboard's Own Registry Login Folder

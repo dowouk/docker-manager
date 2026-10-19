@@ -1,7 +1,8 @@
-"""Targeted text edits of the image line in compose files.
+"""Targeted text edits of compose files: the image line of a service, and the options
+the dashboard's own service needs for Mailcow.
 
-Deliberately a line scanner, never a YAML load/dump, so that exactly one line
-changes and everything else (comments, quoting, line endings) stays identical.
+Deliberately a line scanner, never a YAML load/dump, so that only the lines that must
+change do, and everything else (comments, quoting, line endings) stays identical.
 """
 
 import difflib
@@ -232,23 +233,13 @@ def _atomic_write(path: str, data: bytes) -> None:
         raise
 
 
-def apply_tag_change(change: TagChange, backup_dir: str, project: str, now: datetime) -> str:
-    with open(change.path, "rb") as f:
-        original = f.read()
-    lines = _split_lines(original.decode(**_ENC))
-    idx = change.line_no - 1
-    if (
-        hashlib.sha256(original).hexdigest() != change.file_sha256
-        or idx >= len(lines)
-        or _body(lines[idx]) != change.old_line
-    ):
-        raise EditRefused("Compose file changed since preview")
-
+def _backup(path: str, original: bytes, backup_dir: str, project: str, now: datetime) -> str:
+    """Keep a copy of the file as it was (never overwriting an earlier backup)."""
     backup_path = os.path.join(
-        backup_dir, project, os.path.basename(change.path) + "." + now.strftime("%Y%m%d-%H%M%S")
+        backup_dir, project, os.path.basename(path) + "." + now.strftime("%Y%m%d-%H%M%S")
     )
     os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-    mode = os.stat(change.path).st_mode & 0o7777
+    mode = os.stat(path).st_mode & 0o7777
     base, n = backup_path, 0
     while True:
         try:
@@ -262,7 +253,22 @@ def apply_tag_change(change: TagChange, backup_dir: str, project: str, now: date
         f.write(original)
         f.flush()
         os.fsync(f.fileno())
+    return backup_path
 
+
+def apply_tag_change(change: TagChange, backup_dir: str, project: str, now: datetime) -> str:
+    with open(change.path, "rb") as f:
+        original = f.read()
+    lines = _split_lines(original.decode(**_ENC))
+    idx = change.line_no - 1
+    if (
+        hashlib.sha256(original).hexdigest() != change.file_sha256
+        or idx >= len(lines)
+        or _body(lines[idx]) != change.old_line
+    ):
+        raise EditRefused("Compose file changed since preview")
+
+    backup_path = _backup(change.path, original, backup_dir, project, now)
     lines[idx] = change.new_line + _ending(lines[idx])
     _atomic_write(change.path, "".join(lines).encode(**_ENC))
     return backup_path
@@ -271,3 +277,140 @@ def apply_tag_change(change: TagChange, backup_dir: str, project: str, now: date
 def restore_backup(change: TagChange, backup_path: str) -> None:
     with open(backup_path, "rb") as f:
         _atomic_write(change.path, f.read())
+
+
+# --- the dashboard's own service: options Mailcow needs -----------------------
+
+# What the dashboard needs to run Mailcow's update.sh on the server (see app/mailcow.py).
+MAILCOW_OPTIONS = (("pid", "host"), ("privileged", "true"))
+_KEY_RE = re.compile(r"""^( *)(["']?)([A-Za-z_][\w-]*)\2\s*:(.*)$""")
+
+
+@dataclass
+class OptionsChange:
+    path: str
+    new_text: str
+    diff: str
+    file_sha256: str  # hash of the whole file at plan time
+
+
+def _service_block(lines: list[str], service: str) -> tuple[int, int, int] | None:
+    """(service line index, end index, block indent) for `service`, or None."""
+    i = _find_services(lines)
+    if i is None:
+        return None
+    svc_re = re.compile(r"""^( *)(["']?)%s\2\s*:(.*)$""" % re.escape(service))
+    child_indent = None
+    n = len(lines)
+    while i < n:
+        body = _body(lines[i])
+        if _is_blank_or_comment(body):
+            i += 1
+            continue
+        ind = _indent(body)
+        if ind == 0:
+            return None
+        if "\t" in body[:ind]:
+            raise _refuse("The compose file indents with tabs")
+        if child_indent is None:
+            child_indent = ind
+        m = svc_re.match(body) if ind == child_indent else None
+        if m:
+            rest = m.group(3).strip()
+            if rest and not rest.startswith("#"):
+                raise _refuse(f"Service '{service}' is not a plain block mapping")
+            break
+        i += 1
+    else:
+        return None
+    svc_at, svc_indent = i, _indent(_body(lines[i]))
+    block_indent = None
+    end = svc_at + 1
+    j = svc_at + 1
+    while j < n:
+        body = _body(lines[j])
+        if _is_blank_or_comment(body):
+            # An indented comment still belongs to the service (e.g. a last "# [Mailcow]" line).
+            if body.strip() and _indent(body) > svc_indent:
+                end = j + 1
+            j += 1
+            continue
+        ind = _indent(body)
+        if ind <= svc_indent:
+            break
+        if "\t" in body[:ind]:
+            raise _refuse("The compose file indents with tabs")
+        if block_indent is None:
+            block_indent = ind
+        end = j + 1
+        j += 1
+    if block_indent is None:
+        raise _refuse(f"Service '{service}' has no settings")
+    return svc_at, end, block_indent
+
+
+def _plain(value: str) -> str:
+    v = value.split(" #")[0].strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1]
+    return v.lower()
+
+
+def plan_service_options(config_files: list[str], service: str,
+                         options=MAILCOW_OPTIONS) -> OptionsChange | None:
+    """The edit that gives `service` these options, or None if it already has them.
+
+    A commented-out "# [Mailcow] pid: host" line in the service is uncommented in place;
+    anything still missing is added straight after the service's name. An option that is
+    already set to something else is never overwritten."""
+    for path in reversed(config_files):
+        with open(path, "rb") as f:
+            raw_bytes = f.read()
+        lines = _split_lines(raw_bytes.decode(**_ENC))
+        found = _service_block(lines, service)
+        if found is None:
+            continue
+        svc_at, end, indent = found
+        new_lines = list(lines)
+        missing = []
+        for key, value in options:
+            current = None
+            for k in range(svc_at + 1, end):
+                m = _KEY_RE.match(_body(lines[k]))
+                if m and len(m.group(1)) == indent and m.group(3) == key:
+                    current = _plain(m.group(4))
+                    break
+            if current == value:
+                continue
+            if current is not None:
+                raise _refuse(f"The dashboard's service already sets {key}: {current}")
+            commented = re.compile(r"^\s*#\s*\[Mailcow\]\s*%s\s*:\s*[\"']?%s[\"']?\s*$"
+                                   % (re.escape(key), re.escape(value)), re.IGNORECASE)
+            k = next((k for k in range(svc_at + 1, end) if commented.match(_body(lines[k]))), None)
+            if k is not None:
+                new_lines[k] = " " * indent + f"{key}: {value}" + _ending(lines[k])
+            else:
+                missing.append(f"{key}: {value}")
+        if missing:
+            ending = _ending(lines[svc_at]) or "\n"
+            added = [" " * indent + line + ending for line in missing]
+            new_lines[svc_at + 1:svc_at + 1] = added
+        if new_lines == lines:
+            return None
+        diff = "\n".join(difflib.unified_diff(
+            [_body(x) for x in lines], [_body(x) for x in new_lines],
+            fromfile=path, tofile=path, lineterm=""))
+        return OptionsChange(path, "".join(new_lines), diff,
+                             hashlib.sha256(raw_bytes).hexdigest())
+    raise _refuse(f"Service '{service}' not found in its compose file")
+
+
+def apply_options_change(change: OptionsChange, backup_dir: str, project: str,
+                         now: datetime) -> str:
+    with open(change.path, "rb") as f:
+        original = f.read()
+    if hashlib.sha256(original).hexdigest() != change.file_sha256:
+        raise EditRefused("Compose file changed since preview")
+    backup_path = _backup(change.path, original, backup_dir, project, now)
+    _atomic_write(change.path, change.new_text.encode(**_ENC))
+    return backup_path

@@ -29,6 +29,8 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("POST", "/digest/send", Role.ADMIN),
     ("POST", "/mailcow/update", Role.ADMIN),
     ("POST", "/self/update", Role.ADMIN),
+    ("GET", "/mailcow/host-access", Role.ADMIN),
+    ("POST", "/mailcow/host-access", Role.ADMIN),
     ("GET", "/settings", Role.ADMIN),
     ("GET", "/settings/channels/new", Role.ADMIN),
     ("GET", "/settings/channels/1", Role.ADMIN),
@@ -49,6 +51,7 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("GET", "/account/two-step", Role.PENDING),
     ("POST", "/account/two-step", Role.PENDING),
     ("GET", "/account", Role.PENDING),
+    ("GET", "/photos/1", Role.PENDING),  # your own picture; others' are 404 below Admin
     ("POST", "/account/two-step/off", Role.PENDING),
     ("POST", "/account/recovery-codes", Role.PENDING),
     ("POST", "/account/sign-out-everywhere", Role.PENDING),

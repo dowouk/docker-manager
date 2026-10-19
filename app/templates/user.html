@@ -6,7 +6,10 @@
 
 <section class="intro">
   <div>
-    <h1 class="user-title">{{ r.name }}</h1>
+    <div class="who">
+      {% set photo = photo_url(r) %}<span class="avatar avatar-large" aria-hidden="true">{% if photo %}<img src="{{ photo }}" alt="">{% else %}{{ user_initials(r.name) }}{% endif %}</span>
+      <h1 class="user-title">{{ r.name }}</h1>
+    </div>
     <p class="lede">
       {% if r.name != r.email %}{{ r.email }} · {% endif %}{{ "Microsoft sign-in" if r.kind == "entra" else "Local account" }}
       · {% if r.disabled %}<span class="badge badge-muted">Disabled</span>{% elif r.role == "pending" %}<span class="badge badge-update">Waiting for approval</span>{% else %}<span class="badge badge-current">Active</span>{% endif %}
@@ -54,21 +57,21 @@
     <h2>Local account</h2>
     <div class="button-row">
       <form method="post" action="/users/{{ r.id }}/reset-password">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset password</button></form>
-      <form method="post" action="/users/{{ r.id }}/invite">{{ csrf_field() }}<button type="submit" class="button button-quiet">New invite link</button></form>
+      {% if local_on %}<form method="post" action="/users/{{ r.id }}/invite">{{ csrf_field() }}<button type="submit" class="button button-quiet">New invite link</button></form>{% endif %}
       <form method="post" action="/users/{{ r.id }}/reset-two-step">{{ csrf_field() }}<button type="submit" class="button button-quiet">Reset two-step</button></form>
     </div>
-    <p class="field-help">Each shows a one-time password or link once, and signs them out.</p>
+    <p class="field-help">{% if local_on %}Each shows a one-time password or link once, and signs them out.{% else %}Local sign-in is turned off in Settings, so this account can't sign in until it's turned back on.{% endif %}</p>
   </section>
   {% endif %}
 
   <section class="card manage-card manage-danger">
     <h2>Delete</h2>
     <p class="card-text">Removes the account and its sessions. This can't be undone.</p>
-    <form method="post" action="/users/{{ r.id }}/delete" class="inline-form">
+    <form method="post" action="/users/{{ r.id }}/delete" class="stack-form">
       {{ csrf_field() }}
-      <label class="visually-hidden" for="confirm_email">Type {{ r.email }} to confirm</label>
-      <input class="input" id="confirm_email" name="confirm_email" type="text" autocomplete="off" placeholder="Type {{ r.email }} to confirm" required>
-      <button type="submit" class="button button-quiet">Delete user</button>
+      <label class="field-help" for="confirm_email">To confirm, type <strong>{{ r.email }}</strong></label>
+      <input class="input" id="confirm_email" name="confirm_email" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+      <div><button type="submit" class="button button-danger">Delete user</button></div>
     </form>
   </section>
 </div>

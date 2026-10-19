@@ -539,6 +539,22 @@ def test_creating_local_users_refused_while_local_sign_in_is_off(app, admin):
     assert post(admin, f"/users/{ann.id}/invite").status_code == 400
 
 
+def test_add_forms_show_only_for_sign_ins_that_are_on(app, admin):
+    html = admin.get("/users", headers=HTML).text
+    assert 'class="add-grid"' in html
+    assert "Add a local user" in html
+    assert ("Add a Microsoft user" in html) == app.state.settings.entra_enabled
+    app.state.settings = app.state.settings.model_copy(update={
+        "local_sign_in": False, "public_url": "https://dash.example.com",
+        "azure_tenant_id": "t", "azure_client_id": "c", "azure_client_secret": "s"})
+    html = admin.get("/users", headers=HTML).text
+    assert "Add a local user" not in html and 'action="/users/local"' not in html
+    assert "Add a Microsoft user" in html
+    ann = local(app, "ann@example.com")
+    html = admin.get(f"/users/{ann.id}", headers=HTML).text
+    assert f'action="/users/{ann.id}/invite"' not in html and "Local sign-in is turned off" in html
+
+
 def _invite_path(app, admin, email="ann@example.com"):
     r = post(admin, "/users/local", email=email, role="viewer", method="invite")
     return secret_after(r.text, "Invite link").removeprefix("https://dash.example.com")

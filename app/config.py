@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Sign-in options: set from the settings page, not the environment
     local_sign_in: bool = True
     hide_local_for_non_admins: bool = False
+    gravatar: bool = True
     require_totp_admins: bool = True
     default_role: str = "viewer"
     # Checking options: set from the settings page, not the environment

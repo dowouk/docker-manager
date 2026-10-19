@@ -1,6 +1,13 @@
 import pytest
 
+from app import photos
 from app.config import Settings, get_settings
+
+
+@pytest.fixture(autouse=True)
+def no_photo_lookups(monkeypatch):
+    # Background Gravatar lookups would reach the network; tests call them directly instead.
+    monkeypatch.setattr(photos, "LOOKUPS_ENABLED", False)
 
 
 @pytest.fixture

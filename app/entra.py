@@ -26,6 +26,8 @@ from app.users import DuplicateUserError, LastAdminError, UserRecord, UserStore
 log = logging.getLogger(__name__)
 
 NOT_SET_UP = "Microsoft sign-in isn't set up"
+# User.Read lets the sign-in fetch the person's own profile photo from Microsoft Graph.
+SCOPE = "openid profile email User.Read"
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ def build_oauth(settings: Settings) -> OAuth | None:
         client_id=settings.azure_client_id,
         client_secret=settings.azure_client_secret,
         server_metadata_url=metadata_url(settings.azure_tenant_id),
-        client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
+        client_kwargs={"scope": SCOPE, "code_challenge_method": "S256"},
     )
     return oauth
 
@@ -290,6 +292,9 @@ def setup_entra(app: FastAPI) -> None:
                 "Ask the administrator for access.",
                 403,
             )
+        access_token = token.get("access_token") if isinstance(token, dict) else None
+        await app.state.photos.from_microsoft(
+            record, access_token if isinstance(access_token, str) else None)
         return complete_sign_in(request, record, method="entra")
 
 

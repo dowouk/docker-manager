@@ -73,7 +73,9 @@ def setup_admin_pages(app: FastAPI) -> None:
         return page(request, "users.html", status, user=user, rows=rows, error=error,
                     flash=FLASH.get(msg), result=result, assignable=ASSIGNABLE,
                     role_labels={r.value: ROLE_LABELS[r] for r in Role},
-                    public_url=bool(app.state.settings.public_url))
+                    public_url=bool(app.state.settings.public_url),
+                    local_on=app.state.settings.local_sign_in,
+                    entra_on=app.state.settings.entra_enabled)
 
     def done(msg: str) -> RedirectResponse:
         return RedirectResponse(f"/users?msg={msg}", status_code=303)
@@ -89,7 +91,8 @@ def setup_admin_pages(app: FastAPI) -> None:
     async def user_detail(request: Request, user_id: int, user: User = Depends(admin)):
         rec = target(user_id)
         return page(request, "user.html", 200, user=user, r=rec, assignable=ASSIGNABLE,
-                    role_labels={r.value: ROLE_LABELS[r] for r in Role})
+                    role_labels={r.value: ROLE_LABELS[r] for r in Role},
+                    local_on=app.state.settings.local_sign_in)
 
     @app.post("/users/local", include_in_schema=False, dependencies=[Depends(verify_csrf)])
     async def users_add_local(request: Request, user: User = Depends(admin),
