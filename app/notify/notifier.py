@@ -9,7 +9,7 @@ import dataclasses
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -35,6 +35,9 @@ UNKNOWN_PROVIDER = "This channel's provider isn't available"
 NO_SUCH_CHANNEL = "That channel no longer exists"
 FIXED_REASONS = frozenset({LOGIN_REFUSED, UNREACHABLE, REJECTED, NO_ANSWER, NOT_PRIVATE})
 FAILURES_AFTER = 2  # consecutive failed checks before the first alert
+# "Updates found" waits this long, so an update applied straight away (and the checks the
+# update jobs run) never sends a message.
+UPDATES_FOUND_DELAY = timedelta(hours=1)
 _BUILD = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
 
 DIGEST_SENT = "sent"
@@ -97,7 +100,8 @@ class Notifier:
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  background: set | None = None, kind_labels: dict[str, str] | None = None,
                  skips_getter: Callable[[], SkipStore | None] | None = None,
-                 rules_snapshot: Callable[[], Callable[[ContainerInfo], object]] | None = None):
+                 rules_snapshot: Callable[[], Callable[[ContainerInfo], object]] | None = None,
+                 updates_delay: timedelta = UPDATES_FOUND_DELAY):
         self._store = store
         self._channels = channels
         self._settings = settings_getter
@@ -108,6 +112,7 @@ class Notifier:
         self._kind_labels = kind_labels or {}
         self._skips = skips_getter
         self._rules_snapshot = rules_snapshot
+        self._updates_delay = updates_delay
 
     def _visible(self, result: CheckResult) -> tuple[CheckResult, int]:
         """The result with skipped and snoozed updates cleared, and how many that hid."""
@@ -256,29 +261,85 @@ class Notifier:
             # Recovery travels with the same event as the alert ("Check failing or recovered").
             self._fire_message("check_failing", messages.check_recovered_message)
 
-    def _updates(self, result: CheckResult) -> None:
-        shown, _ = self._visible(result)
-        items = _update_items(shown, self._notes_for())
-        try:
-            previous = json.loads(self._store.get_meta("notified_updates") or "{}")
-            if not isinstance(previous, dict):
-                previous = {}
-        except ValueError:
-            previous = {}
-        current = {key: sig for key, (sig, _) in items.items()}
-        # An item whose lookup errored this time isn't "fixed": remember it so it doesn't
-        # notify again when the lookup works.
+    @staticmethod
+    def _errored(result: CheckResult) -> set[str]:
         errored = {cs.container.name for cs in result.containers if cs.status == Status.ERROR}
         if result.mailcow and result.mailcow.error:
             errored.add("mailcow")
+        return errored
+
+    def _updates(self, result: CheckResult) -> None:
+        shown, _ = self._visible(result)
+        items = _update_items(shown, self._notes_for())
+        previous = self._meta_dict("notified_updates")
+        current = {key: sig for key, (sig, _) in items.items()}
+        # An item whose lookup errored this time isn't "fixed": remember it so it doesn't
+        # notify again when the lookup works.
+        errored = self._errored(result)
         for key, sig in previous.items():
             if key not in current and (key.rpartition(":")[0] or key) in errored:
                 current[key] = sig
-        new = [item for key, (sig, item) in items.items() if previous.get(key) != sig]
+        new = [key for key, (sig, _item) in items.items() if previous.get(key) != sig]
         self._store.set_meta("notified_updates", json.dumps(current))
-        if new and self._channels.subscribed("updates_found"):
+        # New updates wait UPDATES_FOUND_DELAY before they are sent (see flush_updates).
+        pending = self._meta_dict("pending_updates")
+        due = (self._clock() + self._updates_delay).isoformat()
+        for key in new:
+            pending[key] = {"sig": items[key][0], "due": due}
+        self._send_due(items, pending, errored)
+
+    def _meta_dict(self, key: str) -> dict:
+        try:
+            value = json.loads(self._store.get_meta(key) or "{}")
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _send_due(self, items: dict, pending: dict, errored: set[str]) -> None:
+        """Send the held updates whose wait is over and that are still on offer. One that was
+        applied, skipped or replaced by a newer one in the meantime is dropped."""
+        now = self._clock()
+        keep, send = {}, []
+        for key, held in pending.items():
+            if not isinstance(held, dict) or "sig" not in held or "due" not in held:
+                continue
+            if key not in items:
+                if (key.rpartition(":")[0] or key) in errored:
+                    keep[key] = held  # the lookup failed this time: not fixed, keep waiting
+                continue
+            sig, item = items[key]
+            if sig != held["sig"]:
+                continue
+            try:
+                ready = datetime.fromisoformat(held["due"]) <= now
+            except (TypeError, ValueError):
+                ready = True
+            if ready:
+                send.append(item)
+            else:
+                keep[key] = held
+        self._store.set_meta("pending_updates", json.dumps(keep))
+        if send and self._channels.subscribed("updates_found"):
             self._fire_message("updates_found",
-                               lambda s: messages.updates_found_message(new, s))
+                               lambda s: messages.updates_found_message(send, s))
+
+    def flush_updates(self) -> None:
+        """Send held "Updates found" whose wait is over, against the latest stored check.
+        Run every few minutes by the scheduler, so it needn't wait for the next check."""
+        try:
+            if not self._meta_dict("pending_updates"):
+                return
+            latest = self._store.latest_check()
+            if not latest:
+                return
+            result = CheckResult.from_dict(latest[1])
+            if check_failed(result):
+                return
+            shown, _ = self._visible(result)
+            self._send_due(_update_items(shown, self._notes_for()),
+                           self._meta_dict("pending_updates"), self._errored(result))
+        except Exception as exc:  # noqa: BLE001 – never break the scheduler
+            log.warning("Held update notifications failed (%s)", type(exc).__name__)
 
     def job_finished(self, kind: str, target: str, status: str, user: str, job_id: int) -> None:
         if status not in ("failed", "succeeded"):

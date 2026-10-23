@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -45,7 +45,8 @@ class Rig:
         self.bg: set = set()
         self.notifier = Notifier(self.store, self.channels, lambda: settings, self.http,
                                  providers_for(self.provider), background=self.bg,
-                                 kind_labels={"build": "Image update"})
+                                 kind_labels={"build": "Image update"},
+                                 updates_delay=timedelta(0))  # sent at once; see "held" tests
 
     def channel(self, name="Ops", events=("digest",), recipients=("a@x.com",)):
         return self.channels.save(
@@ -270,6 +271,82 @@ async def test_updates_tracked_even_when_nobody_subscribes_yet(rig):
     assert rig.subjects == []
 
 
+# ---- updates found are held for an hour ----
+
+@pytest.fixture
+def held(settings, tmp_path):
+    rig = Rig(settings, tmp_path)
+    rig.now = NOW
+    rig.notifier = Notifier(rig.store, rig.channels, lambda: settings, rig.http,
+                            providers_for(rig.provider), background=rig.bg,
+                            clock=lambda: rig.now)
+    rig.channel(events=("updates_found",))
+    return rig
+
+
+def _stored(rig, r):
+    rig.store.save_check(r.to_dict(), r.checked_at)
+    rig.notifier.after_check(r, False)
+
+
+async def test_new_update_waits_an_hour_then_sends(held):
+    _stored(held, result(cs("web", minor_update="1.26")))
+    held.now += timedelta(minutes=59)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert held.subjects == []
+    held.now += timedelta(minutes=2)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert len(held.subjects) == 1 and "1 new update" in held.subjects[0]
+    held.notifier.flush_updates()  # sent once only
+    _stored(held, result(cs("web", minor_update="1.26")))
+    held.now += timedelta(hours=2)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert len(held.subjects) == 1
+
+
+async def test_update_applied_within_the_hour_is_never_sent(held):
+    _stored(held, result(cs("web", minor_update="1.26"), cs("db", minor_update="16.3")))
+    held.now += timedelta(minutes=10)
+    _stored(held, result(cs("web"), cs("db", minor_update="16.3")))  # web was updated
+    held.now += timedelta(hours=1)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert len(held.subjects) == 1
+    plain = held.provider.sent[0][1].plain
+    assert "db" in plain and "web" not in plain
+
+
+async def test_update_replaced_within_the_hour_waits_for_its_own_hour(held):
+    _stored(held, result(cs("web", Status.NEWER_BUILD, remote_digest="d1")))
+    held.now += timedelta(minutes=30)
+    _stored(held, result(cs("web", Status.NEWER_BUILD, remote_digest="d2")))
+    held.now += timedelta(minutes=31)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert held.subjects == []
+    held.now += timedelta(minutes=30)
+    held.notifier.flush_updates()
+    await held.settle()
+    assert len(held.subjects) == 1
+
+
+async def test_held_update_survives_a_failed_lookup(held):
+    _stored(held, result(cs("web", minor_update="1.26"), cs("db")))
+    _stored(held, result(cs("web", Status.ERROR), cs("db")))
+    held.now += timedelta(hours=1)
+    _stored(held, result(cs("web", minor_update="1.26"), cs("db")))
+    await held.settle()
+    assert len(held.subjects) == 1
+
+
+def test_flush_with_nothing_held_reads_nothing(held, monkeypatch):
+    monkeypatch.setattr(held.store, "latest_check", lambda: pytest.fail("must not read"))
+    held.notifier.flush_updates()
+
+
 # ---- jobs, users, digest ----
 
 async def test_job_events_go_to_subscribed_channels_only(rig):
@@ -370,7 +447,8 @@ def rig2(settings, tmp_path):
     rig.rules = RulesStore(rig.store)
     rig.notifier = Notifier(rig.store, rig.channels, lambda: settings, rig.http,
                             providers_for(rig.provider), background=rig.bg,
-                            skips_getter=lambda: rig.skips, rules_snapshot=rig.rules.snapshot)
+                            skips_getter=lambda: rig.skips, rules_snapshot=rig.rules.snapshot,
+                            updates_delay=timedelta(0))
     return rig
 
 

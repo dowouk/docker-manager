@@ -44,7 +44,8 @@ def control_actions(cs: ContainerStatus) -> list[str]:
     if not cs.updatable or c.is_self or not c.service:
         return []
     if c.state == "running":
-        return ["restart", "stop"]
+        # Stopping the proxy in front of the dashboard would cut off this page.
+        return ["restart"] if cs.fronts_dashboard else ["restart", "stop"]
     if c.state == "exited":
         return ["start"]
     return []

@@ -149,6 +149,8 @@ Every skip, snooze and removal is recorded in **History → Changes** (Admins), 
 
 Operators and Admins see **Restart** and **Stop** on each running compose container, and **Start** on a stopped one. They run `docker compose restart`, `stop` or `start` for that one service, so the container is kept (not removed) and stays on the dashboard – the **Stopped** filter finds it. **Stop** asks first. Each runs as a job with a live log and is listed in **History**. They aren't offered for the dashboard itself, Mailcow's containers or containers not started by compose.
 
+**Stop** isn't offered for the proxy or tunnel the dashboard is reached through (the row says "Fronts the dashboard – no Stop"; **Restart** still works), because stopping it cuts off this page (after a Restart of it, the job page may need a reload). A container counts when it shares a Docker network with the dashboard (or uses the host's network) and publishes port 80 or 443, or is a known proxy or tunnel – Caddy, Traefik, Nginx Proxy Manager, nginx-proxy, HAProxy, SWAG, cloudflared, Pangolin, Newt, frp or Zoraxy. If the dashboard can't find its own container, every known proxy or tunnel counts. Its **Edit config** page warns that a bad **Save and apply** there would cut off the page too.
+
 Restart doesn't read the compose file or `.env` again – to use changed files, use **Save and apply** under [Edit config](#edit-config).
 
 ## Edit config
@@ -397,7 +399,7 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 | Event | Ticked for a new channel | Sent when |
 | --- | --- | --- |
 | **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating, a count of skipped or snoozed updates, layout problems and what couldn't be checked, with release-notes links, and goes to every channel that has this ticked |
-| **Updates found** | No | A check finds updates that haven't been reported yet (skipped and snoozed ones are left out). It only lists updates you haven't already been told about. When you first turn it on, it starts from what is already known, so only later updates are sent |
+| **Updates found** | No | A check finds updates that haven't been reported yet (skipped and snoozed ones are left out). It only lists updates you haven't already been told about. Each new update waits **an hour** first, and is left out if it was applied, skipped or replaced by a newer one in that time – so updating straight away, and the checks each update runs, don't send messages. When you first turn it on, it starts from what is already known, so only later updates are sent |
 | **Update failed** | Yes | An update, rollback or Mailcow update ends in failure. Self-updates and jobs interrupted by a restart don't send a message |
 | **Update finished** | No | An update finishes successfully (self-updates and interrupted jobs don't send a message) |
 | **Check failing or recovered** | Yes | A check failed: it raised an error, Docker couldn't be reached, or every registry lookup failed – scheduled checks, **Check now** and the refresh after an update all count. You get one alert at the second failure in a row, and one "recovered" message when a check works again |
@@ -630,7 +632,7 @@ Pull the new image and run `docker compose up -d`. **Keep your existing compose 
 
 ## Monitoring
 
-`/healthz` is public (no sign-in) and returns a small JSON status (`{"status": "ok"}` with **200** when the dashboard and its database are working, or `"unavailable"` with **503**). Nothing else is revealed. The Docker image has a built-in health check that uses it, so `docker ps` shows `healthy` or `unhealthy`.
+`/healthz` is public (no sign-in) and returns a small JSON status (`{"status": "ok", "version": "0.5.5", "started": "…"}` with **200** when the dashboard and its database are working, or `"status": "unavailable"` with **503**). `version` is the running version and `started` a random ID that changes each time the dashboard starts – the self-update page watches it to see when the new dashboard is up, then returns you to the dashboard. Nothing else is revealed. The Docker image has a built-in health check that uses it, so `docker ps` shows `healthy` or `unhealthy`.
 
 - **Uptime Kuma:** add an **HTTP(s)** monitor for `https://updates.server1.example.com/healthz`, accepted status code `200-299`.
 - **Caddy or Traefik:** you don't need a health check in the proxy for this; use the one above if you want one.

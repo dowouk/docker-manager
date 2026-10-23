@@ -46,6 +46,7 @@ class ContainerStatus:
     not_updatable_reason: str | None = None
     rule_warnings: list[str] = field(default_factory=list)
     notify: bool = True
+    fronts_dashboard: bool = False  # likely the proxy or tunnel the dashboard is reached through
 
 
 def _container_from_dict(data: dict) -> ContainerInfo:
@@ -207,6 +208,31 @@ def _status_for(
     )
 
 
+# Reverse proxies and tunnels that commonly sit in front of the dashboard.
+_PROXY_IMAGES = ("caddy", "traefik", "nginx-proxy-manager", "nginx-proxy", "haproxy", "swag",
+                 "cloudflared", "pangolin", "newt", "frp", "zoraxy")
+_WEB_PORTS = (80, 443)
+
+
+def _is_proxy_image(c: ContainerInfo) -> bool:
+    name = parse_image_ref(c.image_ref).repository.rsplit("/", 1)[-1]
+    return any(name == p or name.startswith(p + "-") for p in _PROXY_IMAGES)
+
+
+def fronts_dashboard(c: ContainerInfo, me: ContainerInfo | None) -> bool:
+    """Whether stopping `c` would probably cut off the dashboard: it shares a network with
+    the dashboard (or uses the host's) and serves the web ports or is a known proxy/tunnel.
+    When the dashboard's own container isn't known, any known proxy/tunnel counts."""
+    if c.is_self:
+        return False
+    if me is None:
+        return _is_proxy_image(c)
+    shared = {n for n in c.networks if n not in ("host", "none")} & set(me.networks)
+    reaches = bool(shared) or c.network_mode == "host"
+    serves = any(p in _WEB_PORTS for p in c.host_ports) or c.network_mode == "host"
+    return reaches and (serves or _is_proxy_image(c))
+
+
 def _checkable(c: ContainerInfo) -> bool:
     return bool(c.running_repo_digests) and not parse_image_ref(c.image_ref).digest
 
@@ -253,11 +279,15 @@ async def check_all(
         except Exception as exc:  # noqa: BLE001 – surface any failure as a status
             mailcow = MailcowStatus(error=str(exc) or type(exc).__name__)
 
+    me = next((c for c in containers if c.is_self), None)
+    statuses = [
+        _status_for(c, remotes.get(c.image_ref), rules[c.id], *tag_results[i])
+        for i, c in enumerate(regular)
+    ]
+    for cs in statuses:
+        cs.fronts_dashboard = fronts_dashboard(cs.container, me)
     return CheckResult(
         checked_at=datetime.now(timezone.utc),
-        containers=[
-            _status_for(c, remotes.get(c.image_ref), rules[c.id], *tag_results[i])
-            for i, c in enumerate(regular)
-        ],
+        containers=statuses,
         mailcow=mailcow,
     )

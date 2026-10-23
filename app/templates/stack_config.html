@@ -8,6 +8,7 @@
   </div>
 </section>
 {% if saved %}<p class="notice notice-ok" role="status">Saved – the old files are listed under Backups below. The containers use the new config once it's applied.</p>{% endif %}
+{% if fronts_dashboard %}<p class="notice notice-error" role="note">This stack looks like the proxy or tunnel the dashboard is reached through. If <strong>Save and apply</strong> leaves it unable to start, this page can't be reached any more – keep server access (for example SSH) to hand.</p>{% endif %}
 {% if restored %}<p class="notice" role="status">Loaded the backup of {{ restored.label }} into the editor – nothing has been written yet. Check it, then press <strong>Save</strong> or <strong>Save and apply</strong>. The current files are backed up first.</p>{% endif %}
 {% if error %}<p class="notice notice-error config-error" role="alert">{{ error }}</p>{% endif %}
 <p class="notice">Restart doesn't pick up changes to these files – use <strong>Save and apply</strong>, which recreates the stack's containers with <span class="mono">docker compose up -d</span>.{% if holds_self %} This stack holds the dashboard, so it restarts too.{% endif %} The <span class="mono">.env</span> file usually holds passwords: they are shown here in plain text.</p>

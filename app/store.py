@@ -396,16 +396,17 @@ class Store:
             ).fetchall()
         return [self._job(r) for r in rows]
 
-    def mark_interrupted_jobs(self) -> None:
+    def mark_interrupted_jobs(self) -> int:
+        """Close the jobs a restart cut short. Returns how many were self-updates."""
         with self._lock, self._db:
             # A dashboard self-update always ends with the process restarting.
-            self._db.execute(
+            updated = self._db.execute(
                 "UPDATE jobs SET status = 'succeeded', finished_at = ?, "
                 "log = CASE WHEN log = '' OR substr(log, -1) = char(10) "
                 "THEN log ELSE log || char(10) END || ? "
                 "WHERE status = 'running' AND kind = 'self'",
                 (_now(), SELF_UPDATED_LINE + "\n"),
-            )
+            ).rowcount
             self._db.execute(
                 "UPDATE jobs SET status = 'failed', finished_at = ?, "
                 "log = CASE WHEN log = '' OR substr(log, -1) = char(10) "
@@ -413,3 +414,4 @@ class Store:
                 "WHERE status = 'running'",
                 (_now(), INTERRUPTED_LINE + "\n"),
             )
+        return updated

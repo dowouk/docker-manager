@@ -298,3 +298,40 @@ def test_mounts_round_trip():
     restored = CheckResult.from_dict(json.loads(json.dumps(r.to_dict())))
     assert restored == r
     assert isinstance(restored.containers[0].container.mounts[0], Mount)
+
+
+@pytest.mark.parametrize("kw, expected", [
+    ({"image": "caddy:2", "networks": ["proxy"], "host_ports": [80, 443]}, True),
+    ({"image": "nginx:1", "networks": ["proxy"], "host_ports": [443]}, True),   # serves web ports
+    ({"image": "cloudflare/cloudflared:latest", "networks": ["proxy"]}, True),  # tunnel, no ports
+    ({"image": "traefik:v3", "network_mode": "host"}, True),
+    ({"image": "caddy:2", "networks": ["other"], "host_ports": [80]}, False),  # not the dashboard's
+    ({"image": "postgres:16", "networks": ["proxy"]}, False),
+    ({"image": "nginx:1", "networks": ["proxy"], "host_ports": [8080]}, False),
+])
+def test_fronts_dashboard(tmp_path, kw, expected):
+    from app.checker import fronts_dashboard
+    me = info(tmp_path, "dash", networks=["proxy", "dash_default"], is_self=True)
+    image = kw.pop("image")
+    assert fronts_dashboard(info(tmp_path, "c", image=image, **kw), me) is expected
+    assert fronts_dashboard(me, me) is False
+
+
+def test_fronts_dashboard_without_knowing_the_dashboard(tmp_path):
+    from app.checker import fronts_dashboard
+    assert fronts_dashboard(info(tmp_path, "c", image="traefik:v3"), None)
+    assert not fronts_dashboard(info(tmp_path, "c", image="nginx:1", host_ports=[80]), None)
+
+
+async def test_check_all_marks_the_proxy(tmp_path, settings):
+    reg = FakeRegistry({"caddy:2": "sha256:old", "postgres:16": "sha256:old"})
+    me = info(tmp_path, "dash", image="local/dash", digests=(), networks=["proxy"], is_self=True)
+    caddy = info(tmp_path, "caddy", image="caddy:2", digests=("caddy@sha256:old",),
+                 networks=["proxy"], host_ports=[443])
+    db = info(tmp_path, "db", image="postgres:16", digests=("postgres@sha256:old",),
+              networks=["proxy"])
+    result = await run([me, caddy, db], reg, settings)
+    flags = {cs.container.name: cs.fronts_dashboard for cs in result.containers}
+    assert flags == {"dash": False, "caddy": True, "db": False}
+    again = CheckResult.from_dict(json.loads(json.dumps(result.to_dict())))
+    assert [cs.fronts_dashboard for cs in again.containers] == [False, True, False]

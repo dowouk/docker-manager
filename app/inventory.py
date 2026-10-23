@@ -47,6 +47,9 @@ class ContainerInfo:
     labels: dict[str, str] = field(default_factory=dict)
     mounts: list[Mount] = field(default_factory=list)
     image_source: str | None = None
+    networks: list[str] = field(default_factory=list)
+    host_ports: list[int] = field(default_factory=list)  # published on the host
+    network_mode: str = ""
 
 
 MAILCOW_PROJECT = "mailcowdockerized"
@@ -94,6 +97,19 @@ def _mounts(attrs: dict) -> list[Mount]:
     ]
 
 
+def _networks(attrs: dict) -> list[str]:
+    return sorted((attrs.get("NetworkSettings") or {}).get("Networks") or {})
+
+
+def _host_ports(attrs: dict) -> list[int]:
+    ports = set()
+    for bindings in ((attrs.get("NetworkSettings") or {}).get("Ports") or {}).values():
+        for b in bindings or []:
+            if str(b.get("HostPort") or "").isdigit():
+                ports.add(int(b["HostPort"]))
+    return sorted(ports)
+
+
 def _image_source(image) -> str | None:
     if image is None:
         return None
@@ -132,6 +148,9 @@ def list_containers(client: docker.DockerClient, self_id: str | None) -> list[Co
                 labels={k: v for k, v in labels.items() if k.startswith(_RULE_LABEL_PREFIX)},
                 mounts=_mounts(attrs),
                 image_source=_image_source(running),
+                networks=_networks(attrs),
+                host_ports=_host_ports(attrs),
+                network_mode=(attrs.get("HostConfig") or {}).get("NetworkMode") or "",
                 state=attrs.get("State", {}).get("Status", c.status),
                 is_self=bool(self_id)
                 and len(self_id) >= _MIN_SELF_ID_LEN

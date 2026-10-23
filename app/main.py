@@ -1,10 +1,12 @@
 """FastAPI app: dashboard pages, update actions and live job logs."""
 import asyncio
+import contextlib
 import dataclasses
 import functools
 import logging
 import os
 import re
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -95,6 +97,7 @@ FLASH = {
     "skipped": ("Update hidden – it's listed under Skipped below", "ok"),
     "skip_removed": ("Skip removed – the update shows again", "ok"),
     "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
+    "self_updated": (f"The dashboard restarted – now running version {__version__}", "ok"),
 }
 
 # Same idea for the Settings page.
@@ -151,6 +154,7 @@ JOB_KIND_LABELS = {
 }
 SELF_RESTART_WAIT = 600.0
 SELF_UPDATE_GRACE = 30.0
+RESTART_CHECK_WAIT = 60.0  # seconds the dashboard waits for the check after a self-update
 
 
 def _short_digest(cs: ContainerStatus) -> str:
@@ -280,7 +284,7 @@ def _log_task_failure(task: asyncio.Task) -> None:
         return
     exc = task.exception()
     if exc is not None:
-        log.error("Background check after a job failed", exc_info=exc)
+        log.error("A background task failed", exc_info=exc)
 
 
 def apply_registry_logins(app: FastAPI) -> None:
@@ -335,7 +339,7 @@ def create_app(
         store = Store(os.path.join(settings.data_dir, "dashboard.db"))
     if runner is None:
         runner = JobRunner(store)
-    store.mark_interrupted_jobs()
+    self_updated = store.mark_interrupted_jobs()
     if settings_service is None:
         settings_service = SettingsService(
             settings, store, load_secret_box(key_path(settings))
@@ -351,6 +355,14 @@ def create_app(
             scheduler = build_scheduler(app, app.state.settings)
             scheduler.start()
             app.state.scheduler = scheduler
+        if self_updated:
+            # Just replaced by a self-update: check straight away (no random delay), so the
+            # dashboard no longer offers the update it just applied.
+            task = asyncio.create_task(run_check(app))
+            app.state.restart_check = task
+            app.state.background.add(task)
+            task.add_done_callback(app.state.background.discard)
+            task.add_done_callback(_log_task_failure)
         try:
             yield
         finally:
@@ -365,6 +377,7 @@ def create_app(
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.scheduler = None
+    app.state.restart_check = None
     app.state.settings_service = settings_service
     app.state.settings = settings_service.effective()
     app.state.docker = docker_client
@@ -374,6 +387,8 @@ def create_app(
     app.state.registry = RegistryClient(http, app.state.settings.registry_auth_file)
     apply_registry_logins(app)
     app.state.runner = runner
+    # Changes on every start: the restart page compares it to tell when this process is replaced.
+    app.state.boot_id = secrets.token_hex(8)
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()
     backup_dir = os.path.join(settings.data_dir, "backups")
@@ -475,23 +490,36 @@ def create_app(
 
         async def after_job() -> None:
             # The runner records the final status just after `work` returns: wait for it,
-            # tell the channels, then refresh the dashboard.
+            # then tell the channels.
+            if job_ids:
+                for _ in range(200):
+                    found = app.state.store.get_job(job_ids[0])
+                    if found is None or found.status != "running":
+                        break
+                    await asyncio.sleep(0.05)
+                if found is not None and found.status != "running":
+                    app.state.notifier.job_finished(
+                        kind, target, found.status, user.email, found.id)
+
+        async def check_again(ctx: JobContext) -> None:
+            # Part of the job, so it only shows as finished once the dashboard is up to date.
+            ctx.log("Checking for updates again…\n")
             try:
-                if job_ids:
-                    for _ in range(200):
-                        found = app.state.store.get_job(job_ids[0])
-                        if found is None or found.status != "running":
-                            break
-                        await asyncio.sleep(0.05)
-                    if found is not None and found.status != "running":
-                        app.state.notifier.job_finished(
-                            kind, target, found.status, user.email, found.id)
-            finally:
                 await run_check(app)
+            except Exception:  # noqa: BLE001 – the job's own outcome stands
+                log.exception("The check after a job failed")
+                ctx.log("The check after this job failed – press Check now on the dashboard\n")
 
         async def job(ctx: JobContext) -> None:
             try:
                 await work(ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await check_again(ctx)
+                raise
+            else:
+                await check_again(ctx)
             finally:
                 task = asyncio.create_task(after_job())
                 app.state.background.add(task)
@@ -513,6 +541,11 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request, msg: str = "", user: User = Depends(require_role(Role.VIEWER))):
+        pending = app.state.restart_check
+        if pending is not None and not pending.done():
+            # Back from a self-update: show the fresh check, not the one from before it.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(pending), RESTART_CHECK_WAIT)
         result = _latest(app)
         error = None
         if result is None:
@@ -775,6 +808,7 @@ def create_app(
             message="Updating the dashboard – this page will refresh by itself once it's back.",
             job_id=job_id,
             await_restart=True,
+            boot_id=app.state.boot_id,
         )
 
     @app.post("/self/update", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
@@ -837,9 +871,13 @@ def create_app(
                      error: str | None = None, saved: bool = False, status_code: int = 200,
                      restored=None):
         info, holds_self = _stack(project)
+        result = _latest(app)
+        fronts = any(cs.fronts_dashboard for cs in (result.containers if result else [])
+                     if cs.container.project == project)
         return render(
             request, "stack_config.html", user, status_code=status_code,
             project=project, info=info, holds_self=holds_self, error=error, saved=saved,
+            fronts_dashboard=fronts,
             files=list(zip(files, texts if texts is not None else [f.text for f in files])),
             backups=stack_config.list_backups(files, backup_dir, project), restored=restored,
         )
@@ -932,6 +970,13 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job")
         return render(request, "job.html", user, job=job)
+
+    @app.get("/jobs/{job_id}/status")
+    async def job_status(job_id: int, user: User = Depends(require_role(Role.OPERATOR))):
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Unknown job")
+        return JSONResponse({"status": job.status}, headers={"Cache-Control": "no-store"})
 
     @app.get("/jobs/{job_id}/stream")
     async def job_stream(request: Request, job_id: int,
@@ -1323,11 +1368,13 @@ def create_app(
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
-        """Liveness for the container HEALTHCHECK: public, no detail, never cached."""
+        """Liveness for the container HEALTHCHECK: public, never cached. Also the version and
+        this start's random ID, which the restart page watches for a change."""
         if app.state.store.ping():
             body, status = {"status": "ok"}, 200
         else:
             body, status = {"status": "unavailable"}, 503
+        body.update(version=__version__, started=app.state.boot_id)
         return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
     return app

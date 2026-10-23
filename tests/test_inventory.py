@@ -210,3 +210,20 @@ def test_container_key():
         "com.docker.compose.project": "site", "com.docker.compose.service": "web"}))
     assert container_key(compose) == "site/web"
     assert container_key(_one(StubContainer(ID_A, "plain", "img", "sha256:i"))) == "plain"
+
+
+def test_networks_and_published_ports():
+    c = StubContainer(ID_A, "caddy", "caddy:2", "sha256:web")
+    c.attrs["NetworkSettings"] = {
+        "Networks": {"proxy": {}, "caddy_default": {}},
+        "Ports": {"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"},
+                             {"HostIp": "::", "HostPort": "80"}],
+                  "443/tcp": [{"HostPort": "443"}], "2019/tcp": None},
+    }
+    c.attrs["HostConfig"] = {"NetworkMode": "proxy"}
+    plain = StubContainer(ID_B, "old", "caddy:2", "sha256:web")  # no network data at all
+    client = StubClient([c, plain], StubImages({}))
+    found, bare = list_containers(client, None)
+    assert found.networks == ["caddy_default", "proxy"]
+    assert found.host_ports == [80, 443] and found.network_mode == "proxy"
+    assert (bare.networks, bare.host_ports, bare.network_mode) == ([], [], "")

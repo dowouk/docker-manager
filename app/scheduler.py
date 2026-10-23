@@ -112,6 +112,11 @@ async def scheduled_digest(app: FastAPI) -> None:
         log.error("Scheduled digest failed (%s)", type(exc).__name__)
 
 
+async def flush_updates_found(app: FastAPI) -> None:
+    """Send "Updates found" messages whose hour's wait is over (async: sends on the loop)."""
+    app.state.notifier.flush_updates()  # never raises
+
+
 def purge_sessions(app: FastAPI) -> None:
     try:
         app.state.sessions.purge_expired()
@@ -145,6 +150,14 @@ def build_scheduler(app: FastAPI, settings: Settings) -> AsyncIOScheduler:
         args=[app],
         id="check",
         next_run_time=first_run,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        flush_updates_found,
+        IntervalTrigger(minutes=5, timezone=tz),
+        args=[app],
+        id="updates-found",
         max_instances=1,
         coalesce=True,
     )

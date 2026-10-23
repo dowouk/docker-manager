@@ -128,6 +128,7 @@ def test_greeting(hour, text):
     ({"state": "paused"}, {}, []),
     ({"is_self": True}, {}, []),
     ({"service": None}, {}, []),
+    ({}, {"fronts_dashboard": True}, ["restart"]),  # stopping the proxy cuts off the page
     ({}, {"updatable": False, "not_updatable_reason": "Not started by compose"}, []),
 ])
 def test_control_actions(change, kw, expected):

@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import docker.errors
 import httpx
@@ -399,6 +399,7 @@ def test_self_update_runs_as_job(client_for, seeded, monkeypatch):
     assert "refresh by itself" in r.text
     # The page waits for the restart (polling /healthz) and then opens the job's log.
     assert 'data-await-restart' in r.text and 'data-job="7"' in r.text
+    assert f'data-started="{c.get("/healthz").json()["started"]}"' in r.text
     assert 'href="/jobs/7"' in r.text
     kind, target, user, work = runner.submitted[0]
     assert (kind, target, user) == ("self", "dash", "test@example.com")
@@ -515,6 +516,22 @@ def test_history_lists_jobs(client_for, seeded):
     assert "Succeeded" in html
 
 
+def test_job_status(client_for, seeded):
+    c, app = client_for(result=seeded)
+    job_id = app.state.store.create_job("self", "dash", "someone@example.com")
+    r = c.get(f"/jobs/{job_id}/status")
+    assert r.json() == {"status": "running"} and r.headers["cache-control"] == "no-store"
+    app.state.store.finish_job(job_id, "failed")
+    assert c.get(f"/jobs/{job_id}/status").json() == {"status": "failed"}
+    assert c.get("/jobs/999/status").status_code == 404
+
+
+def test_self_updated_flash_names_the_version(client_for, seeded):
+    from app import __version__
+    c, _ = client_for(result=seeded)
+    assert f"now running version {__version__}" in c.get("/?msg=self_updated").text
+
+
 def test_job_page_and_stream(client_for, seeded):
     c, app = client_for(result=seeded)
     job_id = app.state.store.create_job("build", "web", "someone@example.com")
@@ -569,14 +586,15 @@ async def test_job_triggers_check_afterwards(settings, tmp_path, seeded, monkeyp
         r = await c.post("/mailcow/update", data={"csrf_token": CSRF})
     assert r.status_code == 303
     work = runner.submitted[0][3]
+    logged = []
     with pytest.raises(RuntimeError):
-        await work(object())
+        await work(type("Ctx", (), {"log": staticmethod(logged.append)})())
     assert ran == [settings.mailcow_dir]
-    tasks = list(app.state.background)
-    assert len(tasks) == 1
-    await tasks[0]
+    # The check ran inside the job, before it finished – even though the job failed.
     _, payload = app.state.store.latest_check()
     assert payload["containers"] == []  # the fresh check replaced the seeded one
+    assert "Checking for updates again" in "".join(logged)
+    await asyncio.gather(*app.state.background)  # just the notification
 
 
 def test_version_refused_without_service_label(client_for, tmp_path, compose_file):
@@ -658,15 +676,19 @@ def test_background_check_failure_is_logged(settings, tmp_path, seeded, caplog, 
         c.post("/mailcow/update", data={"csrf_token": CSRF})
     work = runner.submitted[0][3]
 
+    logged = []
+    ctx = type("Ctx", (), {"log": staticmethod(logged.append)})()
+
     async def go():
-        await work(object())
+        await work(ctx)  # the job still succeeds
         await asyncio.gather(*app.state.background, return_exceptions=True)
-        await asyncio.sleep(0)  # let done-callbacks run
 
     with caplog.at_level(logging.ERROR, logger="app.main"):
         asyncio.run(go())
-    assert "Background check after a job failed" in caplog.text
+    assert "The check after a job failed" in caplog.text
     assert "daemon down" in caplog.text
+    text = "".join(logged)
+    assert "Checking for updates again" in text and "press Check now" in text
 
 
 def digest_app(settings, tmp_path, provider, result=None, **overrides):
@@ -989,6 +1011,12 @@ async def test_check_now_notifies_new_updates_once(settings, tmp_path, monkeypat
     await run_check(app)
     await run_check(app)
     await asyncio.gather(*app.state.background, return_exceptions=True)
+    assert fake.sent == []  # held for an hour first
+    later = datetime.now(timezone.utc) + timedelta(hours=1, minutes=1)
+    monkeypatch.setattr(app.state.notifier, "_clock", lambda: later)
+    app.state.notifier.flush_updates()
+    app.state.notifier.flush_updates()
+    await asyncio.gather(*app.state.background, return_exceptions=True)
     assert len(fake.sent) == 1 and "1 new update" in fake.sent[0][1].subject
 
 
@@ -1301,3 +1329,40 @@ def test_config_restore_unknown_backup(config_client):
         r = c.post("/stacks/site/config", data={"csrf_token": CSRF, "then": "save",
                                                 "restored": stamp, **shas})
         assert r.status_code == 400
+
+
+def test_check_runs_at_once_after_a_self_update(settings, tmp_path, seeded):
+    store = Store(str(tmp_path / "data" / "dashboard.db"))
+    store.save_check(seeded.to_dict(), seeded.checked_at)
+    store.create_job("self", "dash", "someone@example.com")  # cut short by the restart
+    app = create_app(
+        settings, docker_client=StubDocker(),
+        http=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))),
+        store=store, runner=FakeRunner(), start_scheduler=False,
+    )
+    with logged_in_client(app, follow_redirects=False) as c:
+        assert app.state.restart_check is not None
+        html = c.get("/?msg=self_updated").text  # waits for that check
+        assert app.state.restart_check.done()
+    assert "now running version" in html
+    _, payload = store.latest_check()
+    assert payload["containers"] == []  # the fresh check replaced the seeded one
+
+
+def test_no_extra_check_on_an_ordinary_start(client_for, seeded):
+    _, app = client_for(result=seeded)
+    assert app.state.restart_check is None
+
+
+def test_no_stop_for_the_proxy_in_front_of_the_dashboard(client_for, seeded):
+    seeded.containers[0].fronts_dashboard = True  # web
+    runner = FakeRunner()
+    c, _ = client_for(result=seeded, runner=runner)
+    web_id = seeded.containers[0].container.id
+    html = c.get("/").text
+    assert "Fronts the dashboard – no Stop" in html
+    assert f'action="/containers/{web_id}/control" data-confirm' not in html
+    r = c.post(f"/containers/{web_id}/control", data={"action": "stop", "csrf_token": CSRF})
+    assert r.status_code == 400 and runner.submitted == []
+    r = c.post(f"/containers/{web_id}/control", data={"action": "restart", "csrf_token": CSRF})
+    assert r.status_code == 303

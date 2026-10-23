@@ -1,5 +1,6 @@
 """/healthz: public liveness probe, its access-log filter, and the Dockerfile HEALTHCHECK."""
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -30,8 +31,9 @@ def test_healthz_is_public_and_exact(app):
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
         r = c.get("/healthz", headers={"Accept": "text/html"})
     assert r.status_code == 200
-    assert r.text == '{"status":"ok"}'
-    assert r.json() == {"status": "ok"}
+    from app import __version__
+    assert r.json() == {"status": "ok", "version": __version__, "started": app.state.boot_id}
+    assert re.fullmatch(r"[0-9a-f]{16}", app.state.boot_id)
     assert r.headers["cache-control"] == "no-store"
 
 
@@ -55,7 +57,7 @@ def test_healthz_503_when_store_fails(app, caplog):
         with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
             r = c.get("/healthz")
     assert "RuntimeError" in caplog.text and "locked" not in caplog.text
-    assert r.status_code == 503 and r.json() == {"status": "unavailable"}
+    assert r.status_code == 503 and r.json()["status"] == "unavailable"
     assert "secret" not in r.text and r.headers["cache-control"] == "no-store"
 
 

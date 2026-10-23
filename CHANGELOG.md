@@ -2,6 +2,14 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.5] - 23rd October 2026
+
+- /healthz Reports the Version
+- Dashboard Self-Update Page Spots the Restart Sooner and Returns to the Dashboard
+- The Check After an Update Runs Before the Job Finishes, So the Update Leaves the List
+- "Updates Found" Waits an Hour and Leaves Out Updates Applied in the Meantime
+- No Stop for the Proxy or Tunnel in Front of the Dashboard
+
 ## [0.5.4] - 23rd October 2026
 
 - Restart, Stop and Start a Container from the Dashboard
