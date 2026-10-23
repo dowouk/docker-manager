@@ -120,3 +120,27 @@ def test_user_name_helpers():
                                         (17, "Good afternoon"), (18, "Good evening"), (23, "Good evening")])
 def test_greeting(hour, text):
     assert view.greeting(NOW.replace(hour=hour)) == text
+
+
+@pytest.mark.parametrize("change, kw, expected", [
+    ({}, {}, ["restart", "stop"]),
+    ({"state": "exited"}, {}, ["start"]),
+    ({"state": "paused"}, {}, []),
+    ({"is_self": True}, {}, []),
+    ({"service": None}, {}, []),
+    ({}, {"updatable": False, "not_updatable_reason": "Not started by compose"}, []),
+])
+def test_control_actions(change, kw, expected):
+    row = cs("web", **kw)
+    for key, value in change.items():
+        setattr(row.container, key, value)
+    assert view.control_actions(row) == expected
+
+
+def test_config_editable():
+    row = cs("web")
+    assert not view.config_editable(row)  # compose recorded no files
+    row.container.config_files = ["/docker/x/compose.yml"]
+    assert view.config_editable(row)
+    row.container.project = None
+    assert not view.config_editable(row)

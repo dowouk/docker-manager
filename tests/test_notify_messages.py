@@ -73,6 +73,13 @@ def test_job_failed_and_finished(settings):
     assert "succeeded" in ok.html
 
 
+def test_job_names_restart_stop_and_start(settings):
+    assert job_message("Stop", "web", "succeeded", "Ann", 7, settings).subject == \
+        "test-server: stop finished – web"
+    assert job_message("Restart", "web", "failed", "Ann", 7, settings).subject == \
+        "test-server: restart failed – web"
+
+
 def test_job_escapes_and_has_no_log_text(settings):
     m = job_message("Update", "<b>x</b>", "failed", "<i>u</i>", 1, settings)
     assert "<b>x</b>" not in m.html and "<i>u</i>" not in m.html

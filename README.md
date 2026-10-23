@@ -145,6 +145,25 @@ Hidden updates are not counted as needing an update, are not in the attention ca
 
 Every skip, snooze and removal is recorded in **History → Changes** (Admins), with who and the reason.
 
+## Restart, stop and start
+
+Operators and Admins see **Restart** and **Stop** on each running compose container, and **Start** on a stopped one. They run `docker compose restart`, `stop` or `start` for that one service, so the container is kept (not removed) and stays on the dashboard – the **Stopped** filter finds it. **Stop** asks first. Each runs as a job with a live log and is listed in **History**. They aren't offered for the dashboard itself, Mailcow's containers or containers not started by compose.
+
+Restart doesn't read the compose file or `.env` again – to use changed files, use **Save and apply** under [Edit config](#edit-config).
+
+## Edit config
+
+**Edit config** on a compose container (Operators and Admins) opens its stack's compose files and env file – the `.env` in the project folder, or the files given with `--env-file` – each in its own box.
+
+- **Save** first checks the edited files with `docker compose config`. If that finds a problem nothing is saved and the error is shown with your edits still in place. Otherwise each changed file is backed up to `backups/<project>/` in your data folder and then written, keeping its permissions and line endings. A missing `.env` is created (readable by its owner only) if you type anything into its box.
+- **Save and apply** does the same, then runs `docker compose up -d` for the whole stack as a job, which recreates the containers whose config changed. For the dashboard's own stack it uses the same helper as the self-update, and the page refreshes once the dashboard is back.
+- If a file changed on the server since you opened the page, nothing is saved – reload and make your edits again.
+- Only files inside `/docker` (your `COMPOSE_ROOT`) can be changed; others, and files over 1 MB or not UTF-8, are shown read-only.
+
+**Backups** below the editor lists the stack's 20 most recent backups, newest first – taken before each save and each version update. **Restore** loads one into the editor without writing anything; press **Save** or **Save and apply** to use it. That goes through the same check, and the current files are backed up first, so a restore can be undone too. History notes which backup was restored. If a change stops the dashboard's own stack from starting, the page can't be reached: copy the backup from `backups/<project>/` in the data folder back by hand on the server and run `docker compose up -d`. Unlike version updates, **Save and apply** doesn't roll back by itself if the containers don't come up healthy.
+
+The `.env` usually holds passwords, and they are shown on this page in plain text to anyone who can edit config. Every save is recorded in **History → Changes** (Admins): the compose file changes in full, but for env files only the names of the variables added, changed or removed – never their values.
+
 ## Release notes
 
 Update rows have a **Release notes** link, and the digest has one beside each update. It is chosen in this order:
@@ -256,7 +275,7 @@ Microsoft sign-in can't skip the token – the token step always comes first. Un
 | Role | Can do |
 | --- | --- |
 | **Viewer** | See the dashboard, the Layout page, release-notes links, the Skipped list, the History list of updates (without logs) and their own Account page |
-| **Operator** | Everything a Viewer can, plus Check now, Watch settings, skip and snooze, all container, project and version updates and previews, and job logs and live logs |
+| **Operator** | Everything a Viewer can, plus Check now, Watch settings, skip and snooze, all container, project and version updates and previews, restart, stop and start, Edit config (including `.env` values), and job logs and live logs |
 | **Admin** | Everything an Operator can, plus Settings, Users, the History **Changes** tab, Send digest now, the Mailcow update and the dashboard's own update |
 
 There is also a **Waiting for approval** state with no access at all.

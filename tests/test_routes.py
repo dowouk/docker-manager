@@ -15,6 +15,7 @@ from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.jobs import BUSY_MESSAGE, BusyError
 from app.config import Settings
+from app import stack_config
 from app.main import apply_settings, create_app
 from app.store import Store
 from notify_fakes import FakeProvider, providers_for
@@ -201,6 +202,47 @@ def test_self_row_posts_to_self_update(client_for, seeded):
     me_id = seeded.containers[3].container.id
     assert 'action="/self/update"' in html
     assert f"/containers/{me_id}/update" not in html
+
+
+def test_dashboard_offers_restart_stop_start(client_for, seeded, tmp_path):
+    stopped = info(tmp_path, "worker", state="exited")
+    seeded.containers.append(status(stopped))
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    web_id, lone_id, me_id = (seeded.containers[i].container.id for i in (0, 2, 3))
+    assert f'action="/containers/{web_id}/control" data-confirm="Stop web?"' in html
+    assert 'name="action" value="restart"' in html
+    assert f'action="/containers/{stopped.id}/control">' in html
+    assert 'name="action" value="start"' in html
+    assert f"/containers/{lone_id}/control" not in html
+    assert f"/containers/{me_id}/control" not in html
+    assert 'id="confirm-dialog"' in html
+
+
+def test_control_submits_job(client_for, seeded):
+    runner = FakeRunner()
+    c, app = client_for(result=seeded, runner=runner)
+    web_id = seeded.containers[0].container.id
+    r = c.post(f"/containers/{web_id}/control", data={"action": "stop", "csrf_token": CSRF})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/jobs/7"
+    assert runner.submitted[0][:2] == ("stop", "web")
+    job_id = app.state.store.create_job("restart", "web", "someone@example.com")
+    assert "Restart – web" in c.get(f"/jobs/{job_id}").text
+
+
+def test_control_refuses_what_is_not_offered(client_for, seeded):
+    runner = FakeRunner()
+    c, _ = client_for(result=seeded, runner=runner)
+    web_id, lone_id, me_id = (seeded.containers[i].container.id for i in (0, 2, 3))
+    for cid, action in [(web_id, "start"), (web_id, "down"), (lone_id, "stop"), (me_id, "stop")]:
+        r = c.post(f"/containers/{cid}/control", data={"action": action, "csrf_token": CSRF})
+        assert r.status_code == 400, (cid, action)
+    r = c.post("/containers/nope/control", data={"action": "stop", "csrf_token": CSRF})
+    assert r.status_code == 404
+    r = c.post(f"/containers/{web_id}/control", data={"action": "stop"})
+    assert r.status_code == 403
+    assert runner.submitted == []
 
 
 def test_version_preview_rejects_other_tags(client_for, seeded):
@@ -1060,3 +1102,202 @@ def test_image_names_break_only_after_slashes_and_colons(client_for, tmp_path):
     c, _ = client_for(result=CheckResult(CHECKED_AT, [status(web)]))
     html = c.get("/").text
     assert "ghcr.io/<wbr>&lt;b&gt;x&lt;/<wbr>b&gt;/<wbr>chromium:<wbr>latest" in html
+
+
+@pytest.fixture
+def config_client(settings, tmp_path, seeded, monkeypatch):
+    """The db container's stack (`site`), with COMPOSE_ROOT = tmp_path and the
+    compose check stubbed out."""
+    (tmp_path / ".env").write_text("DB_PASSWORD=old\n")
+    checks = []
+
+    async def fake_validate(info, files, texts):
+        checks.append(texts)
+
+    monkeypatch.setattr("app.main.stack_config.validate", fake_validate)
+    runner = FakeRunner()
+    app = make_app(settings.model_copy(update={"compose_root": str(tmp_path)}), tmp_path,
+                   seeded, runner=runner)
+    c = logged_in_client(app, follow_redirects=False)
+    with c:
+        yield c, app, runner, checks
+
+
+def _config_form(c, project="site"):
+    html = c.get(f"/stacks/{project}/config").text
+    shas = re.findall(r'name="(sha_\d+)" value="([0-9a-f]*)"', html)
+    return html, dict(shas)
+
+
+def test_dashboard_offers_edit_config_for_compose_rows(client_for, seeded):
+    c, _ = client_for(result=seeded)
+    html = c.get("/").text
+    assert 'href="/stacks/site/config"' in html
+    assert 'href="/stacks/dash/config"' not in html  # no config files recorded
+    assert c.get("/stacks/nope/config").status_code == 404
+
+
+def test_config_page_shows_compose_and_env(config_client, compose_file, tmp_path):
+    c, *_ = config_client
+    html, shas = _config_form(c)
+    assert compose_file in html and str(tmp_path / ".env") in html
+    assert "DB_PASSWORD=old" in html
+    assert set(shas) == {"sha_0", "sha_1"}
+
+
+def test_config_save_writes_backs_up_and_records_names_only(config_client, tmp_path):
+    c, app, runner, checks = config_client
+    _, shas = _config_form(c)
+    r = c.post("/stacks/site/config", data={
+        "csrf_token": CSRF, "then": "save", **shas,
+        "text_0": "services:\r\n  db:\r\n    image: postgres:16.3\r\n",
+        "text_1": "DB_PASSWORD=new\r\n",
+    })
+    assert r.status_code == 303 and r.headers["location"] == "/stacks/site/config?msg=saved"
+    assert (tmp_path / ".env").read_text() == "DB_PASSWORD=new\n"
+    assert (tmp_path / "compose.yml").read_text().endswith("postgres:16.3\n")
+    assert len(checks) == 1 and runner.submitted == []
+    entry = app.state.store.list_audit(kind="config")[0]
+    assert "changed DB_PASSWORD" in entry.summary and "new" not in entry.summary.split("\n")[0]
+    assert "+    image: postgres:16.3" in entry.summary
+    assert len(list((tmp_path / "backups" / "site").iterdir())) == 2
+    assert "Saved" in c.get("/stacks/site/config?msg=saved").text
+    history = c.get("/history?view=changes").text
+    assert "changed DB_PASSWORD" in history and "DB_PASSWORD=new" not in history
+    details = history[history.index('<details class="change-diff">'):]
+    assert "+    image: postgres:16.3" in details[:details.index("</details>")]
+
+
+def test_config_keeps_a_leading_blank_line(config_client, tmp_path):
+    c, app, runner, checks = config_client
+    (tmp_path / ".env").write_text("\nA=1\n")
+    html, shas = _config_form(c)
+    assert "\n\nA=1\n</textarea>" in html  # browsers drop one newline after <textarea>
+
+
+def test_config_apply_submits_up_job(config_client, tmp_path):
+    c, app, runner, _ = config_client
+    _, shas = _config_form(c)
+    r = c.post("/stacks/site/config", data={
+        "csrf_token": CSRF, "then": "apply", **shas,
+        "text_0": (tmp_path / "compose.yml").read_text(), "text_1": "DB_PASSWORD=old\n",
+    })
+    assert r.status_code == 303 and r.headers["location"] == "/jobs/7"
+    assert runner.submitted[0][:2] == ("config", "site")
+    assert app.state.store.list_audit(kind="config") == []  # nothing changed, nothing recorded
+
+
+def test_config_refuses_a_stale_page_and_a_failed_check(config_client, tmp_path, monkeypatch):
+    c, app, runner, _ = config_client
+    _, shas = _config_form(c)
+    (tmp_path / ".env").write_text("SOMEONE=else\n")
+    form = {"csrf_token": CSRF, "then": "save", **shas,
+            "text_0": "services: {}\n", "text_1": "A=1\n"}
+    r = c.post("/stacks/site/config", data=form)
+    assert r.status_code == 400 and "changed since you opened it" in r.text
+    assert "A=1" in r.text  # the edits are kept on the page
+    assert (tmp_path / ".env").read_text() == "SOMEONE=else\n"
+
+    async def bad(info, files, texts):
+        raise stack_config.ConfigError("services.db.image must be a string")
+
+    monkeypatch.setattr("app.main.stack_config.validate", bad)
+    _, shas = _config_form(c)
+    r = c.post("/stacks/site/config", data={**form, **shas})
+    assert r.status_code == 400 and "must be a string" in r.text
+    assert (tmp_path / ".env").read_text() == "SOMEONE=else\n"
+    assert app.state.store.list_audit(kind="config") == [] and runner.submitted == []
+
+
+def test_config_apply_while_busy_saves_nothing(config_client, tmp_path):
+    c, app, runner, _ = config_client
+    runner.busy = True
+    _, shas = _config_form(c)
+    r = c.post("/stacks/site/config", data={
+        "csrf_token": CSRF, "then": "apply", **shas,
+        "text_0": "services: {}\n", "text_1": "A=1\n",
+    })
+    assert r.status_code == 400 and BUSY_MESSAGE in r.text
+    assert (tmp_path / ".env").read_text() == "DB_PASSWORD=old\n"
+
+
+def test_config_ignores_text_for_read_only_files(config_client, tmp_path, monkeypatch, compose_file):
+    c, app, runner, _ = config_client
+    _, shas = _config_form(c)
+    # Pretend the compose file is outside COMPOSE_ROOT.
+    real = stack_config._inside
+    monkeypatch.setattr("app.stack_config._inside", lambda p, root: p != compose_file and real(p, root))
+    r = c.post("/stacks/site/config", data={
+        "csrf_token": CSRF, "then": "save", **shas,
+        "text_0": "services: {}\n", "text_1": "DB_PASSWORD=old\n",
+    })
+    assert r.status_code == 303
+    assert (tmp_path / "compose.yml").read_text().startswith("services:\n  db:")
+
+
+def test_config_apply_for_the_dashboards_own_stack_uses_the_helper(
+        settings, tmp_path, seeded, compose_file, monkeypatch):
+    seeded.containers[3].container.config_files = [compose_file]
+    # Another service of the dashboard's stack, listed first: the helper must not use its image.
+    seeded.containers.insert(0, status(info(tmp_path, "dashdb", image="postgres:16", project="dash",
+                                            config_files=[compose_file])))
+    calls = []
+    monkeypatch.setattr("app.main.start_self_update", lambda *a: calls.append(a) or ExitedHelper())
+    monkeypatch.setattr("app.main.SELF_UPDATE_GRACE", 0)
+    monkeypatch.setattr("app.main.run_check", lambda app: asyncio.sleep(0))
+    runner = FakeRunner()
+    app = make_app(settings.model_copy(update={"compose_root": str(tmp_path)}), tmp_path,
+                   seeded, runner=runner)
+    with logged_in_client(app, follow_redirects=False) as c:
+        html = c.get("/").text
+        assert 'href="/stacks/dash/config"' in html
+        _, shas = _config_form(c, "dash")
+        r = c.post("/stacks/dash/config", data={
+            "csrf_token": CSRF, "then": "apply", **shas,
+            "text_0": open(compose_file).read(), "text_1": "",
+        })
+    assert r.status_code == 200 and "refresh by itself" in r.text
+    kind, target, _, work = runner.submitted[0]
+    assert (kind, target) == ("self", "dash – config")
+    ctx = type("Ctx", (), {"log": staticmethod(lambda t: None)})()
+    asyncio.run(work(ctx))
+    assert calls[0][1].is_self and calls[0][3] == [["up", "-d"]]
+
+
+def test_config_restore_loads_a_backup_then_save_records_it(config_client, tmp_path):
+    c, app, runner, checks = config_client
+    folder = tmp_path / "backups" / "site"
+    folder.mkdir(parents=True)
+    (folder / ".env.20261022-120000").write_text("DB_PASSWORD=older\n")
+    html = c.get("/stacks/site/config").text
+    assert "22 Oct 2026, 12:00:00" in html
+    assert 'href="/stacks/site/config?restore=20261022-120000"' in html
+
+    html = c.get("/stacks/site/config?restore=20261022-120000").text
+    assert "nothing has been written yet" in html
+    assert "DB_PASSWORD=older" in html
+    assert (tmp_path / ".env").read_text() == "DB_PASSWORD=old\n"  # only loaded
+    assert 'name="restored" value="20261022-120000"' in html
+    shas = dict(re.findall(r'name="(sha_\d+)" value="([0-9a-f]*)"', html))
+
+    r = c.post("/stacks/site/config", data={
+        "csrf_token": CSRF, "then": "save", "restored": "20261022-120000", **shas,
+        "text_0": (tmp_path / "compose.yml").read_text(), "text_1": "DB_PASSWORD=older\n",
+    })
+    assert r.status_code == 303
+    assert (tmp_path / ".env").read_text() == "DB_PASSWORD=older\n"
+    entry = app.state.store.list_audit(kind="config")[0]
+    assert entry.summary.endswith("(restored from the backup of 22 Oct 2026, 12:00:00)")
+    # The file it replaced was backed up too, so the restore can be undone.
+    assert any(p.read_text() == "DB_PASSWORD=old\n" for p in folder.iterdir())
+
+
+def test_config_restore_unknown_backup(config_client):
+    c, *_ = config_client
+    r = c.get("/stacks/site/config?restore=20990101-000000")
+    assert r.status_code == 404 and "That backup was not found" in r.text
+    _, shas = _config_form(c)
+    for stamp in ("../../etc", "20990101-000000"):
+        r = c.post("/stacks/site/config", data={"csrf_token": CSRF, "then": "save",
+                                                "restored": stamp, **shas})
+        assert r.status_code == 400

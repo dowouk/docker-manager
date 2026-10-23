@@ -282,6 +282,16 @@ dialog { width: min(720px, calc(100vw - 32px)); background: var(--surface); colo
 dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog h2 { margin-top: 0; }
 dialog form[method="dialog"] { margin-top: 12px; }
+.config-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; margin-bottom: 16px; }
+.config-file h2 { font-size: 14px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.config-text { width: 100%; min-height: 360px; font: 13px/1.6 "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; white-space: pre; overflow: auto; }
+.config-backups { margin-top: 24px; }
+.config-backups h2 { margin-top: 0; }
+.config-error { white-space: pre-wrap; }
+.change-diff { margin-top: 6px; }
+.change-diff pre { max-height: 320px; margin: 6px 0 0; }
+#confirm-dialog { width: min(440px, calc(100vw - 32px)); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .preview { display: flex; flex-direction: column; gap: 12px; }
 .preview p, .preview form { margin: 0; }
 

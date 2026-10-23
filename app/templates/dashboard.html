@@ -46,6 +46,21 @@
 {% endif %}
 {% endmacro %}
 
+{# Edit config, then Restart / Stop / Start for one compose service. Operator and above; Stop asks first. #}
+{% macro controls(cs, size="button-small") %}
+{% set c = cs.container %}
+{% if can(user, Role.OPERATOR) %}
+{% if config_editable(cs) %}<a class="button button-quiet {{ size }}" href="/stacks/{{ c.project | urlencode }}/config">Edit config</a>{% endif %}
+{% for action in control_actions(cs) %}
+<form method="post" action="/containers/{{ c.id }}/control"{% if action == "stop" %} data-confirm="Stop {{ c.name }}?" data-confirm-detail="It stays stopped until someone starts it again." data-confirm-button="Stop"{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <input type="hidden" name="action" value="{{ action }}">
+  <button type="submit" class="button button-quiet {{ size }}">{{ action | capitalize }}</button>
+</form>
+{% endfor %}
+{% endif %}
+{% endmacro %}
+
 {% macro mailcow_action(size="") %}
 {% if can(user, Role.ADMIN) %}
 <form method="post" action="/mailcow/update">
@@ -243,8 +258,9 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
           {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}
-          <td data-label="Action" class="col-action{% if not has_action %} no-action{% endif %}">
-            {% if has_action %}<div class="row-actions">{{ actions(cs, "button-small") }}{{ skip_menu(skip_items(cs)) }}</div>{% else %}<span class="faint">–</span>{% endif %}
+          {% set has_controls = can(user, Role.OPERATOR) and (control_actions(cs) or config_editable(cs)) %}
+          <td data-label="Action" class="col-action{% if not (has_action or has_controls) %} no-action{% endif %}">
+            {% if has_action or has_controls %}<div class="row-actions">{% if has_action %}{{ actions(cs, "button-small") }}{{ skip_menu(skip_items(cs)) }}{% endif %}{{ controls(cs) }}</div>{% else %}<span class="faint">–</span>{% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -289,6 +305,15 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
   </div>
 </section>
 {% endif %}
+
+<dialog id="confirm-dialog" aria-labelledby="confirm-title">
+  <h2 id="confirm-title"></h2>
+  <p id="confirm-detail" class="card-text"></p>
+  <form method="dialog" class="dialog-actions">
+    <button type="submit" value="cancel" class="button button-quiet">Cancel</button>
+    <button type="submit" value="confirm" id="confirm-button" class="button button-danger"></button>
+  </form>
+</dialog>
 
 <dialog id="preview-dialog">
   <div id="preview-body"></div>

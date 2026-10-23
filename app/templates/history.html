@@ -29,7 +29,9 @@
       <tr>
         <td data-label="When"><span class="mono">{{ entry.at | uk_date }}</span></td>
         <td data-label="Who">{{ entry.user }}</td>
-        <td data-label="Change">{{ entry.summary }}</td>
+        {% set first, _, diff = entry.summary.partition("\n") %}
+        <td data-label="Change">{{ first }}{% if diff and entry.kind == "config" and can(user, Role.OPERATOR) %}<details class="change-diff"><summary>Compose file changes</summary><pre class="log diff">{% for line in diff.splitlines() %}<span class="{{ 'add' if line.startswith('+') and not line.startswith('+++') else 'del' if line.startswith('-') and not line.startswith('---') else '' }}">{{ line }}</span>
+{% endfor %}</pre></details>{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>

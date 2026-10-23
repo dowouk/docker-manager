@@ -37,6 +37,25 @@ def row_state(cs: ContainerStatus) -> str:
     return "current"
 
 
+def control_actions(cs: ContainerStatus) -> list[str]:
+    """Restart/Stop/Start offered for one container: compose services only, never this
+    dashboard (stopping it would take the page down with no way back)."""
+    c = cs.container
+    if not cs.updatable or c.is_self or not c.service:
+        return []
+    if c.state == "running":
+        return ["restart", "stop"]
+    if c.state == "exited":
+        return ["start"]
+    return []
+
+
+def config_editable(cs: ContainerStatus) -> bool:
+    """Whether "Edit config" is offered: compose containers whose files compose recorded."""
+    c = cs.container
+    return bool(c.project and c.working_dir and c.config_files)
+
+
 def filter_state(cs: ContainerStatus) -> str:
     """Space-separated tokens the dashboard filters match on (`data-state`)."""
     state = row_state(cs)

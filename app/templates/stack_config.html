@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Edit config – {{ project }}{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Edit config</h1>
+    <p class="lede">stack · <span class="mono">{{ project }}</span> – <span class="mono">{{ info.working_dir }}</span></p>
+  </div>
+</section>
+{% if saved %}<p class="notice notice-ok" role="status">Saved – the old files are listed under Backups below. The containers use the new config once it's applied.</p>{% endif %}
+{% if restored %}<p class="notice" role="status">Loaded the backup of {{ restored.label }} into the editor – nothing has been written yet. Check it, then press <strong>Save</strong> or <strong>Save and apply</strong>. The current files are backed up first.</p>{% endif %}
+{% if error %}<p class="notice notice-error config-error" role="alert">{{ error }}</p>{% endif %}
+<p class="notice">Restart doesn't pick up changes to these files – use <strong>Save and apply</strong>, which recreates the stack's containers with <span class="mono">docker compose up -d</span>.{% if holds_self %} This stack holds the dashboard, so it restarts too.{% endif %} The <span class="mono">.env</span> file usually holds passwords: they are shown here in plain text.</p>
+<form method="post" action="/stacks/{{ project | urlencode }}/config" class="config-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  {% if restored %}<input type="hidden" name="restored" value="{{ restored.stamp }}">{% endif %}
+  <div class="config-files">
+  {% for f, text in files %}
+    <section class="card config-file" aria-labelledby="file-{{ loop.index0 }}">
+      <h2 id="file-{{ loop.index0 }}" class="mono">{{ f.path }}</h2>
+      <input type="hidden" name="sha_{{ loop.index0 }}" value="{{ f.sha256 }}">
+      {% if f.reason %}<p class="meta">{{ f.reason }}</p>{% elif not f.exists %}<p class="meta">No file yet – it is created (private to its owner) if you type anything here.</p>{% endif %}
+      {% if f.editable %}
+      <textarea class="input config-text mono" name="text_{{ loop.index0 }}" aria-labelledby="file-{{ loop.index0 }}" rows="24" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off">
+{{ text }}</textarea>
+      {% elif f.exists and text %}
+      <pre class="log config-text">{{ text }}</pre>
+      {% endif %}
+    </section>
+  {% endfor %}
+  </div>
+  <div class="card-actions">
+    <button type="submit" name="then" value="apply" class="button button-accent">Save and apply</button>
+    <button type="submit" name="then" value="save" class="button button-quiet">Save</button>
+    <a class="button button-quiet" href="/">Cancel</a>
+  </div>
+</form>
+
+<section class="card config-backups" aria-labelledby="backups-title">
+  <h2 id="backups-title">Backups</h2>
+  {% if backups %}
+  <p class="meta">Taken before each save and each version update{% if backups | length >= 20 %} – the 20 most recent; older ones are in the backups folder{% endif %}. <strong>Restore</strong> loads one into the editor above without saving it.</p>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th scope="col">Taken</th><th scope="col">Files</th><th scope="col" class="col-action">Restore</th></tr></thead>
+      <tbody>
+      {% for b in backups %}
+        <tr{% if restored and restored.stamp == b.stamp %} aria-current="true"{% endif %}>
+          <td data-label="Taken"><span class="mono">{{ b.label }}</span></td>
+          <td data-label="Files">{% for i in b.paths | sort %}<div class="mono">{{ files[i][0].path }}</div>{% endfor %}</td>
+          <td data-label="Restore" class="col-action"><a class="button button-quiet button-small" href="/stacks/{{ project | urlencode }}/config?restore={{ b.stamp }}">Restore</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No backups yet – one is taken before each save.</p>
+  {% endif %}
+  {% if holds_self %}<p class="meta">If a change stops the dashboard's own stack from starting, this page can't be reached: restore the backup on the server (it's in the data folder under <span class="mono">backups/{{ project }}/</span>) and run <span class="mono">docker compose up -d</span>.</p>{% endif %}
+</section>
+{% endblock %}

@@ -64,9 +64,12 @@ from app.settings_service import (
     FIELDS, KEY_UNUSABLE_MESSAGE, MAPPABLE_ROLES, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
 )
 from app.store import Store
+from app import stack_config
 from app import view
 from app.updaters import (
     UpdateFailed,
+    apply_config,
+    control_service,
     follow_self_update,
     remove_finished_helpers,
     start_self_update,
@@ -79,7 +82,7 @@ log = logging.getLogger(__name__)
 _HERE = os.path.dirname(__file__)
 _END = "__END__:"
 CHANGE_KINDS = {"settings": "Settings", "signin": "Sign-in", "account": "Account",
-                "users": "Users"}
+                "users": "Users", "config": "Config files"}
 STREAM_RECHECK = 5.0  # seconds between access re-checks on an idle job-log stream
 
 # Flash messages: only these fixed strings are ever shown (no reflected text).
@@ -141,6 +144,10 @@ JOB_KIND_LABELS = {
     "version": "Version update",
     "mailcow": "Mailcow update",
     "self": "Dashboard self-update",
+    "restart": "Restart",
+    "stop": "Stop",
+    "start": "Start",
+    "config": "Apply config",
 }
 SELF_RESTART_WAIT = 600.0
 SELF_UPDATE_GRACE = 30.0
@@ -430,6 +437,8 @@ def create_app(
         skip_kind_labels=skips_mod.KIND_LABELS,
         mailcow_skip_items=lambda result: [i for i in [skips_mod.mailcow_item(result)] if i],
         row_state=view.row_state,
+        control_actions=view.control_actions,
+        config_editable=view.config_editable,
         filter_state=view.filter_state,
         layout_problems=view.layout_problems,
         layout_mounts=view.layout_mounts,
@@ -575,6 +584,16 @@ def create_app(
         whole = mode == "project"
         target = info.project if whole else info.name
         return submit(mode, target, user, lambda ctx: update_build(ctx, info, whole_project=whole))
+
+    @app.post("/containers/{container_id}/control", dependencies=[Depends(verify_csrf)])
+    async def control_container(
+        container_id: str, action: str = Form(...), user: User = Depends(require_role(Role.OPERATOR))
+    ):
+        cs = _find(app, container_id)
+        if action not in view.control_actions(cs):
+            raise HTTPException(status_code=400, detail="That action isn't offered for this container")
+        info = cs.container
+        return submit(action, info.name, user, lambda ctx: control_service(ctx, info, action))
 
     @app.post("/containers/{container_id}/skip", dependencies=[Depends(verify_csrf)])
     async def skip_update(
@@ -722,7 +741,8 @@ def create_app(
         return me.container
 
     def _restart_dashboard(request: Request, user: User, info: ContainerInfo, target: str,
-                           before: Callable[[JobContext], None] | None = None):
+                           before: Callable[[JobContext], None] | None = None,
+                           steps: list[list[str]] | None = None):
         """Recreate the dashboard with a helper container, as a "self" job."""
         async def work(ctx: JobContext) -> None:
             if before is not None:
@@ -730,7 +750,7 @@ def create_app(
             ctx.log("Starting a helper container to pull and recreate the dashboard\n")
             try:
                 helper = await asyncio.to_thread(
-                    start_self_update, docker_client, info, settings.compose_root
+                    start_self_update, docker_client, info, settings.compose_root, steps
                 )
             except (UpdateFailed, docker.errors.DockerException):
                 log.exception("Could not start the dashboard self-update")
@@ -800,6 +820,111 @@ def create_app(
                             f"Gave the dashboard host access for Mailcow in {change.path}")
 
         return _restart_dashboard(request, user, info, f"{info.name} – Mailcow access", edit)
+
+    def _stack(project: str) -> tuple[ContainerInfo, bool]:
+        """A container of the project to read its compose labels from, and whether the
+        project holds this dashboard."""
+        result = _latest(app)
+        members = [cs for cs in (result.containers if result else [])
+                   if cs.container.project == project and view.config_editable(cs)]
+        if not members:
+            raise HTTPException(status_code=404, detail="Unknown stack")
+        me = next((cs for cs in members if cs.container.is_self), None)
+        # The dashboard's own container: the self-update helper runs on its image.
+        return (me or members[0]).container, me is not None
+
+    def _config_page(request: Request, user: User, project: str, files, texts=None,
+                     error: str | None = None, saved: bool = False, status_code: int = 200,
+                     restored=None):
+        info, holds_self = _stack(project)
+        return render(
+            request, "stack_config.html", user, status_code=status_code,
+            project=project, info=info, holds_self=holds_self, error=error, saved=saved,
+            files=list(zip(files, texts if texts is not None else [f.text for f in files])),
+            backups=stack_config.list_backups(files, backup_dir, project), restored=restored,
+        )
+
+    @app.get("/stacks/{project}/config", response_class=HTMLResponse)
+    async def stack_config_page(request: Request, project: str, msg: str = "", restore: str = "",
+                                user: User = Depends(require_role(Role.OPERATOR))):
+        info, _ = _stack(project)
+        files = await asyncio.to_thread(stack_config.stack_files, info, settings.compose_root)
+        if restore:
+            # Only loads the backup into the editor: nothing is written until Save.
+            try:
+                backup, texts = await asyncio.to_thread(
+                    stack_config.load_backup, files, backup_dir, project, restore)
+            except stack_config.ConfigError as exc:
+                return _config_page(request, user, project, files, error=str(exc), status_code=404)
+            return _config_page(request, user, project, files, texts, restored=backup)
+        return _config_page(request, user, project, files, saved=msg == "saved")
+
+    @app.post("/stacks/{project}/config", response_class=HTMLResponse,
+              dependencies=[Depends(verify_csrf)])
+    async def stack_config_save(request: Request, project: str,
+                                user: User = Depends(require_role(Role.OPERATOR))):
+        info, holds_self = _stack(project)
+        form = await request.form()
+        then = form.get("then")
+        if then not in ("save", "apply"):
+            raise HTTPException(status_code=400, detail="Unknown action")
+        files = await asyncio.to_thread(stack_config.stack_files, info, settings.compose_root)
+        texts, shas = [], []
+        for i, f in enumerate(files):
+            text, sha = form.get(f"text_{i}"), form.get(f"sha_{i}")
+            if not isinstance(sha, str) or (f.editable and not isinstance(text, str)):
+                raise HTTPException(status_code=400, detail="The form doesn't match the stack's files")
+            # Files that can't be edited keep what is on disk, whatever was sent.
+            texts.append(stack_config.normalise(text) if f.editable else f.text)
+            shas.append(sha)
+
+        restored = form.get("restored") or ""
+        if not isinstance(restored, str) or (restored and not stack_config.STAMP_RE.match(restored)):
+            raise HTTPException(status_code=400, detail="Unknown backup")
+        restored_from = next((b for b in stack_config.list_backups(files, backup_dir, project, None)
+                              if b.stamp == restored), None) if restored else None
+        if restored and restored_from is None:
+            raise HTTPException(status_code=400, detail="Unknown backup")
+
+        def again(error: str):
+            return _config_page(request, user, project, files, texts, error=error, status_code=400,
+                                restored=restored_from)
+
+        if any(len(t.encode()) > stack_config.MAX_BYTES for t in texts):
+            return again("A file is over 1 MB – edit it on the server")
+        try:
+            stack_config.check_unchanged(files, shas)
+        except stack_config.ConfigError as exc:
+            return again(str(exc))
+        todo = stack_config.changed(files, texts)
+        if not todo and then == "save":
+            return _redirect(f"/stacks/{project}/config")
+        if todo:
+            try:
+                await stack_config.validate(info, files, texts)
+            except stack_config.ConfigError as exc:
+                return again(f"Nothing was saved – docker compose found a problem:\n{exc}")
+        if then == "apply" and app.state.runner.busy:
+            return again(BUSY_MESSAGE + " – nothing was saved")
+        if todo:
+            try:
+                summary, diff = await asyncio.to_thread(
+                    stack_config.save, files, texts, backup_dir, project,
+                    datetime.now(ZoneInfo(app.state.settings.tz)))
+            except stack_config.ConfigError as exc:
+                return again(str(exc))
+            except OSError as exc:
+                log.exception("Saving the config of %s failed", project)
+                return again(f"The files could not be saved ({exc.strerror or exc})")
+            if restored_from is not None:
+                summary += f" (restored from the backup of {restored_from.label})"
+            store.add_audit(user.email, "config", summary + ("\n" + diff if diff else ""))
+        if then == "save":
+            return _redirect(f"/stacks/{project}/config?msg=saved")
+        target = f"{project} – config"
+        if holds_self:
+            return _restart_dashboard(request, user, info, target, steps=[["up", "-d"]])
+        return submit("config", project, user, lambda ctx: apply_config(ctx, info))
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_page(request: Request, job_id: int, user: User = Depends(require_role(Role.OPERATOR))):

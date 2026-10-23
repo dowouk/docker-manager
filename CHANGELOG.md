@@ -2,6 +2,12 @@
 
 All notable changes to Docker Manager are recorded here.
 
+## [0.5.4] - 23rd October 2026
+
+- Restart, Stop and Start a Container from the Dashboard
+- Edit a Stack's Compose File and .env – Checked, Backed Up, Save or Save and Apply
+- Restore a Stack's Config from a Backup
+
 ## [0.5.3] - 19th October 2026
 
 - Dashboard Improvements

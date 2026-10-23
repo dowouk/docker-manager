@@ -161,6 +161,32 @@
     });
   }
 
+  // Forms with data-confirm ask in a modal dialog before they are sent. Without the
+  // dialog (no JS or an old browser) they are sent straight away.
+  function initConfirm() {
+    var dialog = document.getElementById("confirm-dialog");
+    if (!dialog || typeof dialog.showModal !== "function") return;
+    var title = document.getElementById("confirm-title");
+    var detail = document.getElementById("confirm-detail");
+    var button = document.getElementById("confirm-button");
+    document.addEventListener("submit", function (event) {
+      var form = event.target;
+      if (!form.hasAttribute || !form.hasAttribute("data-confirm")) return;
+      event.preventDefault();
+      title.textContent = form.getAttribute("data-confirm");
+      detail.textContent = form.getAttribute("data-confirm-detail") || "";
+      detail.hidden = !detail.textContent;
+      button.textContent = form.getAttribute("data-confirm-button") || "Confirm";
+      dialog.returnValue = "";
+      dialog.onclose = function () {
+        if (dialog.returnValue !== "confirm") return;
+        form.submit();  // no submit event, so this doesn't ask again
+      };
+      dialog.showModal();
+      button.focus();
+    });
+  }
+
   // Live job log over server-sent events.
   function initJobLog() {
     var log = document.getElementById("job-log");
@@ -181,7 +207,8 @@
       if (event.data === "interrupted") {
         result.textContent = "The dashboard is restarting – reload the page in a minute to see the result";
       } else {
-        result.textContent = ok ? "Update succeeded" : "Update failed – see the log";
+        var noun = log.dataset.noun || "Update";
+        result.textContent = ok ? noun + " succeeded" : noun + " failed – see the log";
       }
       result.classList.remove("hidden");
       result.classList.add(ok || event.data === "interrupted" ? "notice-ok" : "notice-error");
@@ -281,6 +308,7 @@
     initAccountMenu();
     initFilter();
     initPreview();
+    initConfirm();
     initJobLog();
   });
 })();

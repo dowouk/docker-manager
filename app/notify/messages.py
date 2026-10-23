@@ -78,7 +78,9 @@ def updates_found_message(updates: list[UpdateItem], settings: Settings) -> Rend
 def job_message(kind_label: str, target: str, status: Literal["succeeded", "failed"],
                 user: str, job_id: int, settings: Settings) -> Rendered:
     word = "failed" if status == "failed" else "finished"
-    headline = f"update {word} – {target}"
+    # Restart / Stop / Start / Apply config name themselves; every other job is an update.
+    noun = kind_label.lower() if kind_label in ("Restart", "Stop", "Start", "Apply config") else "update"
+    headline = f"{noun} {word} – {target}"
     return _render("job", f"{settings.server_name}: {headline}", settings,
                    _link(settings, f"/jobs/{job_id}"), "Open the job",
                    headline=headline, kind_label=kind_label, target=target,

@@ -9,7 +9,9 @@ from app.compose_edit import plan_tag_change
 from app.inventory import ContainerInfo
 from app.updaters import (
     UpdateFailed,
+    apply_config,
     compose_cmd,
+    control_service,
     follow_self_update,
     remove_finished_helpers,
     start_self_update,
@@ -97,6 +99,28 @@ async def test_update_build_pull_then_up():
         compose_cmd(make_info(), "up", "-d", "--no-deps", "web"),
     ]
     assert all(cwd == "/docker/proj" for _, cwd in ctx.calls)
+
+
+@pytest.mark.parametrize("action", ["restart", "stop", "start"])
+async def test_control_service_runs_one_compose_command(action):
+    ctx = FakeCtx()
+    await control_service(ctx, make_info(), action)
+    assert ctx.calls == [(compose_cmd(make_info(), action, "web"), "/docker/proj")]
+
+
+async def test_control_service_failure_names_the_action():
+    ctx = FakeCtx([(1, "boom")])
+    with pytest.raises(UpdateFailed, match=r"^Stop failed \(exit code 1\)$"):
+        await control_service(ctx, make_info(), "stop")
+
+
+@pytest.mark.parametrize("action, kw", [("down", {}), ("stop", {"service": None}),
+                                        ("stop", {"project": None})])
+async def test_control_service_refuses(action, kw):
+    ctx = FakeCtx()
+    with pytest.raises(UpdateFailed):
+        await control_service(ctx, make_info(**kw), action)
+    assert ctx.calls == []
 
 
 async def test_update_build_whole_project_omits_service():
@@ -603,3 +627,27 @@ def test_finished_helper_cleanup_never_raises():
             raise RuntimeError("daemon down")
 
     remove_finished_helpers(type("Client", (), {"containers": Broken()})())
+
+
+async def test_apply_config_recreates_the_whole_project():
+    ctx = FakeCtx()
+    await apply_config(ctx, make_info())
+    assert ctx.calls == [(compose_cmd(make_info(), "up", "-d"), "/docker/proj")]
+
+
+def test_start_self_update_runs_given_steps():
+    calls = []
+
+    class C:
+        containers = None
+
+        def run(self, *a, **kw):
+            calls.append(kw)
+
+        def list(self, all=False, filters=None):
+            return []
+
+    c = C()
+    c.containers = c
+    start_self_update(c, make_info(service="dash"), "/docker", [["up", "-d"]])
+    assert calls[0]["command"] == [shlex.join(compose_cmd(make_info(service="dash"), "up", "-d"))]

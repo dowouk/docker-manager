@@ -75,6 +75,25 @@ async def update_build(ctx: JobContext, info: ContainerInfo, whole_project: bool
     await _run(ctx, info, "Start", *_up(target))
 
 
+CONTROL_ACTIONS = ("restart", "stop", "start")
+
+
+async def apply_config(ctx: JobContext, info: ContainerInfo) -> None:
+    """`docker compose up -d` for the whole project, so edited files take effect."""
+    _require_compose(info)
+    await _run(ctx, info, "Start", "up", "-d")
+
+
+async def control_service(ctx: JobContext, info: ContainerInfo, action: str) -> None:
+    """`docker compose restart|stop|start <service>`: the containers are kept, not removed."""
+    if action not in CONTROL_ACTIONS:
+        raise UpdateFailed(f"Unknown action {action!r}")
+    _require_compose(info)
+    if not info.service:
+        raise UpdateFailed("Not started by compose")
+    await _run(ctx, info, action.capitalize(), action, info.service)
+
+
 def _restore(ctx: JobContext, change: TagChange, backup: str) -> None:
     try:
         restore_backup(change, backup)
@@ -248,17 +267,19 @@ def remove_finished_helpers(client) -> None:
         pass
 
 
-def start_self_update(client, info: ContainerInfo, compose_root: str):
-    """Start a helper container that pulls and recreates this dashboard; returns it.
+def start_self_update(client, info: ContainerInfo, compose_root: str,
+                      steps: list[list[str]] | None = None):
+    """Start a helper container that runs compose `steps` for this dashboard's project
+    (by default: pull and recreate the dashboard); returns it.
 
     Blocking Docker SDK call; callers on the event loop should use asyncio.to_thread.
     """
     _require_compose(info)
     if not info.service:
         raise UpdateFailed("Not started by compose")
-    script = " && ".join(
-        shlex.join(compose_cmd(info, *args)) for args in (("pull", info.service), _up([info.service]))
-    )
+    if steps is None:
+        steps = [["pull", info.service], _up([info.service])]
+    script = " && ".join(shlex.join(compose_cmd(info, *args)) for args in steps)
     _remove_old_helpers(client)
     sock = "/var/run/docker.sock"
     return client.containers.run(
