@@ -1360,7 +1360,7 @@ def test_no_stop_for_the_proxy_in_front_of_the_dashboard(client_for, seeded):
     c, _ = client_for(result=seeded, runner=runner)
     web_id = seeded.containers[0].container.id
     html = c.get("/").text
-    assert "Fronts the dashboard – no Stop" in html
+    assert 'aria-disabled="true" title="This fronts the dashboard – stopping it would cut off this page">Stop</button>' in html
     assert f'action="/containers/{web_id}/control" data-confirm' not in html
     r = c.post(f"/containers/{web_id}/control", data={"action": "stop", "csrf_token": CSRF})
     assert r.status_code == 400 and runner.submitted == []

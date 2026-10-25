@@ -68,6 +68,19 @@
 {% endif %}
 
 <section class="card form-card">
+  <h2>Appearance</h2>
+  <p class="card-text">Auto matches your device's light or dark setting. The button in the header switches it too.</p>
+  <form method="post" action="/account/theme">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="segmented fit" role="group" aria-label="Theme">
+      {% for value, label in (("system", "Auto"), ("light", "Light"), ("dark", "Dark")) %}
+      <button type="submit" name="theme" value="{{ value }}" aria-pressed="{{ 'true' if (user.theme or 'system') == value else 'false' }}">{{ label }}</button>
+      {% endfor %}
+    </div>
+  </form>
+</section>
+
+<section class="card form-card">
   <h2>Sessions</h2>
   <form method="post" action="/account/sign-out-everywhere">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">

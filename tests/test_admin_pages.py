@@ -604,3 +604,51 @@ def test_clear_two_step_clears_everything_in_one_go(app):
         None, False, None, [])
     with pytest.raises(KeyError):
         users.clear_two_step(9999)
+
+
+def test_theme_follows_the_system_until_chosen_on_the_account_page(app):
+    ann = local(app)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        set_session(c, app, {"user_id": ann.id, "csrf": CSRF})
+        html = c.get("/account").text
+        assert "data-theme=" not in html
+        assert re.search(r'value="system" aria-pressed="true"', html)
+        assert post(c, "/account/theme", theme="dark").status_code == 303
+        assert app.state.users.get(ann.id).theme == "dark"
+        html = c.get("/account").text
+        assert '<html lang="en-GB" data-theme="dark">' in html
+        assert re.search(r'value="dark" aria-pressed="true"', html)
+        post(c, "/account/theme", theme="system")
+        assert app.state.users.get(ann.id).theme is None
+        assert "data-theme=" not in c.get("/account").text
+        post(c, "/account/theme", theme="purple")  # anything unknown follows the system
+        assert app.state.users.get(ann.id).theme is None
+
+
+def test_theme_needs_csrf(app):
+    ann = local(app)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        set_session(c, app, {"user_id": ann.id, "csrf": CSRF})
+        r = c.post("/account/theme", data={"csrf_token": "wrong", "theme": "dark"})
+        assert r.status_code in (400, 403)
+        assert app.state.users.get(ann.id).theme is None
+
+
+def test_header_theme_button_cycles_auto_light_dark_and_returns_to_the_page(app):
+    ann = local(app)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        set_session(c, app, {"user_id": ann.id, "csrf": CSRF})
+        for current, following in (("system", "light"), ("light", "dark"), ("dark", "system")):
+            html = c.get("/history").text
+            assert re.search(rf'name="theme" value="{following}" class="icon-button" data-current="{current}"', html)
+            r = post(c, "/account/theme", theme=following, next="/history")
+            assert r.status_code == 303 and r.headers["location"] == "/history"
+        assert app.state.users.get(ann.id).theme is None
+
+
+@pytest.mark.parametrize("bad", ["https://evil.example", "//evil.example", "/\\evil.example", ""])
+def test_theme_redirect_stays_on_the_dashboard(app, bad):
+    ann = local(app)
+    with TestClient(app, base_url="https://testserver", follow_redirects=False) as c:
+        set_session(c, app, {"user_id": ann.id, "csrf": CSRF})
+        assert post(c, "/account/theme", theme="dark", next=bad).headers["location"] == "/account"

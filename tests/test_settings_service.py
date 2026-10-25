@@ -374,3 +374,30 @@ def test_audit_never_contains_heartbeat_url(settings, tmp_path):
     assert "SECRET-TOKEN" not in joined
     for word in ("set", "changed", "cleared"):
         assert f"Heartbeat address {word}" in joined
+
+
+@pytest.mark.parametrize("cron, picked", [
+    ("0 8 * * MON", {"days": ["mon"], "time": "08:00"}),
+    ("30 17 * * 1-5", {"days": ["mon", "tue", "wed", "thu", "fri"], "time": "17:30"}),
+    ("5 6 * * 0,6", {"days": ["sat", "sun"], "time": "06:05"}),
+    ("0 8 * * *", {"days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "time": "08:00"}),
+    ("*/15 8 * * MON", None), ("0 8 1 * *", None), ("0 8,20 * * MON", None), ("nonsense", None),
+])
+def test_schedule_picker_reads_simple_schedules(cron, picked):
+    from app.settings_service import schedule_picker
+    assert schedule_picker(cron) == picked
+
+
+def test_schedule_from_picker_round_trips():
+    from app.settings_service import schedule_from_picker, schedule_in_words, schedule_picker
+    cron = schedule_from_picker("thu,mon", "07:05")
+    assert cron == "5 7 * * MON,THU"
+    assert schedule_picker(cron) == {"days": ["mon", "thu"], "time": "07:05"}
+    assert schedule_from_picker("mon,tue,wed,thu,fri,sat,sun", "08:00") == "0 8 * * *"
+    assert schedule_in_words("0 8 * * *") == "every day at 08:00"
+    assert schedule_in_words("0 8 * * 1-5") == "on weekdays at 08:00"
+    assert schedule_in_words("0 8 * * MON,WED,FRI") == "on Mondays, Wednesdays and Fridays at 08:00"
+    with pytest.raises(ValueError, match="day"):
+        schedule_from_picker("", "08:00")
+    with pytest.raises(ValueError, match="time"):
+        schedule_from_picker("mon", "25:00")

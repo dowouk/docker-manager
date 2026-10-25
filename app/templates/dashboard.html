@@ -51,7 +51,6 @@
 {% set c = cs.container %}
 {% if can(user, Role.OPERATOR) %}
 {% if config_editable(cs) %}<a class="button button-quiet {{ size }}" href="/stacks/{{ c.project | urlencode }}/config">Edit config</a>{% endif %}
-{% if cs.fronts_dashboard and c.state == "running" and control_actions(cs) %}<span class="meta" title="Stopping it would cut off this dashboard">Fronts the dashboard – no Stop</span>{% endif %}
 {% for action in control_actions(cs) %}
 <form method="post" action="/containers/{{ c.id }}/control"{% if action == "stop" %} data-confirm="Stop {{ c.name }}?" data-confirm-detail="It stays stopped until someone starts it again." data-confirm-button="Stop"{% endif %}>
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -59,6 +58,8 @@
   <button type="submit" class="button button-quiet {{ size }}">{{ action | capitalize }}</button>
 </form>
 {% endfor %}
+{# The proxy or tunnel in front of the dashboard: Stop shows, greyed out, saying why. #}
+{% if cs.fronts_dashboard and c.state == "running" and control_actions(cs) %}<button type="button" class="button button-quiet {{ size }}" aria-disabled="true" title="This fronts the dashboard – stopping it would cut off this page">Stop</button>{% endif %}
 {% endif %}
 {% endmacro %}
 

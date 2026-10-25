@@ -54,6 +54,7 @@ class UserRecord:
     photo_etag: str | None = None  # set while a profile photo is stored
     photo_source: str | None = None  # "microsoft", "gravatar", "none" (none found) or unchecked
     photo_checked_at: datetime | None = None
+    theme: str | None = None  # "light" or "dark"; None follows the system setting
 
     @property
     def active(self) -> bool:
@@ -62,16 +63,17 @@ class UserRecord:
 
 _COLS = ("id, kind, email, name, password_hash, totp_secret, totp_enabled, totp_last_step, "
          "recovery_codes, role, role_pinned, disabled, must_change_password, entra_tid, "
-         "entra_oid, created_at, last_sign_in, photo_etag, photo_source, photo_checked_at")
+         "entra_oid, created_at, last_sign_in, photo_etag, photo_source, photo_checked_at, theme")
 
 _BOOLS = {"totp_enabled", "role_pinned", "disabled", "must_change_password"}
 # Columns update() may write. Secrets and credentials (password_hash, totp_*, recovery_codes)
 # are written only by their dedicated methods.
 _UPDATABLE = {"kind", "email", "name", "role", "role_pinned", "disabled",
-              "must_change_password", "entra_tid", "entra_oid", "last_sign_in"}
+              "must_change_password", "entra_tid", "entra_oid", "last_sign_in", "theme"}
 _INTERNAL = _UPDATABLE | {"password_hash", "totp_secret", "totp_enabled",
                           "totp_last_step", "recovery_codes"}
 ROLES = ("pending", "viewer", "operator", "admin")
+THEMES = ("light", "dark")  # stored as is; anything else follows the system setting
 
 
 def _check_role(role: str) -> None:
@@ -90,7 +92,7 @@ def _record(r) -> UserRecord:
         role=r[9], role_pinned=bool(r[10]), disabled=bool(r[11]),
         must_change_password=bool(r[12]), entra_tid=r[13], entra_oid=r[14],
         created_at=_from_iso(r[15]), last_sign_in=_from_iso(r[16]), photo_etag=r[17],
-        photo_source=r[18], photo_checked_at=_from_iso(r[19]),
+        photo_source=r[18], photo_checked_at=_from_iso(r[19]), theme=r[20],
     )
 
 
@@ -189,6 +191,8 @@ class UserStore:
             raise ValueError(f"can't update {sorted(unknown)}")
         if "role" in fields:
             _check_role(fields["role"])
+        if fields.get("theme") not in (None, *THEMES):
+            raise ValueError(f"unknown theme {fields['theme']!r}")
         with self._store.write_tx() as db:
             row = db.execute(f"SELECT {_COLS} FROM users WHERE id = ?", (user_id,)).fetchone()
             if row is None:

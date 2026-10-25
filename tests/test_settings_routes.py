@@ -293,3 +293,40 @@ def test_new_checking_options_show_ticked_when_never_saved(client):
         assert " checked" in tag
     for name in ("named_volumes_allowed",):
         assert " checked" not in re.search(rf'<input[^>]*id="f-{name}"[^>]*>', html).group(0)
+
+
+def test_digest_schedule_shows_as_days_and_time(client):
+    html = client.get("/settings").text
+    assert 'name="digest_schedule_mode" value="days" checked' in html
+    assert 'name="digest_schedule_days" value="mon" checked' in html
+    assert 'name="digest_schedule_days" value="tue">' in html
+    assert 'name="digest_schedule_time" type="time" step="300" value="08:00"' in html
+    assert "Sends on Mondays at 08:00" in html
+
+
+def test_digest_schedule_saved_from_days_and_time(client, app):
+    r = client.post("/settings/digest", data={
+        "csrf_token": CSRF, "digest_schedule_mode": "days",
+        "digest_schedule_days": ["mon", "thu"], "digest_schedule_time": "09:30",
+        "digest_schedule": "ignored in this mode"})
+    assert r.status_code == 303
+    assert app.state.settings.digest_schedule == "30 9 * * MON,THU"
+    assert "Sends on Mondays and Thursdays at 09:30" in client.get("/settings").text
+
+
+def test_digest_schedule_needs_a_day(client, app):
+    r = client.post("/settings/digest", data={
+        "csrf_token": CSRF, "digest_schedule_mode": "days", "digest_schedule_time": "09:30",
+        "digest_schedule": "0 8 * * MON"})
+    assert r.status_code == 400 and "Pick at least one day" in r.text
+    assert app.state.settings.digest_schedule == "0 8 * * MON"
+
+
+def test_custom_digest_schedule_opens_in_custom_mode(client, app):
+    r = client.post("/settings/digest", data={
+        "csrf_token": CSRF, "digest_schedule_mode": "custom", "digest_schedule": "0 8 1 * *"})
+    assert r.status_code == 303
+    assert app.state.settings.digest_schedule == "0 8 1 * *"
+    html = client.get("/settings").text
+    assert 'name="digest_schedule_mode" value="custom" checked' in html
+    assert 'value="0 8 1 * *"' in html

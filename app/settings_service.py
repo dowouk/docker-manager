@@ -96,7 +96,7 @@ FIELDS: list[Field] = [
           "Don't flag containers that use named Docker volumes."),
     Field("layout_allowlist", "Allowed folders", "checking", "path_list",
           f"Full paths, one per line (up to {MAX_ALLOWLIST}). Mounts under these are never flagged."),
-    Field("digest_schedule", "Weekly digest schedule", "digest", "cron",
+    Field("digest_schedule", "Schedule", "digest", "cron",
           "Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am."),
     Field("digest_when_none", "Send the digest when everything is up to date", "digest", "bool",
           "Tick to get an email even when there are no updates."),
@@ -135,6 +135,64 @@ def choices_for(field: Field, current) -> tuple[tuple[str, str], ...]:
     if field.name == "default_role" and current == "admin_legacy":
         return (*field.choices, ("admin_legacy", "Admin (as in 0.1)"))
     return field.choices
+
+
+# --- schedule picker ------------------------------------------------------------------
+# A cron field is shown as days and a time when its schedule is that simple
+# ("M H * * days"); anything else stays a custom cron line. The form sends
+# <name>_mode ("days" or "custom"), <name>_days (comma-separated) and <name>_time.
+
+WEEKDAYS = (("mon", "Mon"), ("tue", "Tue"), ("wed", "Wed"), ("thu", "Thu"),
+            ("fri", "Fri"), ("sat", "Sat"), ("sun", "Sun"))
+_DAY_PLURALS = {"mon": "Mondays", "tue": "Tuesdays", "wed": "Wednesdays", "thu": "Thursdays",
+                "fri": "Fridays", "sat": "Saturdays", "sun": "Sundays"}
+_TIME = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
+
+
+def schedule_picker(schedule: str) -> dict | None:
+    """{"days": [...], "time": "HH:MM"} for a days-and-time schedule, else None."""
+    from app.scheduler import _cron_weekdays  # scheduler imports app.main
+
+    parts = (schedule or "").split()
+    if len(parts) != 5 or parts[2:4] != ["*", "*"]:
+        return None
+    minute, hour, dow = parts[0], parts[1], parts[4]
+    if not (minute.isdigit() and hour.isdigit() and int(minute) < 60 and int(hour) < 24):
+        return None
+    days = {d for d, _ in WEEKDAYS} if dow == "*" else set(_cron_weekdays(dow).lower().split(","))
+    if not days or not days <= {d for d, _ in WEEKDAYS}:
+        return None
+    return {"days": [d for d, _ in WEEKDAYS if d in days], "time": f"{int(hour):02d}:{int(minute):02d}"}
+
+
+def schedule_from_picker(days: str, time: str) -> str:
+    """The cron line for the picked days and time; ValueError with a message if incomplete."""
+    chosen = [d for d, _ in WEEKDAYS if d in {x.strip().lower() for x in (days or "").split(",")}]
+    if not chosen:
+        raise ValueError("Pick at least one day")
+    match = _TIME.fullmatch((time or "").strip())
+    if not match:
+        raise ValueError("Enter a time, for example 08:00")
+    dow = "*" if len(chosen) == 7 else ",".join(d.upper() for d in chosen)
+    return f"{int(match[2])} {int(match[1])} * * {dow}"
+
+
+def schedule_in_words(schedule: str) -> str | None:
+    """"on Mondays and Thursdays at 08:00" for a days-and-time schedule, else None."""
+    picked = schedule_picker(schedule)
+    if picked is None:
+        return None
+    days = picked["days"]
+    if len(days) == 7:
+        when = "every day"
+    elif days == ["mon", "tue", "wed", "thu", "fri"]:
+        when = "on weekdays"
+    elif days == ["sat", "sun"]:
+        when = "at weekends"
+    else:
+        names = [_DAY_PLURALS[d] for d in days]
+        when = "on " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
+    return f"{when} at {picked['time']}"
 
 
 def _parse(field: Field, raw: str, current=None):
@@ -338,6 +396,13 @@ class SettingsService:
             if self.locked(field.name):
                 continue
             raw = form.get(field.name, "")
+            if field.kind == "cron" and form.get(f"{field.name}_mode") == "days":
+                try:
+                    raw = schedule_from_picker(form.get(f"{field.name}_days", ""),
+                                               form.get(f"{field.name}_time", ""))
+                except ValueError as exc:
+                    errors[field.name] = str(exc)
+                    continue
             if field.kind == "secret":
                 if not raw.strip():
                     continue

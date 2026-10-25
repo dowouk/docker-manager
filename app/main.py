@@ -63,7 +63,8 @@ from app.admin_pages import setup_admin_pages
 from app.signin import setup_signin
 from app.users import UserStore
 from app.settings_service import (
-    FIELDS, KEY_UNUSABLE_MESSAGE, MAPPABLE_ROLES, choices_for, SECTIONS, SettingsError, SettingsService, key_path,
+    FIELDS, KEY_UNUSABLE_MESSAGE, MAPPABLE_ROLES, WEEKDAYS, choices_for, SECTIONS, SettingsError,
+    SettingsService, key_path, schedule_in_words, schedule_picker,
 )
 from app.store import Store
 from app import stack_config
@@ -1034,8 +1035,23 @@ def create_app(
                 "error": (errors or {}).get(f.name),
                 "has_secret": f.kind == "secret" and service.has_secret(f.name),
                 "unreadable": f.name in service.unreadable,
+                "picker": schedule_field(f.name, value, submitted) if f.kind == "cron" else None,
             })
         return out
+
+    def schedule_field(name: str, value: str, submitted) -> dict:
+        """Days, time and mode for the schedule picker: what was sent after an error,
+        otherwise read from the saved schedule (custom when it isn't days and a time)."""
+        if submitted is not None and submitted.get(f"{name}_mode") in ("days", "custom"):
+            return {"mode": submitted[f"{name}_mode"],
+                    "days": submitted.get(f"{name}_days", "").split(","),
+                    "time": submitted.get(f"{name}_time", ""),
+                    "words": schedule_in_words(value)}
+        picked = schedule_picker(value)
+        return {"mode": "days" if picked else "custom",
+                "days": picked["days"] if picked else ["mon"],
+                "time": picked["time"] if picked else "08:00",
+                "words": schedule_in_words(value)}
 
     def render_settings(
         request: Request, user: User, status_code: int = 200, *, msg: str = "",
@@ -1051,6 +1067,7 @@ def create_app(
         return render(
             request, "settings.html", user, status_code,
             sections=[(key, title, fields[key]) for key, title in SECTIONS.items()],
+            section=section, tz=app.state.settings.tz, weekdays=WEEKDAYS,
             registry_logins=[{"host": i.get("host", ""), "username": i.get("username", "")}
                              for i in logins],
             registry_unreadable="registry_logins" in service.unreadable,
@@ -1253,7 +1270,7 @@ def create_app(
     ):
         def refuse(message: str):
             return render_settings(
-                request, user, 400, registry_error=message,
+                request, user, 400, section="registries", registry_error=message,
                 registry_form={"host": host.strip(), "username": username.strip()},
             )
 
@@ -1313,7 +1330,7 @@ def create_app(
                 mappings, user.email, f"Group {gid} mapped to {MAPPABLE_ROLES.get(role, role)}")
         except ValueError as exc:  # fixed messages only
             return render_settings(
-                request, user, 400, group_error=str(exc),
+                request, user, 400, section="signin", group_error=str(exc),
                 group_form={"group_id": group_id.strip(), "role": role})
         return _redirect("/settings?msg=group_saved#signin")
 
@@ -1333,7 +1350,12 @@ def create_app(
     ):
         if section not in SECTIONS:
             raise HTTPException(status_code=404, detail="Unknown settings section")
-        form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+        data = await request.form()
+        form = {k: v for k, v in data.items() if isinstance(v, str)}
+        for f in FIELDS:  # the schedule picker's day boxes send one value each
+            if f.kind == "cron" and f"{f.name}_days" in data:
+                form[f"{f.name}_days"] = ",".join(
+                    v for v in data.getlist(f"{f.name}_days") if isinstance(v, str))
         try:
             app.state.settings_service.save(section, form, user.email)
         except SettingsError as exc:

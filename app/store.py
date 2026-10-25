@@ -113,8 +113,14 @@ def _migration_5(db: sqlite3.Connection) -> None:
     )
 
 
+def _migration_6(db: sqlite3.Connection) -> None:
+    # Each user's light/dark choice; NULL follows the system setting.
+    if "theme" not in {row[1] for row in db.execute("PRAGMA table_info(users)")}:
+        db.execute("ALTER TABLE users ADD COLUMN theme TEXT")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
-    _migration_1, _migration_2, _migration_3, _migration_4, _migration_5]
+    _migration_1, _migration_2, _migration_3, _migration_4, _migration_5, _migration_6]
 
 
 def _now() -> str:

@@ -58,6 +58,7 @@ ROUTE_ROLES: list[tuple[str, str, Role]] = [
     ("GET", "/photos/1", Role.PENDING),  # your own picture; others' are 404 below Admin
     ("POST", "/account/two-step/off", Role.PENDING),
     ("POST", "/account/recovery-codes", Role.PENDING),
+    ("POST", "/account/theme", Role.PENDING),
     ("POST", "/account/sign-out-everywhere", Role.PENDING),
     ("GET", "/users", Role.ADMIN),
     ("GET", "/users/1", Role.ADMIN),

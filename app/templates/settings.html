@@ -10,6 +10,13 @@
   </div>
 </section>
 
+<div class="settings-layout" data-section="{{ section or '' }}">
+<nav class="settings-nav" aria-label="Settings sections">
+  {% for key, title, fields in sections %}<a href="#{{ key }}">{{ title }}</a>{% endfor %}
+  <a href="#notifications">Notifications</a>
+  <a href="#registries">Registry logins</a>
+  <a href="/users">Users</a>
+</nav>
 <div class="settings">
 {% for key, title, fields in sections %}
   <section class="card settings-card" id="{{ key }}" aria-labelledby="{{ key }}-title">
@@ -23,6 +30,35 @@
           <input type="checkbox" id="f-{{ f.name }}" name="{{ f.name }}"{% if f.value == "on" %} checked{% endif %}{% if f.locked %} disabled{% endif %}{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
           <span>{{ f.label }}</span>
         </label>
+        {% elif f.kind == "choice" and f.choices | length == 2 %}
+        <span class="field-label" id="l-{{ f.name }}">{{ f.label }}</span>
+        <div class="choice-group" id="f-{{ f.name }}" role="radiogroup"{% if f.error %} aria-invalid="true"{% endif %} aria-labelledby="l-{{ f.name }}" aria-describedby="h-{{ f.name }}">
+          {% for val, text in f.choices %}<label class="choice"><input type="radio" name="{{ f.name }}" value="{{ val }}"{% if val == f.value %} checked{% endif %}{% if f.locked %} disabled{% endif %}><span>{{ text }}</span></label>{% endfor %}
+        </div>
+        {% elif f.kind == "cron" and not f.locked %}
+        {# Days and a time, or a custom cron line. Without JS both show and the mode decides. #}
+        {% set p = f.picker %}
+        <span class="field-label" id="l-{{ f.name }}">{{ f.label }}</span>
+        <div class="schedule" data-schedule data-tz="{{ tz }}">
+          <div class="choice-group" role="radiogroup" aria-labelledby="l-{{ f.name }}">
+            <label class="choice"><input type="radio" name="{{ f.name }}_mode" value="days"{% if p.mode == "days" %} checked{% endif %}><span>Days and time</span></label>
+            <label class="choice"><input type="radio" name="{{ f.name }}_mode" value="custom"{% if p.mode == "custom" %} checked{% endif %}><span>Custom (cron)</span></label>
+          </div>
+          <div class="schedule-days" data-mode="days">
+            <div class="day-group" role="group" aria-label="Days">
+              {% for d, label in weekdays %}<label class="choice day"><input type="checkbox" name="{{ f.name }}_days" value="{{ d }}"{% if d in p.days %} checked{% endif %}><span>{{ label }}</span></label>{% endfor %}
+            </div>
+            <div class="schedule-time">
+              <label for="f-{{ f.name }}-time">At</label>
+              <input class="input input-short" id="f-{{ f.name }}-time" name="{{ f.name }}_time" type="time" step="300" value="{{ p.time }}">
+              <span class="meta">{{ tz }}</span>
+            </div>
+          </div>
+          <div class="schedule-custom" data-mode="custom">
+            <label for="f-{{ f.name }}" class="visually-hidden">Cron schedule</label>
+            <input class="input mono" id="f-{{ f.name }}" name="{{ f.name }}" type="text" autocomplete="off" spellcheck="false" value="{{ f.value }}"{% if f.error %} aria-invalid="true"{% endif %} aria-describedby="h-{{ f.name }}">
+          </div>
+        </div>
         {% else %}
         <label for="f-{{ f.name }}">{{ f.label }}</label>
         {% if f.kind == "choice" %}
@@ -42,7 +78,8 @@
         {% endif %}
         {% if f.error %}<p class="field-error" role="alert">{{ f.error }}</p>{% endif %}
         <p class="field-help" id="h-{{ f.name }}">
-          {%- if f.locked %}Set by the server's environment (<code>{{ f.locked }}</code>)
+          {%- if f.kind == "cron" and not f.locked %}{% if f.picker.words %}Sends {{ f.picker.words }} ({{ tz }}).{% else %}Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am.{% endif %}
+          {%- elif f.locked %}Set by the server's environment (<code>{{ f.locked }}</code>)
           {%- elif f.kind == "secret" and f.unreadable %}The saved value can't be read – enter it again
           {%- elif f.kind == "secret" and f.has_secret %}Saved – enter a new value to replace it
           {%- else %}{{ f.help }}{% endif -%}
@@ -230,5 +267,6 @@
       </div>
     </form>
   </section>
+</div>
 </div>
 {% endblock %}

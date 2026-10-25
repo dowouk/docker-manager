@@ -8,32 +8,52 @@
     try { window.localStorage.setItem(key, value); } catch (e) { /* storage unavailable */ }
   }
 
-  // Light/dark theme. With nothing saved the page follows the system setting;
-  // the toggle saves an explicit choice (applied early by the inline script in <head>).
-  function initTheme() {
-    var button = document.getElementById("theme-toggle");
-    if (!button) return;
-    var root = document.documentElement;
-    var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-    function current() {
-      var chosen = root.getAttribute("data-theme");
-      if (chosen === "light" || chosen === "dark") return chosen;
-      return media && media.matches ? "dark" : "light";
+  // Settings: show one section at a time, chosen from the list on the left. Without JS
+  // every section shows and the list links jump down the page.
+  function initSettingsNav() {
+    var layout = document.querySelector(".settings-layout");
+    if (!layout) return;
+    var cards = Array.prototype.slice.call(layout.querySelectorAll(".settings-card"));
+    var links = Array.prototype.slice.call(layout.querySelectorAll('.settings-nav a[href^="#"]'));
+    if (!cards.length) return;
+    function sectionFor(hash) {
+      var target = hash ? document.getElementById(hash.slice(1)) : null;
+      var card = target && target.closest ? target.closest(".settings-card") : null;
+      if (card) return card;
+      var initial = layout.getAttribute("data-section");
+      return (initial && document.getElementById(initial)) || cards[0];
     }
-    function render() {
-      var theme = current();
-      button.setAttribute("data-current", theme);
-      button.setAttribute("aria-label", theme === "dark" ? "Switch to light theme" : "Switch to dark theme");
+    function show(hash) {
+      var card = sectionFor(hash);
+      cards.forEach(function (c) { c.hidden = c !== card; });
+      links.forEach(function (a) {
+        if (a.getAttribute("href") === "#" + card.id) a.setAttribute("aria-current", "page");
+        else a.removeAttribute("aria-current");
+      });
     }
-    button.addEventListener("click", function () {
-      var next = current() === "dark" ? "light" : "dark";
-      root.setAttribute("data-theme", next);
-      storageSet("theme", next);
+    window.addEventListener("hashchange", function () { show(window.location.hash); window.scrollTo(0, 0); });
+    layout.classList.add("settings-paged");
+    show(window.location.hash);
+    // the browser jumped to the section's anchor; stay at the top so any notice shows
+    window.requestAnimationFrame(function () { window.scrollTo(0, 0); });
+  }
+
+  // Schedule picker: show only the days-and-time or the custom cron part, as chosen.
+  // Without JS both show and the chosen mode decides which one is saved.
+  function initSchedules() {
+    document.querySelectorAll("[data-schedule]").forEach(function (box) {
+      var radios = box.querySelectorAll('input[type="radio"]');
+      function render() {
+        var mode = "days";
+        radios.forEach(function (r) { if (r.checked) mode = r.value; });
+        box.querySelectorAll("[data-mode]").forEach(function (part) {
+          part.hidden = part.getAttribute("data-mode") !== mode;
+        });
+      }
+      radios.forEach(function (r) { r.addEventListener("change", render); });
+      box.classList.add("schedule-js");
       render();
     });
-    if (media && media.addEventListener) media.addEventListener("change", render);
-    button.hidden = false;
-    render();
   }
 
   // Close the account menu on Escape or a click elsewhere.
@@ -310,10 +330,11 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    initSettingsNav();
+    initSchedules();
     initPresets();
     initAwaitRestart();
     initCopy();
-    initTheme();
     initAccountMenu();
     initFilter();
     initPreview();

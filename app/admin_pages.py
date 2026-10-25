@@ -18,7 +18,7 @@ from app.passwords import hash_password, password_problem, verify_password
 from app.roles import ROLE_LABELS, Role
 from app.setup import _valid_email
 from app.signin import LOCKED_MESSAGE, _audit_trips, _fail, _key, _locked, complete_sign_in
-from app.users import DuplicateUserError, LastAdminError, UserRecord, UserStore
+from app.users import THEMES, DuplicateUserError, LastAdminError, UserRecord, UserStore
 
 LAST_ADMIN = "There must always be at least one active Admin"
 ASSIGNABLE = ("viewer", "operator", "admin")
@@ -389,6 +389,17 @@ def setup_admin_pages(app: FastAPI) -> None:
         app.state.users.set_recovery_codes(rec.id, [totp.hash_recovery_code(c) for c in codes])
         app.state.store.add_audit(rec.email, "account", "New recovery codes created")
         return account_page(request, user, codes=codes)
+
+    @app.post("/account/theme", include_in_schema=False, dependencies=[Depends(verify_csrf)])
+    async def account_theme(request: Request, user: User = Depends(current_user)):
+        form = await request.form()
+        choice = str(form.get("theme", ""))
+        app.state.users.update(user.id, theme=choice if choice in THEMES else None)
+        # The header button sends the page it was on; only a local path is followed.
+        back = str(form.get("next", ""))
+        if not back.startswith("/") or back.startswith("//") or "\\" in back:
+            back = "/account"
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/account/sign-out-everywhere", include_in_schema=False,
               dependencies=[Depends(verify_csrf)])

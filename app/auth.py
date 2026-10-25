@@ -29,6 +29,7 @@ class User:
     email: str
     role: Role
     kind: str
+    theme: str | None = None  # "light" or "dark"; None follows the system setting
 
 
 def _clean_path(path: str) -> bool:
@@ -123,7 +124,8 @@ class AuthGuardMiddleware:
             role = Role(rec.role)
         except ValueError:
             return None, None
-        return User(id=rec.id, name=rec.name, email=rec.email, role=role, kind=rec.kind), rec
+        return User(id=rec.id, name=rec.name, email=rec.email, role=role, kind=rec.kind,
+                    theme=rec.theme), rec
 
     async def _refuse(self, scope, receive, send, location: str, status: int = 401,
                       detail: str | None = None):
