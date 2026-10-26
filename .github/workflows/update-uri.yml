@@ -1,0 +1,65 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+# WordPress Update URI check, synced to every repo from dowouk/.github
+# (workflows/). A plugin or theme with no Update URI header is matched to
+# WordPress.org by its slug, so a .org plugin or theme of the same name can be
+# offered as an "update" and overwrite ours. Every plugin and theme here must
+# declare where its updates come from: our own updater's URL (for example
+# https://github.com/dowouk/showtime-theme), or `false` for none.
+#
+# Headers are read the way WordPress reads them (get_file_data): the first
+# 8 KB of each file, a `Plugin Name:` header in any tracked .php file or a
+# `Theme Name:` header in style.css, at any depth outside vendor/ and
+# node_modules/. A repo with neither passes with nothing to check.
+#
+# Sync commits carry [skip ci], so this first runs on the repo's next push or
+# pull request, or by hand from the Actions tab.
+
+name: Update URI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-uri:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check plugin and theme headers
+        shell: bash
+        run: |
+          # WordPress's header prefix: optional `<?php`, then any of space, tab, / * # @.
+          prefix='^([[:blank:]]*<\?php)?[[:blank:]/*#@]*'
+          found=0 missing=0
+          while IFS= read -r -d '' file; do
+            case $file in
+              *.php) kind=Plugin ;;
+              *) kind=Theme ;;
+            esac
+            header=$(head -c 8192 "$file" | tr -d '\r')
+            grep -qiE "${prefix}$kind Name:" <<< "$header" || continue
+            found=$((found + 1))
+            # The value as WordPress cleans it: up to any closing */ or ?>, trimmed.
+            # No match is the case being checked for, not a failure.
+            uri=$({ grep -m 1 -iE "${prefix}Update URI:" <<< "$header" || true; } \
+              | sed -E 's/^[^:]*://; s/[[:space:]]*(\*\/|\?>).*$//; s/^[[:space:]]+|[[:space:]]+$//g')
+            if [[ -n "$uri" ]]; then
+              echo "- \`$file\` ($kind): $uri" >> "$GITHUB_STEP_SUMMARY"
+            else
+              missing=$((missing + 1))
+              echo "::error file=$file::$kind has no Update URI header, so WordPress.org can offer a plugin or theme of the same slug as an update. Add 'Update URI:' with our updater's URL, or 'Update URI: false'."
+              echo "- \`$file\` ($kind): **no Update URI**" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done < <(git ls-files -z -- '*.php' '**/style.css' 'style.css' \
+            ':(exclude,glob)**/vendor/**' ':(exclude,glob)**/node_modules/**')
+
+          if (( found == 0 )); then
+            echo "No WordPress plugin or theme headers – nothing to check." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          (( missing == 0 ))
