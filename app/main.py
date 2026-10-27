@@ -76,6 +76,7 @@ from app.updaters import (
     follow_self_update,
     remove_finished_helpers,
     start_self_update,
+    stale_services,
     update_build,
     update_version,
     wait_healthy,
@@ -617,7 +618,13 @@ def create_app(
         info = cs.container
         whole = mode == "project"
         target = info.project if whole else info.name
-        return submit(mode, target, user, lambda ctx: update_build(ctx, info, whole_project=whole))
+        def stale():
+            return asyncio.to_thread(stale_services, docker_client, info, whole)
+
+        return submit(
+            mode, target, user,
+            lambda ctx: update_build(ctx, info, whole_project=whole, stale=stale),
+        )
 
     @app.post("/containers/{container_id}/control", dependencies=[Depends(verify_csrf)])
     async def control_container(
