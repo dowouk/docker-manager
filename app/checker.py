@@ -179,7 +179,7 @@ def _status_for(
     ref = parse_image_ref(c.image_ref)
     if ref.digest:
         return make(Status.NOT_CHECKABLE, message="Pinned by digest")
-    if not c.running_repo_digests:
+    if not _checkable(c):
         return make(Status.NOT_CHECKABLE, message="Image built locally")
     assert remote is not None
     if remote.not_found:
@@ -189,7 +189,7 @@ def _status_for(
     running = {_sha(d) for d in c.running_repo_digests}
     if remote.digest in running:
         status = Status.UP_TO_DATE
-    elif c.local_tag_image_id != c.image_id and remote.digest in {
+    elif _left_behind(c) and remote.digest in {
         _sha(d) for d in c.local_tag_repo_digests
     }:
         status = Status.PULLED_NOT_RECREATED
@@ -233,8 +233,17 @@ def fronts_dashboard(c: ContainerInfo, me: ContainerInfo | None) -> bool:
     return reaches and (serves or _is_proxy_image(c))
 
 
+def _left_behind(c: ContainerInfo) -> bool:
+    """The tag has moved to a pulled image the container doesn't run yet. With the
+    containerd image store the image left behind loses its RepoDigests, so it would
+    otherwise look locally built."""
+    return c.local_tag_image_id != c.image_id and bool(c.local_tag_repo_digests)
+
+
 def _checkable(c: ContainerInfo) -> bool:
-    return bool(c.running_repo_digests) and not parse_image_ref(c.image_ref).digest
+    return (bool(c.running_repo_digests) or _left_behind(c)) and not parse_image_ref(
+        c.image_ref
+    ).digest
 
 
 async def check_all(

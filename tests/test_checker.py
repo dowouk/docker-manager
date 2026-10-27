@@ -76,6 +76,32 @@ async def test_local_tag_different_but_digest_not_remote_is_newer_build(tmp_path
     assert (await run([c], reg, settings)).containers[0].status == Status.NEWER_BUILD
 
 
+async def test_pulled_not_recreated_when_old_image_lost_its_digest(tmp_path, settings):
+    # containerd image store: once the tag moves to the pulled image, the image the
+    # container still runs has no RepoDigests left – it isn't a locally built image.
+    reg = FakeRegistry({"nginx:latest": "sha256:new"})
+    c = info(tmp_path, digests=[], local_tag_image_id="sha256:other",
+             local_tag_repo_digests=["nginx@sha256:new"])
+    cs = (await run([c], reg, settings)).containers[0]
+    assert cs.status == Status.PULLED_NOT_RECREATED
+    assert reg.head_calls == ["nginx:latest"]
+
+
+async def test_old_image_lost_its_digest_and_registry_has_newer_still(tmp_path, settings):
+    reg = FakeRegistry({"nginx:latest": "sha256:newest"})
+    c = info(tmp_path, digests=[], local_tag_image_id="sha256:other",
+             local_tag_repo_digests=["nginx@sha256:new"])
+    assert (await run([c], reg, settings)).containers[0].status == Status.NEWER_BUILD
+
+
+async def test_built_locally_when_tag_also_has_no_digest(tmp_path, settings):
+    reg = FakeRegistry()
+    c = info(tmp_path, digests=[], local_tag_image_id="sha256:other", local_tag_repo_digests=[])
+    cs = (await run([c], reg, settings)).containers[0]
+    assert cs.message == "Image built locally"
+    assert reg.head_calls == []
+
+
 async def test_locally_built_and_pinned_not_checkable(tmp_path, settings):
     reg = FakeRegistry()
     built = info(tmp_path, name="built", digests=[])

@@ -10,6 +10,8 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, tzinfo
 
+import docker
+
 from app.compose_edit import TagChange, apply_tag_change, restore_backup
 from app.inventory import HELPER_LABEL, ContainerInfo
 from app.jobs import JobContext
@@ -68,11 +70,50 @@ def _up(target: list[str]) -> list[str]:
     return ["up", "-d", "--no-deps", *target] if target else ["up", "-d"]
 
 
-async def update_build(ctx: JobContext, info: ContainerInfo, whole_project: bool = False) -> None:
+def _force_up(services: list[str]) -> list[str]:
+    return ["up", "-d", "--no-deps", "--force-recreate", *services]
+
+
+async def update_build(
+    ctx: JobContext,
+    info: ContainerInfo,
+    whole_project: bool = False,
+    stale: Callable[[], Awaitable[list[str]]] | None = None,
+) -> None:
     _require_compose(info)
     target = _target(info, whole_project)
     await _run(ctx, info, "Pull", "pull", *target)
     await _run(ctx, info, "Start", *_up(target))
+    # Compose (seen with v5 on the containerd image store) can say "Running" and keep
+    # the old container after a pull, so check and recreate whatever it left behind.
+    try:
+        services = await stale() if stale is not None else []
+    except Exception as exc:  # noqa: BLE001 - the update itself has already run
+        ctx.log(f"Could not check the containers are on the new image ({exc})\n")
+        services = []
+    if services:
+        ctx.log(f"Still running the old image: {', '.join(services)} – recreating\n")
+        await _run(ctx, info, "Recreate", *_force_up(services))
+
+
+def stale_services(client, info: ContainerInfo, whole_project: bool) -> list[str]:
+    """Services whose containers run a different image from the one their tag points to.
+
+    Blocking Docker SDK call; callers on the event loop should use asyncio.to_thread.
+    """
+    labels = [f"{_LABEL_PROJECT}={info.project}", "com.docker.compose.oneoff=False"]
+    if not whole_project and info.service:
+        labels.insert(1, f"{_LABEL_SERVICE}={info.service}")
+    services: list[str] = []
+    for c in client.containers.list(all=True, filters={"label": labels}):
+        service = (c.labels or {}).get(_LABEL_SERVICE)
+        try:
+            tagged = client.images.get(c.attrs["Config"]["Image"])
+        except docker.errors.APIError:
+            continue  # no such tag locally (e.g. built without one): nothing to compare
+        if service and tagged.id != c.attrs.get("Image") and service not in services:
+            services.append(service)
+    return services
 
 
 CONTROL_ACTIONS = ("restart", "stop", "start")
@@ -278,7 +319,8 @@ def start_self_update(client, info: ContainerInfo, compose_root: str,
     if not info.service:
         raise UpdateFailed("Not started by compose")
     if steps is None:
-        steps = [["pull", info.service], _up([info.service])]
+        # Forced: Compose can keep the old container after the pull (see update_build).
+        steps = [["pull", info.service], _force_up([info.service])]
     script = " && ".join(shlex.join(compose_cmd(info, *args)) for args in steps)
     _remove_old_helpers(client)
     sock = "/var/run/docker.sock"

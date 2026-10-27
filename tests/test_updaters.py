@@ -3,6 +3,7 @@ import os
 import shlex
 from datetime import datetime
 
+import docker
 import pytest
 
 from app.compose_edit import plan_tag_change
@@ -14,6 +15,7 @@ from app.updaters import (
     control_service,
     follow_self_update,
     remove_finished_helpers,
+    stale_services,
     start_self_update,
     update_build,
     update_version,
@@ -121,6 +123,100 @@ async def test_control_service_refuses(action, kw):
     with pytest.raises(UpdateFailed):
         await control_service(ctx, make_info(**kw), action)
     assert ctx.calls == []
+
+
+async def test_update_build_force_recreates_services_left_on_the_old_image():
+    # Compose can report "Running" after a pull and keep the old container.
+    ctx = FakeCtx()
+    seen = []
+
+    async def stale():
+        seen.append(len(ctx.calls))
+        return ["web"]
+
+    await update_build(ctx, make_info(), stale=stale)
+    assert seen == [2]  # checked after pull and up
+    assert ctx.calls[2][0] == compose_cmd(
+        make_info(), "up", "-d", "--no-deps", "--force-recreate", "web"
+    )
+    assert "Still running the old image: web" in ctx.log_text
+
+
+async def test_update_build_no_force_recreate_when_nothing_is_stale():
+    ctx = FakeCtx()
+
+    async def stale():
+        return []
+
+    await update_build(ctx, make_info(), stale=stale)
+    assert len(ctx.calls) == 2
+
+
+async def test_update_build_force_recreate_failure_raises():
+    ctx = FakeCtx([(0, ""), (0, ""), (1, "boom")])
+
+    async def stale():
+        return ["web", "db"]
+
+    with pytest.raises(UpdateFailed, match="Recreate failed"):
+        await update_build(ctx, make_info(), whole_project=True, stale=stale)
+    assert ctx.calls[2][0] == compose_cmd(
+        make_info(), "up", "-d", "--no-deps", "--force-recreate", "web", "db"
+    )
+
+
+class _Img:
+    def __init__(self, id):
+        self.id = id
+
+
+class _StaleClient:
+    def __init__(self, containers, images):
+        self._containers, self._images, self.filters = containers, images, None
+        self.containers, self.images = self, self
+
+    def list(self, all=False, filters=None):
+        self.filters = filters
+        return self._containers
+
+    def get(self, ref):
+        if ref not in self._images:
+            raise docker.errors.ImageNotFound(ref)
+        return _Img(self._images[ref])
+
+
+class _Ctr:
+    def __init__(self, service, ref, image_id):
+        self.labels = {"com.docker.compose.service": service}
+        self.attrs = {"Config": {"Image": ref}, "Image": image_id}
+
+
+async def test_update_build_stale_check_failure_is_logged_not_raised():
+    ctx = FakeCtx()
+
+    async def stale():
+        raise docker.errors.APIError("socket gone")
+
+    await update_build(ctx, make_info(), stale=stale)
+    assert len(ctx.calls) == 2
+    assert "Could not check the containers are on the new image" in ctx.log_text
+
+
+def test_stale_services_finds_containers_behind_their_tag():
+    client = _StaleClient(
+        [_Ctr("web", "nginx:1", "sha256:old"), _Ctr("db", "pg:16", "sha256:pg"),
+         _Ctr("app", "local/app", "sha256:a"), _Ctr("web", "nginx:1", "sha256:old")],
+        {"nginx:1": "sha256:new", "pg:16": "sha256:pg"},
+    )
+    assert stale_services(client, make_info(), whole_project=True) == ["web"]
+    assert client.filters == {"label": ["com.docker.compose.project=proj",
+                                        "com.docker.compose.oneoff=False"]}
+
+
+def test_stale_services_for_one_service_filters_by_service():
+    client = _StaleClient([], {})
+    assert stale_services(client, make_info(), whole_project=False) == []
+    assert "com.docker.compose.service=web" in client.filters["label"]
 
 
 async def test_update_build_whole_project_omits_service():
@@ -351,7 +447,10 @@ def test_start_self_update_args():
     script, = kw["command"]
     first, second = script.split(" && ")
     assert shlex.split(first) == compose_cmd(info, "pull", "dash")
-    assert shlex.split(second) == compose_cmd(info, "up", "-d", "--no-deps", "dash")
+    # force: Compose may otherwise keep the old container after the pull
+    assert shlex.split(second) == compose_cmd(
+        info, "up", "-d", "--no-deps", "--force-recreate", "dash"
+    )
 
 
 class RaisingCtx(FakeCtx):

@@ -5,6 +5,13 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.7] - 2026-10-27
+
+### Fixed
+
+- Update now recreates the container on the newly pulled image. With Docker's containerd image store, Compose could pull the new image, report the container as "Running" and leave it on the old one. The dashboard's own self-update had the same problem.
+- A container left on an older image after a pull shows "Pulled – not recreated" instead of "Can't check – Image built locally".
+
 ## [0.5.6] - 2026-10-25
 
 ### Added
