@@ -1,0 +1,287 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+# Weekly "unreleased changes" report, synced to every repo from
+# dowouk/.github (workflows/). Release repos have .github/workflows/release.yml,
+# which tags v<version> when someone bumps the version; nothing releases
+# automatically, so merged work can sit on main unreleased. This workflow keeps
+# one issue listing what has merged since the last v* tag, split into changes
+# that need a release and changes that do not (Dependabot's Actions and
+# development-dependency updates, and anything that only touches .github/).
+# Security fixes sort first and majors are marked. The body is rewritten each
+# week, and the issue closes itself once nothing needs a release.
+#
+# A repo with no .github/workflows/release.yml, or no v* tag yet, is skipped.
+
+name: Unreleased changes
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Mondays, 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  ISSUE_TITLE: "Unreleased changes on main"
+  # The organisation's issue type. It can only be set once the issue exists,
+  # so it is a second call after `gh issue create`; a failure there warns
+  # rather than losing the issue.
+  ISSUE_TYPE: Task
+
+jobs:
+  unreleased:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history, so the tag and the commits since it are all present.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Find the last release
+        id: release
+        shell: bash
+        run: |
+          if [[ ! -f .github/workflows/release.yml ]]; then
+            echo "No .github/workflows/release.yml, so there are no releases to track." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! tag=$(git describe --tags --abbrev=0 --match 'v*' 2> /dev/null); then
+            echo "No v* release tag yet, so there is nothing to compare with." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # Every commit since the tag, as one item per merged PR (its files are
+      # the union across its commits) or, for a commit with no PR, one direct
+      # item. The sync commits from dowouk/.github are dropped. No fallback: a
+      # failed listing must fail the job, as an empty list would wrongly close
+      # the issue.
+      - name: List changes since the release
+        if: steps.release.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          items="$RUNNER_TEMP/items.ndjson"
+          : > "$items"
+          seen=" "
+          git log --format='%H%x09%cI%x09%s' "$TAG..HEAD" > "$RUNNER_TEMP/commits.tsv"
+          while IFS=$'\t' read -r sha date headline; do
+            [[ "$headline" == "[DOWO] GitHub Standards"* ]] && continue
+            files=$(git show --name-only --format= "$sha" | jq -R . | jq -sc .)
+            pr=$(gh api "repos/$GH_REPO/commits/$sha/pulls" --jq '
+              [.[] | select(.merged_at != null)] | .[0] // empty | {
+                kind: "pr", number, title, url: .html_url, author: .user.login,
+                branch: .head.ref, labels: [.labels[].name], merged_at
+              }')
+            if [[ -z "$pr" ]]; then
+              jq -nc --arg sha "$sha" --arg headline "$headline" --arg date "$date" \
+                --arg url "${GITHUB_SERVER_URL:-https://github.com}/$GH_REPO/commit/$sha" \
+                --argjson files "$files" \
+                '{kind: "commit", sha: $sha, headline: $headline, url: $url, date: $date, files: $files}' >> "$items"
+              continue
+            fi
+            number=$(jq -r .number <<< "$pr")
+            messages='[]'
+            if [[ "$seen" != *" $number "* ]]; then
+              seen="$seen$number "
+              messages=$(gh api "repos/$GH_REPO/pulls/$number/commits" --paginate \
+                --jq '[.[].commit.message]' | jq -s 'add // []')
+            fi
+            jq -c --argjson files "$files" --argjson messages "$messages" \
+              '. + {files: $files, commit_messages: $messages}' <<< "$pr" >> "$items"
+          done < "$RUNNER_TEMP/commits.tsv"
+
+          jq -s '
+            ([.[] | select(.kind == "pr")] | group_by(.number) | map(
+              .[0] + {files: (map(.files) | add | unique), commit_messages: (map(.commit_messages) | add)}
+            )) + [.[] | select(.kind == "commit")]
+          ' "$items" > "$RUNNER_TEMP/changes.json"
+
+      # Best-effort: the alerts endpoint may refuse the workflow token, and
+      # a repo can have alerts switched off. Any failure leaves an empty list;
+      # PRs are still flagged by their `security` label. Only runtime
+      # dependencies count, so a development alert cannot force a release.
+      - name: List fixed alerts
+        if: steps.release.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          alerts=""
+          # Alerts fixed since the tag's commit; fixed_at is UTC, so compare epochs.
+          if SINCE=$(git log -1 --format=%ct "$TAG" 2> /dev/null); then
+            export SINCE
+            alerts=$(gh api "repos/$GH_REPO/dependabot/alerts?state=fixed" --paginate \
+              --jq '[.[] | select(.dependency.scope == "runtime" and .fixed_at != null and (.fixed_at | fromdateiso8601) >= (env.SINCE | tonumber)) | .dependency.package.name]' \
+              2> /dev/null) || alerts=""
+          fi
+          # --paginate prints one array per page; join them into one.
+          jq -s 'add // []' <<< "$alerts" > "$RUNNER_TEMP/alerts.json" 2> /dev/null \
+            || echo '[]' > "$RUNNER_TEMP/alerts.json"
+
+      # The only step with logic. Standard library only, and it never calls
+      # gh, so it can be tested with fixture files. It writes an empty body.md
+      # when nothing needs a release.
+      - name: Build the issue body
+        if: steps.release.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+          from datetime import datetime, timezone
+
+          temp = os.environ["RUNNER_TEMP"]
+          tag = os.environ["TAG"]
+          run_url = os.environ.get("RUN_URL", "")
+
+          def parse_time(value):
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          now = (
+              parse_time(os.environ["NOW"])
+              if os.environ.get("NOW")
+              else datetime.now(timezone.utc)
+          )
+          NO_RELEASE_GROUPS = {"actions", "composer-development", "pip-development"}
+
+          def read(name):
+              try:
+                  with open(os.path.join(temp, name)) as f:
+                      return f.read()
+              except OSError:
+                  return ""
+
+          def read_json(name):
+              try:
+                  return json.loads(read(name))
+              except ValueError:
+                  return []
+
+          def norm(name):
+              # Package names compare case-insensitively, with - _ . alike (PyPI).
+              return re.sub(r"[-_.]+", "-", name.lower())
+
+          changes = read_json("changes.json")
+          alerts = {norm(n) for n in read_json("alerts.json")}
+
+          # PR metadata: the group comes from the title ("Bump the X group", or
+          # "... in the X group" for a single update), dependency names, types
+          # and update types from the commit messages that Dependabot writes
+          # ("dependency-name: X", "dependency-type: Y", "update-type: Z").
+          def parse(pr):
+              messages = "\n".join(pr.get("commit_messages") or [])
+              group = re.search(r"\bthe (\S+) group\b", pr.get("title", ""), re.I)
+              return {
+                  "group": group.group(1) if group else None,
+                  "deps": {norm(d) for d in re.findall(r"dependency-name: (\S+)", messages)},
+                  "dep_types": re.findall(r"dependency-type: (\S+)", messages),
+                  "types": re.findall(r"update-type: (\S+)", messages),
+              }
+
+          def only_github(item):
+              files = item.get("files") or []
+              return bool(files) and all(f.startswith(".github/") for f in files)
+
+          def needs_release(item, meta):
+              branch = item.get("branch") or ""
+              if branch.startswith("dependabot/"):
+                  if branch.startswith("dependabot/npm") or (meta["group"] or "").startswith("npm-"):
+                      return True
+                  if meta["group"] in NO_RELEASE_GROUPS:
+                      return False
+                  if branch.startswith("dependabot/github_actions/"):
+                      return False
+                  if meta["group"] is None \
+                          and branch.startswith(("dependabot/composer/", "dependabot/pip/")) \
+                          and "direct:development" in meta["dep_types"]:
+                      return False
+              return not only_github(item)
+
+          needs, no_need = [], []
+          for item in changes:
+              if item["kind"] == "pr":
+                  meta = parse(item)
+                  release_needed = needs_release(item, meta)
+                  # The title goes in a code span so @mentions and ] cannot break out.
+                  title = item["title"].replace("`", "")
+                  line = f"- [#{item['number']} `{title}`]({item['url']})"
+                  when = item["merged_at"]
+                  labels = item.get("labels") or []
+                  secure = "security" in labels or bool(meta["deps"] & alerts)
+              else:
+                  meta = {"types": []}
+                  release_needed = not only_github(item)
+                  headline = item["headline"].replace("`", "")
+                  line = f"- `{item['sha'][:7]}` `{headline}`"
+                  when = item["date"]
+                  secure = False
+              if secure:
+                  marker = " – security, major" if "version-update:semver-major" in meta["types"] else " – security"
+                  needs.append((0, parse_time(when), line + marker))
+              elif not release_needed:
+                  no_need.append((parse_time(when), line))
+              elif "version-update:semver-major" in meta["types"]:
+                  needs.append((1, parse_time(when), line + " – major"))
+              else:
+                  needs.append((1, parse_time(when), line))
+
+          body = ""
+          if needs:
+              needs.sort(key=lambda n: (n[0], n[1]))
+              no_need.sort()
+              days = max((now - min(n[1] for n in needs)).days, 0)
+              waited = f"{days} day" + ("" if days == 1 else "s")
+              out = [
+                  f"Merged to main since `{tag}`, as of {run_url}. The oldest change needing a release has waited {waited}. Plan a release, or leave it if nothing here should ship yet.",
+                  "",
+                  "### Needs a release",
+                  "",
+                  *[n[2] for n in needs],
+              ]
+              if no_need:
+                  out += ["", "### No release needed", "", *[n[1] for n in no_need]]
+              body = "\n".join(out) + "\n"
+          with open(os.path.join(temp, "body.md"), "w") as f:
+              f.write(body)
+          EOF
+
+      - name: Report to the issue
+        if: steps.release.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+
+          if [[ ! -s "$RUNNER_TEMP/body.md" ]]; then
+            echo "Nothing needs a release." >> "$GITHUB_STEP_SUMMARY"
+            if [[ -n "$existing" ]]; then
+              gh issue close "$existing" --comment "Nothing needs a release as of $RUN_URL – closing."
+            fi
+            exit 0
+          fi
+
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$existing" ]]; then
+            gh issue edit "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            url=$(gh issue create --title "$ISSUE_TITLE" --body-file "$RUNNER_TEMP/body.md" \
+              --label automated)
+            gh api -X PATCH "repos/$GH_REPO/issues/${url##*/}" -f type="$ISSUE_TYPE" --silent \
+              || echo "::warning::Could not set the $ISSUE_TYPE issue type on $url"
+          fi

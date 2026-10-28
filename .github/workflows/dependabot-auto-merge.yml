@@ -1,0 +1,38 @@
+# Managed by dowouk/.github – edit there, not here. Delete this line to manage it locally.
+# Auto-merges Dependabot's grouped dev-tool PRs, synced to every repo from
+# dowouk/.github (workflows/). Only the Composer and Python development groups
+# are merged automatically: they are tooling (linters, test runners) that never
+# ships. Merging is switched on with `gh pr merge --auto --squash`, so GitHub
+# still waits for the required checks to pass before it merges.
+#
+# Everything else waits for a person. npm development packages build the
+# CSS and JS that several repos ship, so a bad bump reaches users. GitHub
+# Actions bumps edit workflow files, which the workflow token may not be allowed
+# to merge. Production dependency updates change runtime behaviour.
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge
+        if: contains(fromJSON('["composer-development","pip-development"]'), steps.metadata.outputs.dependency-group)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
