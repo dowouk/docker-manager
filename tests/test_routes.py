@@ -1369,3 +1369,86 @@ def test_no_stop_for_the_proxy_in_front_of_the_dashboard(client_for, seeded):
     assert r.status_code == 400 and runner.submitted == []
     r = c.post(f"/containers/{web_id}/control", data={"action": "restart", "csrf_token": CSRF})
     assert r.status_code == 303
+
+
+def _prefetch_check(app, tmp_path, monkeypatch):
+    """One container with a newer build waiting, so a check has one thing to download."""
+    web = info(tmp_path, "web", image="nginx:latest", config_files=["/x/compose.yml"])
+
+    async def fake_check_all(containers, *a, **kw):
+        return CheckResult(CHECKED_AT, [status(web, Status.NEWER_BUILD, remote_digest="sha256:new")])
+
+    monkeypatch.setattr("app.main.check_all", fake_check_all)
+    monkeypatch.setattr("app.main.list_containers", lambda docker, self_id: [web])
+
+
+async def test_check_makes_no_download_request_when_turned_off(settings, tmp_path, monkeypatch):
+    app = make_app(settings, tmp_path)
+    app.state.settings = app.state.settings.model_copy(update={"prefetch_updates": False})
+    _prefetch_check(app, tmp_path, monkeypatch)
+    requests = []
+    monkeypatch.setattr(app.state.prefetcher, "request", requests.append)
+    from app.main import run_check
+    await run_check(app)
+    assert requests == []
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+
+
+async def test_check_requests_downloads_when_turned_on(settings, tmp_path, monkeypatch):
+    app = make_app(settings, tmp_path)
+    _prefetch_check(app, tmp_path, monkeypatch)
+    requests = []
+    monkeypatch.setattr(app.state.prefetcher, "request", requests.append)
+    from app.main import run_check
+    await run_check(app)
+    assert [[t.key for t in r] for r in requests] == [["nginx:latest"]]
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+
+
+async def test_a_failing_download_request_never_fails_the_check(settings, tmp_path, monkeypatch, caplog):
+    app = make_app(settings, tmp_path)
+    _prefetch_check(app, tmp_path, monkeypatch)
+
+    def boom(targets):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(app.state.prefetcher, "request", boom)
+    from app.main import run_check
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        result = await run_check(app)
+    assert result.containers and "download updates ahead" in caplog.text
+    await asyncio.gather(*app.state.background, return_exceptions=True)
+
+
+async def test_a_download_in_progress_never_makes_update_busy(settings, tmp_path, monkeypatch):
+    from app.jobs import JobRunner
+    from app.main import run_check
+    from app.prefetch import Prefetcher
+
+    store = Store(str(tmp_path / "data" / "runner.db"))
+    app = make_app(settings, tmp_path, runner=JobRunner(store))
+    _prefetch_check(app, tmp_path, monkeypatch)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def run(cmd, cwd):
+        started.set()
+        await release.wait()
+        return 0, ""
+
+    # The app's own spawn hook, so the round is tracked in app.state.background.
+    app.state.prefetcher = Prefetcher(
+        run, lambda t: False, lambda: CHECKED_AT, spawn=app.state.prefetcher._spawn)
+    await run_check(app)
+    await asyncio.wait_for(started.wait(), 5)
+    assert app.state.prefetcher.state("nginx:latest").status == "downloading"
+    assert any(not t.done() for t in app.state.background)
+    assert app.state.runner.busy is False
+
+    async def work(ctx):
+        return None
+
+    app.state.runner.submit("build", "web", "me@example.com", work)  # must not raise BusyError
+    release.set()
+    await app.state.prefetcher.wait_idle()
+    assert app.state.prefetcher.state("nginx:latest").status == "ready"
+    await asyncio.gather(*app.state.background, return_exceptions=True)

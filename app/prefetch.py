@@ -1,11 +1,24 @@
-"""Work out which updates can be downloaded ahead of time."""
+"""Work out which updates can be downloaded ahead of time, and download them in the background."""
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Callable, Literal
+from datetime import datetime
+from typing import Literal
+
+import docker.errors
 
 from app.checker import CheckResult, ContainerStatus, Status
 from app.compose_edit import EditRefused, plan_tag_change
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
+from app.mailcow import run_capture
+from app.updaters import compose_cmd
+
+log = logging.getLogger(__name__)
+
+# Large images can take a long time to download on a slow line.
+PULL_TIMEOUT = 1800
 
 
 @dataclass(frozen=True)
@@ -66,3 +79,117 @@ def targets(
             if editable(cs, cs.minor_update):
                 found[new_ref] = Target(new_ref, "version", info, new_ref, None)
     return list(found.values())
+
+
+@dataclass
+class State:
+    status: Literal["downloading", "ready", "failed"]
+    at: datetime  # when the status was set
+
+
+async def run_pull(cmd: list[str], cwd: str | None) -> tuple[int, str]:
+    """Run a pull as Update does (same environment, so saved registry logins work)."""
+    return await run_capture(cmd, PULL_TIMEOUT, cwd=cwd)
+
+
+def image_present(client, target: Target) -> bool:
+    """Whether Docker already has what the target would download."""
+    try:
+        if target.kind == "build":
+            if not target.remote_digest:
+                return False
+            digests = client.images.get(target.info.image_ref).attrs.get("RepoDigests") or []
+            return any(d.rsplit("@", 1)[-1] == target.remote_digest for d in digests)
+        client.images.get(target.ref)
+        return True
+    except docker.errors.DockerException:
+        return False
+
+
+def image_platform(client, info: ContainerInfo) -> str | None:
+    """os/arch[/variant] of the image the container runs, or None if it can't be read."""
+    try:
+        attrs = client.images.get(info.image_id).attrs
+    except docker.errors.DockerException:
+        return None
+    os_, arch, variant = attrs.get("Os"), attrs.get("Architecture"), attrs.get("Variant")
+    if not os_ or not arch:
+        return None
+    return "/".join([os_, arch, variant] if variant else [os_, arch])
+
+
+class Prefetcher:
+    """Downloads targets one at a time, outside the JobRunner, so Update is never kept waiting."""
+
+    def __init__(
+        self,
+        run: Callable[[list[str], str | None], Awaitable[tuple[int, str]]],
+        present: Callable[[Target], bool],
+        now: Callable[[], datetime],
+        *,
+        platform: Callable[[ContainerInfo], str | None] = lambda info: None,
+        spawn: Callable[[Coroutine], asyncio.Task] = asyncio.create_task,
+    ) -> None:
+        self._run = run
+        self._present = present
+        self._platform = platform
+        self._now = now
+        self._spawn = spawn
+        self._states: dict[str, State] = {}
+        self._queued: list[Target] | None = None
+        self._task: asyncio.Task | None = None
+
+    def request(self, targets: list[Target]) -> None:
+        """Download these next. Replaces any round still waiting; a running pull finishes first."""
+        self._queued = list(targets)
+        if self._task is None:
+            self._task = self._spawn(self._work())
+
+    def state(self, key: str) -> State | None:
+        return self._states.get(key)
+
+    async def wait_idle(self) -> None:
+        while self._task is not None:
+            await asyncio.wait([self._task])
+
+    async def _work(self) -> None:
+        try:
+            while self._queued is not None:
+                batch, self._queued = self._queued, None
+                await self._round(batch)
+        finally:
+            # No await between the last check of _queued and this, so no request is lost.
+            self._task = None
+
+    async def _round(self, batch: list[Target]) -> None:
+        keys = {t.key for t in batch}
+        self._states = {k: v for k, v in self._states.items() if k in keys}
+        for target in batch:
+            try:
+                await self._fetch(target)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("Couldn't download %s ahead", target.ref, exc_info=True)
+                self._states[target.key] = State("failed", self._now())
+
+    async def _fetch(self, target: Target) -> None:
+        if await asyncio.to_thread(self._present, target):
+            old = self._states.get(target.key)
+            if old is None or old.status != "ready":
+                self._states[target.key] = State("ready", self._now())
+            return
+        self._states[target.key] = State("downloading", self._now())
+        info = target.info
+        if target.kind == "build":
+            cmd, cwd = compose_cmd(info, "pull", info.service), info.working_dir
+        else:
+            platform = await asyncio.to_thread(self._platform, info)
+            cmd = ["docker", "pull", *(["--platform", platform] if platform else []), target.ref]
+            cwd = None
+        rc, _ = await self._run(cmd, cwd)
+        if rc == 0:
+            self._states[target.key] = State("ready", self._now())
+        else:
+            log.warning("Couldn't download %s ahead (exit code %s)", target.ref, rc)
+            self._states[target.key] = State("failed", self._now())

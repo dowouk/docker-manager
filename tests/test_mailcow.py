@@ -175,3 +175,11 @@ async def test_run_capture_does_not_leak_dashboard_env(monkeypatch):
     names = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
     assert "ACS_CONNECTION_STRING" not in names and "TZ" not in names
     assert "PATH" in names and "DOCKER_HOST" in names
+
+
+async def test_run_capture_in_a_folder(tmp_path):
+    rc, out = await run_capture(["/bin/sh", "-c", "pwd; echo $PWD"], cwd=str(tmp_path))
+    assert rc == 0
+    real = str(tmp_path.resolve())
+    assert out.splitlines()[0] in (str(tmp_path), real)
+    assert out.splitlines()[1] == str(tmp_path)

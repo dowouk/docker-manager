@@ -39,7 +39,7 @@ from app.notify.providers import (
     LOGIN_REFUSED, NO_ANSWER, NOT_PRIVATE, PROVIDERS, REJECTED, SMTP_PRESETS, UNREACHABLE,
     shutdown_notify_executor,
 )
-from app import images
+from app import images, prefetch
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo, container_key, detect_self_id, list_containers
 from app.links import release_notes_url
@@ -188,10 +188,11 @@ async def run_check(app: FastAPI) -> CheckResult:
                 containers, state.settings, rules_for,
                 state.settings.data_dir, state.settings.mailcow_dir,
             ) if state.settings.layout_check else None
+            visible = None
             try:
+                visible = skips_mod.visible_result(result, state.skips)[0]
                 result.unused_images = (await asyncio.to_thread(
-                    images.scan, state.docker, state.store,
-                    skips_mod.visible_result(result, state.skips)[0], datetime.now(timezone.utc),
+                    images.scan, state.docker, state.store, visible, datetime.now(timezone.utc),
                 )).summary()
             except Exception:
                 log.warning("Couldn't scan for unused images", exc_info=True)
@@ -200,6 +201,14 @@ async def run_check(app: FastAPI) -> CheckResult:
         state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
         raise
     state.notifier.after_check(result, False)
+    if state.settings.prefetch_updates and visible is not None:
+        try:
+            # Reads compose files, so off the event loop.
+            found = await asyncio.to_thread(
+                prefetch.targets, visible, containers, prefetch.compose_editable)
+            state.prefetcher.request(found)
+        except Exception:
+            log.warning("Couldn't start to download updates ahead", exc_info=True)
     return result
 
 
@@ -401,6 +410,21 @@ def create_app(
     app.state.boot_id = secrets.token_hex(8)
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()
+
+    def spawn_background(coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        app.state.background.add(task)
+        task.add_done_callback(app.state.background.discard)
+        task.add_done_callback(_log_task_failure)
+        return task
+
+    app.state.prefetcher = prefetch.Prefetcher(
+        prefetch.run_pull,
+        functools.partial(prefetch.image_present, docker_client),
+        lambda: datetime.now(timezone.utc),
+        platform=functools.partial(prefetch.image_platform, docker_client),
+        spawn=spawn_background,
+    )
     backup_dir = os.path.join(settings.data_dir, "backups")
 
     app.state.users = UserStore(store, settings_service._box)
