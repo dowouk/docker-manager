@@ -137,6 +137,22 @@ def test_version_ref_used_by_container_with_skipped_build_is_not_a_target():
     assert _ab(Status.UP_TO_DATE) == []
 
 
+def test_one_container_that_raises_is_skipped_and_logged(caplog):
+    web = make_info()
+    db = make_info(id="db", name="db", service="db", image_ref="postgres:16.2")
+
+    def editable(cs, tag):
+        if cs.container.name == "db":
+            raise ValueError("odd compose file")
+        return True
+
+    visible = result(cs_for(db, Status.UP_TO_DATE, minor_update="16.4"), cs_for(web))
+    with caplog.at_level(logging.WARNING, logger="app.prefetch"):
+        out = targets(visible, [web, db], editable)
+    assert [t.key for t in out] == ["nginx:1.0"]
+    assert "db" in caplog.text
+
+
 def test_build_target_wins_regardless_of_container_order():
     a = make_info(id="a", image_ref="postgres:16.2")
     b = make_info(id="b", image_ref="postgres:16.4", service="db2")
@@ -266,6 +282,19 @@ async def test_new_request_during_round_waits_and_replaces_queued():
     assert pulled(run) == ["a", "c"]
     assert run.max_active == 1
     assert p.state("b:latest") is None
+
+
+async def test_new_request_stops_the_running_round_after_the_current_pull():
+    run = FakeRun(block={"a1"})
+    p = make_prefetcher(run)
+    p.request([build_target("a1"), build_target("a2")])
+    await run.started.wait()
+    p.request([build_target("c")])
+    run.release.set()
+    await p.wait_idle()
+    assert pulled(run) == ["a1", "c"]
+    assert run.max_active == 1
+    assert p.state("a2:latest") is None
 
 
 async def test_request_after_a_round_finishes_starts_another():

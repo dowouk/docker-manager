@@ -61,23 +61,27 @@ def targets(
     found: dict[str, Target] = {}
     for cs in visible.containers:
         info = cs.container
-        if info.is_self or not cs.updatable or not info.service:
-            continue
-        if cs.status == Status.NEWER_BUILD:
-            key = info.image_ref
-            if _build_shared_ok(key, containers, by_id):
-                # A build target wins over a version target with the same key: it carries the digest.
-                if key not in found or found[key].kind == "version":
-                    found[key] = Target(key, "build", info, info.image_ref, cs.remote_digest)
-        if cs.minor_update:
-            new_ref = parse_image_ref(info.image_ref).with_tag(cs.minor_update)
-            if new_ref in found:
+        try:
+            if info.is_self or not cs.updatable or not info.service:
                 continue
-            # Pulling the new version also moves the tag any container already on it uses.
-            if any(c.image_ref == new_ref for c in containers) and not _build_shared_ok(new_ref, containers, by_id):
-                continue
-            if editable(cs, cs.minor_update):
-                found[new_ref] = Target(new_ref, "version", info, new_ref, None)
+            if cs.status == Status.NEWER_BUILD:
+                key = info.image_ref
+                if _build_shared_ok(key, containers, by_id):
+                    # A build target wins over a version target with the same key: it carries the digest.
+                    if key not in found or found[key].kind == "version":
+                        found[key] = Target(key, "build", info, info.image_ref, cs.remote_digest)
+            if cs.minor_update:
+                new_ref = parse_image_ref(info.image_ref).with_tag(cs.minor_update)
+                if new_ref in found:
+                    continue
+                # Pulling the new version also moves the tag any container already on it uses.
+                if any(c.image_ref == new_ref for c in containers) and not _build_shared_ok(
+                        new_ref, containers, by_id):
+                    continue
+                if editable(cs, cs.minor_update):
+                    found[new_ref] = Target(new_ref, "version", info, new_ref, None)
+        except Exception:  # noqa: BLE001 – one odd project mustn't stop every download
+            log.warning("Couldn't work out what to download ahead for %s", info.name, exc_info=True)
     return list(found.values())
 
 
@@ -140,7 +144,8 @@ class Prefetcher:
         self._task: asyncio.Task | None = None
 
     def request(self, targets: list[Target]) -> None:
-        """Download these next. Replaces any round still waiting; a running pull finishes first."""
+        """Download these next. Replaces any round still waiting; a running round stops once
+        its current pull finishes."""
         self._queued = list(targets)
         if self._task is None:
             self._task = self._spawn(self._work())
@@ -165,6 +170,8 @@ class Prefetcher:
         keys = {t.key for t in batch}
         self._states = {k: v for k, v in self._states.items() if k in keys}
         for target in batch:
+            if self._queued is not None:
+                break  # a newer request replaces the rest of this round
             try:
                 await self._fetch(target)
             except asyncio.CancelledError:
