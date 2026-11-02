@@ -1452,3 +1452,24 @@ async def test_a_download_in_progress_never_makes_update_busy(settings, tmp_path
     await app.state.prefetcher.wait_idle()
     assert app.state.prefetcher.state("nginx:latest").status == "ready"
     await asyncio.gather(*app.state.background, return_exceptions=True)
+
+
+class FakePrefetcher:
+    def __init__(self, states):
+        self.states = states
+
+    def state(self, key):
+        return self.states.get(key)
+
+
+def test_dashboard_shows_prefetch_ready_only_while_setting_is_on(client_for, seeded):
+    from datetime import datetime, timezone
+    from app.prefetch import State
+    c, app = client_for(result=seeded)
+    app.state.prefetcher = FakePrefetcher({"postgres:16.3": State("ready", datetime.now(timezone.utc))})
+    assert app.state.settings.prefetch_updates
+    html = c.get("/").text
+    assert "16.3 ready" in html
+    assert "Downloaded just now" in html
+    app.state.settings = app.state.settings.model_copy(update={"prefetch_updates": False})
+    assert "16.3 ready" not in c.get("/").text

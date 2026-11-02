@@ -138,7 +138,7 @@ def known_reason(reason: str | None) -> str:
 STATUS_LABELS = {
     Status.UP_TO_DATE: "Up to date",
     Status.NEWER_BUILD: "Newer build available",
-    Status.PULLED_NOT_RECREATED: "Pulled – not recreated",
+    Status.PULLED_NOT_RECREATED: "Newer build ready",
     Status.NOT_CHECKABLE: "Can't check",
     Status.ERROR: "Error",
     Status.NOT_WATCHED: "Not watched",
@@ -594,9 +594,15 @@ def create_app(
         rules_for = app.state.rules.snapshot()
         notes = {cs.container.id: release_notes_url(cs.container, rules_for(cs.container))
                  for cs in (shown.containers if shown else [])}
+        prefetcher = app.state.prefetcher
+        state_for = prefetcher.state if app.state.settings.prefetch_updates else (lambda key: None)
+        now = datetime.now(timezone.utc)
+        prefetch_notes = {cs.container.id: n for cs in (shown.containers if shown else [])
+                          if (n := view.prefetch_note(cs, state_for, now))}
         return render(
             request, "dashboard.html", user,
             result=shown,
+            prefetch_notes=prefetch_notes,
             skipped=app.state.skips.active(),
             notes_by_id={k: v for k, v in notes.items() if v},
             has_layout=view.has_layout_data(shown),

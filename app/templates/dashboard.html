@@ -257,6 +257,9 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
           <td data-label="Status">
             {% if c.id in hidden_by_id and state == "current" %}{{ status_badge("muted", skip_badge(hidden_by_id[c.id])) }}
             {% else %}{{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}{% endif %}
+            {% set note = prefetch_notes.get(c.id) %}
+            {% if note and note.badge %}<div>{{ status_badge("current" if note.ready else "muted", note.badge) }}</div>{% endif %}
+            {% if note and note.text %}<div class="meta">{{ note.text }}</div>{% endif %}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
           {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}

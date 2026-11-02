@@ -11,11 +11,13 @@ and the "Needs attention" cards, so the numbers on the page always agree:
 - "not_watched" – switched off by a watch rule. Neutral, like "unchecked".
 """
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.imageref import parse_image_ref
+from app.prefetch import State
 
 BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
 _ORDER = {"update": 0, "error": 1, "current": 2, "unchecked": 3, "not_watched": 4}
@@ -197,12 +199,61 @@ def _update_card(cs: ContainerStatus) -> Attention:
     if cs.status == Status.NEWER_BUILD:
         badge, text = "Newer build", "A newer build of the same tag is ready to pull."
     elif cs.status == Status.PULLED_NOT_RECREATED:
-        badge, text = "Pulled", "The newer image is pulled, but the container still runs the old one."
+        badge, text = "Ready", "The newer build is downloaded – updating restarts it on the new image."
     elif cs.minor_update:
         badge, text = "New version", f"Version {cs.minor_update} is available."
     else:
         badge, text = "Major version", f"Version {cs.major_update} is available – update by hand."
     return Attention("update", badge, c.image_ref, c.name, text, cs)
+
+
+@dataclass(frozen=True)
+class PrefetchNote:
+    badge: str | None  # "16.4 ready" | "Newer build ready" | "16.4 – downloading…" | None
+    text: str | None  # "Downloaded 2 h ago" | the failure line | None
+    ready: bool
+
+
+FAILED_AHEAD = "Couldn't download ahead – will try again at the next check"
+
+
+def _ago(then: datetime, now: datetime) -> str | None:
+    """"7 min", "5 h", "3 days" – or None when it was under a minute ago."""
+    seconds = max(0, int((now - then).total_seconds()))
+    if seconds < 60:
+        return None
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    if seconds < 86400:
+        return f"{seconds // 3600} h"
+    days = seconds // 86400
+    return f"{days} day" if days == 1 else f"{days} days"
+
+
+def prefetch_note(cs: ContainerStatus, state_for: Callable[[str], State | None],
+                  now: datetime) -> PrefetchNote | None:
+    """What to show under the status badge about a download-ahead; None when there's nothing to say."""
+    pulled = cs.status == Status.PULLED_NOT_RECREATED
+    if cs.minor_update and not pulled and cs.status != Status.NEWER_BUILD:
+        try:
+            key = parse_image_ref(cs.container.image_ref).with_tag(cs.minor_update)
+        except ValueError:
+            return None
+        ready_badge, label = f"{cs.minor_update} ready", cs.minor_update
+    elif cs.status in (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED):
+        key, ready_badge, label = cs.container.image_ref, "Newer build ready", "Newer build"
+    else:
+        return None
+    state = state_for(key)
+    if state is None:
+        return PrefetchNote(None, None, True) if pulled else None
+    if state.status == "downloading":
+        return PrefetchNote(f"{label} – downloading…", None, False)
+    if state.status == "failed":
+        return PrefetchNote(None, FAILED_AHEAD, False)
+    ago = _ago(state.at, now)
+    text = f"Downloaded {ago} ago" if ago else "Downloaded just now"
+    return PrefetchNote(None if pulled else ready_badge, text, True)
 
 
 def attention(result: CheckResult) -> list[Attention]:
