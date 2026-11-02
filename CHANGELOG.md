@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Download updates ahead. After each check, the images for updates on offer are downloaded in the background, so **Update** is quicker. The row shows when one is ready. Switch it off under Settings → Checking.
-- An Images page lists the images no container uses, with Delete and Tidy all unused for Operators and Admins. A dashboard card and a line in the weekly digest warn when they take up a lot of space.
+- An Images page lists the images no container uses, with Delete and Tidy all unused for Operators and Admins. A dashboard card warns when they take up a lot of space, and the weekly digest mentions them.
 
 ### Changed
 

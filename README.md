@@ -200,11 +200,11 @@ Turn the setting off under **Settings → Checking**.
 
 The **Images** page (in the menu, between Layout and Users) lists the images on the server that no container uses, running or stopped, including untagged ones. Everyone can see it. Each row shows the image's tags, its size and **Unused since**. Docker doesn't record when an image stopped being used, so the dashboard notes the first time it sees it unused; images already unused when it first looked show "before <date>". The heading shows the count and total size, and you can sort by size or by unused since.
 
-**Waiting to be applied** is a shorter list of images downloaded ahead for an update that is still on offer. They have no Delete button and are never tidied. Once the update is applied, skipped or overtaken by something newer, the image moves to the unused list after the next check.
+**Waiting to be applied** is a shorter list of images downloaded ahead for an update that is still on offer. They have no Delete button and are never tidied. Once the update is applied, skipped or overtaken by something newer, the image moves to the unused list the next time the page loads.
 
 Operators and Admins can press **Delete** on one image or **Tidy all unused**; both ask you to confirm. They run as a **Tidy images** job in **History**, with who, which images and how much space was freed. An image a container started using since the page loaded is skipped, and the rest go ahead. Sizes can overlap (images share layers), so the space freed may be less than the total shown.
 
-When the unused images take up more than **Unused images warning (GB)** under **Settings → Checking** (10 by default, 0 turns it off), the dashboard shows an **Unused images** card under the attention cards with a **Review** button, and the [weekly digest](#notifications) gets a line such as "9 unused images, 6.4 GB". That line alone never makes the digest send.
+When the unused images take up more than **Unused images warning (GB)** under **Settings → Checking** (10 by default, 0 turns it off), the dashboard shows an **Unused images** card among the **Needs attention** cards, with a **Review** button. Separately, the [weekly digest](#notifications) gets a line such as "9 unused images, 6.4 GB" whenever there are any, whatever that setting says. That line alone never makes the digest send.
 
 ## Filters and search
 
