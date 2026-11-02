@@ -34,7 +34,7 @@ Repository = "https://github.com/dowouk/docker-manager"
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.*",
+    "pytest==9.2.*",
     "pytest-asyncio==1.4.*",
     "respx==0.23.*",
     "pyyaml==6.0.*",  # tests parse the example compose files
