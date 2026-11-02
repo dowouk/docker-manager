@@ -237,6 +237,11 @@ def test_card_shows_over_threshold():
         ("images", "Unused images", "9 images, 6.4 GB could be freed.", None)]
 
 
+def test_card_for_one_image_is_singular():
+    cards = view.attention(_unused_result(6_400_000_000, count=1), unused_warn_gb=5)
+    assert cards[0].text == "1 image, 6.4 GB could be freed."
+
+
 def test_no_card_under_threshold_or_when_off():
     r = _unused_result(6_400_000_000)
     assert view.attention(r, unused_warn_gb=10) == []

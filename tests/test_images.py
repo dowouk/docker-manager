@@ -103,6 +103,32 @@ def test_build_ref_resolving_to_running_image_is_not_protected(tmp_path):
     assert protected_ids(visible, lookup({})) == set()
 
 
+def test_build_downloaded_ahead_stays_waiting_when_the_check_failed(tmp_path):
+    # A registry outage or 429 gives ERROR with no digest, but the newer build already
+    # downloaded ahead is still waiting to be applied.
+    old = FakeImage("sha256:old", [], 100)
+    new = FakeImage("sha256:new", ["nginx:latest"], 900)
+    client = FakeClient([old, new], used=["sha256:old"])
+    client.images = DockerImages([old, new], {"nginx:latest": "sha256:new"})
+    web = info(tmp_path, "web", image_id="sha256:old", local_tag_image_id="sha256:new")
+    visible = result_of(ContainerStatus(web, Status.ERROR, message="429 Too Many Requests"))
+    report = scan(client, Store(str(tmp_path / "s.db")), visible, NOW)
+    assert [r.id for r in report.waiting] == ["sha256:new"]
+    assert report.unused == []
+
+
+def test_skipped_build_with_a_moved_tag_is_unused(tmp_path):
+    # A skipped newer build shows as up to date: its download is no longer on offer.
+    new = FakeImage("sha256:new", ["nginx:latest"], 900)
+    client = FakeClient([new], used=["sha256:old"])
+    client.images = DockerImages([new], {"nginx:latest": "sha256:new"})
+    web = info(tmp_path, "web", image_id="sha256:old", local_tag_image_id="sha256:new")
+    for st in (Status.UP_TO_DATE, Status.NOT_WATCHED):
+        report = scan(client, Store(str(tmp_path / f"{st}.db")), result_of(ContainerStatus(web, st)), NOW)
+        assert [r.id for r in report.unused] == ["sha256:new"]
+        assert report.waiting == []
+
+
 def test_protected_version_download_is_waiting(tmp_path):
     old = FakeImage("sha256:v162", ["postgres:16.2"], 100)
     new = FakeImage("sha256:v164", ["postgres:16.4"], 800)
@@ -277,3 +303,18 @@ async def test_delete_leaves_a_tag_that_now_points_at_another_image():
     await delete_images(ctx, client, store, ["sha256:old"])
     assert client.images.removed == ["sha256:old"]
     assert "sha256:new" in client.images.images and new.attrs["RepoTags"] == ["nginx:latest"]
+
+
+async def test_delete_skips_an_image_now_waiting_to_be_applied():
+    a = FakeImage("sha256:a", ["redis:7.0"], 1_000_000)
+    b = FakeImage("sha256:b", ["nginx:1.25"], 2_000_000)
+    client = removable_client([a, b])
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:a", "sha256:b"], protected={"sha256:a"})
+    assert client.images.removed == ["nginx:1.25"]
+    assert store.forgotten == {"sha256:b"}
+    assert ctx.logs == [
+        "Skipped redis:7.0 – now waiting to be applied\n",
+        "Deleted nginx:1.25 (2 MB)\n",
+        "Freed 2 MB\n",
+    ]

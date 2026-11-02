@@ -189,7 +189,7 @@ What is downloaded:
 
 Not downloaded ahead: major versions, Mailcow, containers not started by `docker compose`, the dashboard's own image, and versions set by a variable.
 
-The row shows what is happening, under the status – for example **16.4 ready** or **Newer build ready** with "Downloaded 2 hours ago", **16.4 – downloading…**, or **Couldn't download ahead – will try again at the next check**. These notes only show while **Download updates ahead** is on. If a container has both a newer build and a new version, the row shows the newer build's download. Downloads run one at a time in the background and never stop you updating, restarting or editing anything.
+The row shows what is happening, under the status – for example **16.4 ready** or **Newer build ready** with "Downloaded 2 h ago", **16.4 – downloading…**, or **Couldn't download ahead – will try again at the next check**. These notes only show while **Download updates ahead** is on. If a container has both a newer build and a new version, the row shows the newer build's download. Downloads run one at a time in the background and never stop you updating, restarting or editing anything.
 
 - **Update still checks the registry first.** It is quick when the image is already there, but if the registry is down or rate-limiting at that moment, **Update** can still fail.
 - **`docker compose up -d` uses the downloaded build.** Once a newer build is downloaded, running `docker compose up -d` by hand, or **Save and apply** in [Edit config](#edit-config), starts that container on it. This is how Docker treats any downloaded tag.
@@ -200,9 +200,9 @@ Turn the setting off under **Settings → Checking**.
 
 The **Images** page (in the menu, between Layout and Users) lists the images on the server that no container uses, running or stopped, including untagged ones. Everyone can see it. Each row shows the image's tags, its size and **Unused since**. Docker doesn't record when an image stopped being used, so the dashboard notes the first time it sees it unused; images already unused when it first looked show "before <date>". The heading shows the count and total size, and you can sort by size or by unused since.
 
-**Waiting to be applied** is a shorter list of images downloaded ahead for an update that is still on offer. They have no Delete button and are never tidied. Once the update is applied, skipped or overtaken by something newer, the image moves to the unused list the next time the page loads.
+**Waiting to be applied** is a shorter list of images downloaded ahead for an update that is still on offer. They have no Delete button and are never tidied. Once the update is applied, skipped or overtaken by something newer, the image moves to the unused list the next time the page loads. If a check couldn't reach the registry, a version downloaded ahead may show as unused until the next successful check.
 
-Operators and Admins can press **Delete** on one image or **Tidy all unused**; both ask you to confirm. They run as a **Tidy images** job in **History**, with who, which images and how much space was freed. An image a container started using since the page loaded is skipped, and the rest go ahead. Sizes can overlap (images share layers), so the space freed may be less than the total shown.
+Operators and Admins can press **Delete** on one image or **Tidy all unused**; both ask you to confirm. They run as a **Tidy images** job in **History**, with who, which images and how much space was freed. An image a container started using since the page loaded, or that is now waiting to be applied, is skipped, and the rest go ahead. Sizes can overlap (images share layers), so the space freed may be less than the total shown.
 
 When the unused images take up more than **Unused images warning (GB)** under **Settings → Checking** (10 by default, 0 turns it off), the dashboard shows an **Unused images** card among the **Needs attention** cards, with a **Review** button. Separately, the [weekly digest](#notifications) gets a line such as "9 unused images, 6.4 GB" whenever there are any, whatever that setting says. That line alone never makes the digest send.
 

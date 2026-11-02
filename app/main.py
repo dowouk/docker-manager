@@ -1472,7 +1472,15 @@ def create_app(
 
     def tidy_work(ids: list[str]) -> Callable[[JobContext], Awaitable[None]]:
         async def work(ctx: JobContext) -> None:
-            await images.delete_images(ctx, app.state.docker, store, ids)
+            # A check since the page was shown may have put an image on offer again. If this
+            # raises, the job fails and nothing is deleted.
+            latest = _latest(app)
+            protected: set[str] = set()
+            if latest is not None:
+                visible = skips_mod.visible_result(latest, app.state.skips)[0]
+                protected = await asyncio.to_thread(
+                    images.protected_ids, visible, images._image_id_for(app.state.docker))
+            await images.delete_images(ctx, app.state.docker, store, ids, protected)
             try:
                 await _refresh_unused_images(app)
             except Exception:  # noqa: BLE001 – the deletes stand; the next check catches up

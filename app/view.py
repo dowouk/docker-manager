@@ -17,7 +17,7 @@ from datetime import datetime
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.imageref import parse_image_ref
-from app.images import human_size
+from app.images import human_size, plural
 from app.prefetch import State
 
 BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
@@ -277,7 +277,7 @@ def attention(result: CheckResult, unused_warn_gb: float = 0) -> list[Attention]
     unused = result.unused_images
     if unused_warn_gb > 0 and unused and unused.size > unused_warn_gb * 1_000_000_000:
         cards.append(Attention("images", "Unused images", "", "Unused images",
-                               f"{unused.count} images, {human_size(unused.size)} could be freed."))
+                               f"{plural(unused.count, 'image')}, {human_size(unused.size)} could be freed."))
     return cards
 
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -52,7 +52,9 @@ def protected_ids(visible: CheckResult, image_id_for: Callable[[str], str | None
     protected: set[str] = set()
     for cs in visible.containers:
         c = cs.container
-        if cs.status in (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED):
+        # ERROR too: a check that couldn't reach the registry leaves a build already
+        # downloaded ahead waiting. Not UP_TO_DATE – that's how a skipped build shows.
+        if cs.status in (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED, Status.ERROR):
             # A live lookup: a download that finished since the check still shows NEWER_BUILD.
             found = image_id_for(c.image_ref)
             if found and found != c.image_id:
@@ -101,9 +103,11 @@ def _short(image_id: str) -> str:
     return image_id.removeprefix("sha256:")[:12]
 
 
-async def delete_images(ctx: JobContext, client, store: Store, ids: list[str]) -> None:
+async def delete_images(ctx: JobContext, client, store: Store, ids: list[str],
+                        protected: Collection[str] = frozenset()) -> None:
     """Delete each image by removing its tags, then the image itself – never forced, so
-    Docker refuses one a container uses. A refused image is skipped and the rest go ahead."""
+    Docker refuses one a container uses. A refused image is skipped and the rest go ahead,
+    as is one in `protected` (waiting to be applied since the page was shown)."""
     used = {c.attrs["Image"] for c in await asyncio.to_thread(client.containers.list, all=True)}
     gone: set[str] = set()
     total = 0
@@ -121,6 +125,9 @@ async def delete_images(ctx: JobContext, client, store: Store, ids: list[str]) -
         name = ImageRow(image.id, _tags(image), size, None, False).name
         if image.id in used:  # a container started using it since the page was shown
             ctx.log(f"Skipped {name} – a container uses it\n")
+            continue
+        if image.id in protected:
+            ctx.log(f"Skipped {name} – now waiting to be applied\n")
             continue
         try:
             for tag in _tags(image):
@@ -146,6 +153,11 @@ async def delete_images(ctx: JobContext, client, store: Store, ids: list[str]) -
         total += size
     store.forget_unused_images(gone)
     ctx.log(f"Freed {human_size(total)}\n")
+
+
+def plural(n: int, word: str) -> str:
+    """"1 image", "2 images"."""
+    return f"{n} {word}{'s' if n != 1 else ''}"
 
 
 def human_size(n: int) -> str:

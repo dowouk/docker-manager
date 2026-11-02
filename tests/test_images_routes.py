@@ -1,15 +1,18 @@
 """The Images page: what it lists, who sees the buttons, and what Delete and Tidy submit."""
 import asyncio
 import re
+from dataclasses import replace
 
 import docker.errors
 import pytest
 
+from app.checker import Status
 from app.roles import Role
 from auth_helpers import CSRF, logged_in_client
 from test_images import FakeImage, LogCtx, RemovableImages
 from test_routes import (  # noqa: F401 – fixtures
-    FakeRunner, StubContainer, StubContainers, client_for, compose_file, make_app, seeded,
+    FakeRunner, StubContainer, StubContainers, client_for, compose_file, info, make_app, seeded,
+    status,
 )
 
 GB = 1_000_000_000
@@ -150,6 +153,24 @@ def test_tidy_submits_one_job_with_every_unused_image(images_client, monkeypatch
     assert when == checked_at
     assert payload["unused_images"] == {"count": 0, "size": 0}
     assert after_check == []
+
+
+def test_tidy_skips_an_image_waiting_to_be_applied_since_the_page(images_client, seeded,  # noqa: F811
+                                                                  tmp_path, monkeypatch):
+    monkeypatch.setattr("app.main.run_check", lambda app: asyncio.sleep(0))
+    runner = FakeRunner()
+    c, app = images_client(runner=runner)
+    c.post("/images/tidy", data={"csrf_token": CSRF})
+    _, _, _, work = runner.submitted[0]
+    # A check since the page was shown: redis:7.0 is now a newer build on offer for cache.
+    cache = info(tmp_path, "cache", image="redis:7.0", image_id="sha256:oldredis")
+    later = replace(seeded, containers=[*seeded.containers, status(cache, Status.NEWER_BUILD)])
+    app.state.store.save_check(later.to_dict(), later.checked_at)
+    ctx = LogCtx()
+    asyncio.run(work(ctx))
+    assert set(app.state.docker.images.images) == {IN_USE, WAITING, REDIS}
+    assert "Skipped redis:7.0 – now waiting to be applied\n" in ctx.logs
+    assert "Deleted untagged 0123456789ab (500 MB)\n" in ctx.logs
 
 
 def test_tidy_with_nothing_unused_says_so(client_for, seeded):  # noqa: F811

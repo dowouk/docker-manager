@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from app.checker import CheckResult, ContainerStatus, Status
 from app.config import Settings
-from app.images import human_size
+from app.images import human_size, plural
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.layout import LayoutProblem
@@ -46,16 +46,12 @@ def layout_lines(problems: list[LayoutProblem]) -> list[str]:
     return lines
 
 
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'s' if n != 1 else ''}"
-
-
 def layout_summary(problems: list[LayoutProblem]) -> str:
     """"2 layout problems and 1 notice": notices (not started by compose) count separately."""
     notices = sum(1 for p in problems if p.severity == "notice")
     found = len(problems) - notices
-    parts = ([_plural(found, "layout problem")] if found else []) \
-        + ([_plural(notices, "notice")] if notices else [])
+    parts = ([plural(found, "layout problem")] if found else []) \
+        + ([plural(notices, "notice")] if notices else [])
     return " and ".join(parts)
 
 
@@ -160,7 +156,7 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
         "public_url": settings.public_url,
         "skipped": f"{skipped} update{'s' if skipped != 1 else ''} skipped or snoozed"
         if skipped > 0 else None,
-        "unused_images": f"{_plural(unused.count, 'unused image')}, {human_size(unused.size)}"
+        "unused_images": f"{plural(unused.count, 'unused image')}, {human_size(unused.size)}"
         if unused and unused.count > 0 else None,
         "images_link": settings.public_url.rstrip("/") + "/images" if settings.public_url else None,
         "layout_count": len(layout),
