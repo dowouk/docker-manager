@@ -112,3 +112,27 @@ def test_compose_editable_literal_tag_yes_variable_no(tmp_path):
 def test_compose_editable_missing_file_is_false(tmp_path):
     cs = cs_for(make_info(config_files=[str(tmp_path / "gone.yml")]), Status.UP_TO_DATE)
     assert compose_editable(cs, "1.1") is False
+
+
+def _ab(b_status):
+    a = make_info(id="a", image_ref="postgres:16.2")
+    b = make_info(id="b", image_ref="postgres:16.4", service="db2")
+    visible = result(cs_for(a, Status.UP_TO_DATE, minor_update="16.4"), cs_for(b, b_status))
+    return targets(visible, [a, b], yes)
+
+
+def test_version_ref_already_used_by_watched_newer_build_gives_one_build_target():
+    out = _ab(Status.NEWER_BUILD)
+    assert [(t.kind, t.key) for t in out] == [("build", "postgres:16.4")]
+    assert out[0].remote_digest == "sha256:new"
+
+
+def test_version_ref_used_by_container_with_skipped_build_is_not_a_target():
+    assert _ab(Status.UP_TO_DATE) == []
+
+
+def test_build_target_wins_regardless_of_container_order():
+    a = make_info(id="a", image_ref="postgres:16.2")
+    b = make_info(id="b", image_ref="postgres:16.4", service="db2")
+    visible = result(cs_for(b), cs_for(a, Status.UP_TO_DATE, minor_update="16.4"))
+    assert [t.kind for t in targets(visible, [a, b], yes)] == ["build"]

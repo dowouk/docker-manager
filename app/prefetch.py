@@ -34,7 +34,7 @@ def _build_shared_ok(image_ref: str, containers: list[ContainerInfo], by_id: dic
         if c.image_ref != image_ref:
             continue
         cs = by_id.get(c.id)
-        if cs is None or cs.status == Status.NOT_WATCHED or cs.status != Status.NEWER_BUILD:
+        if cs is None or cs.status != Status.NEWER_BUILD:
             return False
     return True
 
@@ -52,10 +52,17 @@ def targets(
             continue
         if cs.status == Status.NEWER_BUILD:
             key = info.image_ref
-            if key not in found and _build_shared_ok(key, containers, by_id):
-                found[key] = Target(key, "build", info, info.image_ref, cs.remote_digest)
+            if _build_shared_ok(key, containers, by_id):
+                # A build target wins over a version target with the same key: it carries the digest.
+                if key not in found or found[key].kind == "version":
+                    found[key] = Target(key, "build", info, info.image_ref, cs.remote_digest)
         if cs.minor_update:
             new_ref = parse_image_ref(info.image_ref).with_tag(cs.minor_update)
-            if new_ref not in found and editable(cs, cs.minor_update):
+            if new_ref in found:
+                continue
+            # Pulling the new version also moves the tag any container already on it uses.
+            if any(c.image_ref == new_ref for c in containers) and not _build_shared_ok(new_ref, containers, by_id):
+                continue
+            if editable(cs, cs.minor_update):
                 found[new_ref] = Target(new_ref, "version", info, new_ref, None)
     return list(found.values())
