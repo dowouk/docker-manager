@@ -55,6 +55,9 @@ class StubContainer:
 
 
 class StubImages:
+    def list(self):
+        return []
+
     def get(self, ref):
         raise docker.errors.ImageNotFound(f"no such image: {ref}")
 

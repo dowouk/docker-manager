@@ -9,7 +9,7 @@ import re
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import docker
@@ -39,6 +39,7 @@ from app.notify.providers import (
     LOGIN_REFUSED, NO_ANSWER, NOT_PRIVATE, PROVIDERS, REJECTED, SMTP_PRESETS, UNREACHABLE,
     shutdown_notify_executor,
 )
+from app import images
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo, container_key, detect_self_id, list_containers
 from app.links import release_notes_url
@@ -187,6 +188,13 @@ async def run_check(app: FastAPI) -> CheckResult:
                 containers, state.settings, rules_for,
                 state.settings.data_dir, state.settings.mailcow_dir,
             ) if state.settings.layout_check else None
+            try:
+                result.unused_images = (await asyncio.to_thread(
+                    images.scan, state.docker, state.store,
+                    skips_mod.visible_result(result, state.skips)[0], datetime.now(timezone.utc),
+                )).summary()
+            except Exception:
+                log.warning("Couldn't scan for unused images", exc_info=True)
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
         state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
