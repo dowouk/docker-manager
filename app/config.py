@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     layout_check: bool = True
     named_volumes_allowed: bool = False
     layout_allowlist: Annotated[list[str], NoDecode] = []
+    prefetch_updates: bool = True
+    unused_images_warn_gb: float = 10
 
     @field_validator("allowed_emails", "digest_to", "layout_allowlist", mode="before")
     @classmethod

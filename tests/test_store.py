@@ -275,3 +275,40 @@ def test_failed_migration_3_leaves_0_2_untouched_then_keeps_flag(tmp_path, monke
     db.close()
     assert Store(path).get_meta("existing_install") == "1"
     assert Store(path).get_meta("existing_install") == "1"
+
+
+def test_sync_unused_images_marks_first_scan_as_before(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    t1 = datetime(2026, 11, 2, 9, tzinfo=timezone.utc)
+    seen = store.sync_unused_images({"sha256:a"}, t1)
+    assert seen == {"sha256:a": (t1, True)}
+    t2 = t1 + timedelta(hours=6)
+    seen = store.sync_unused_images({"sha256:a", "sha256:b"}, t2)
+    assert seen["sha256:a"] == (t1, True)
+    assert seen["sha256:b"] == (t2, False)
+
+
+def test_sync_unused_images_drops_ids_used_again(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    t = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    store.sync_unused_images({"sha256:a", "sha256:b"}, t)
+    assert set(store.sync_unused_images({"sha256:b"}, t)) == {"sha256:b"}
+    later = t + timedelta(days=1)
+    assert store.sync_unused_images({"sha256:a"}, later)["sha256:a"] == (later, False)
+
+
+def test_empty_first_scan_still_ends_the_before_window(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    t = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    store.sync_unused_images(set(), t)
+    assert store.sync_unused_images({"sha256:a"}, t)["sha256:a"] == (t, False)
+
+
+def test_forget_unused_images_removes_rows(tmp_path):
+    store = Store(str(tmp_path / "d.db"))
+    t = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    store.sync_unused_images({"sha256:a", "sha256:b"}, t)
+    store.forget_unused_images({"sha256:a"})
+    store.forget_unused_images(set())
+    assert set(store.sync_unused_images({"sha256:a", "sha256:b"}, t)) == {"sha256:a", "sha256:b"}
+    assert store.sync_unused_images({"sha256:a", "sha256:b"}, t)["sha256:a"] == (t, False)

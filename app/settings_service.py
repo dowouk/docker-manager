@@ -21,7 +21,8 @@ GROUP_MAPPINGS = "group_mappings"
 UI_ONLY = frozenset({"local_sign_in", "hide_local_for_non_admins", "gravatar",
                      "require_totp_admins", "default_role", "check_on_startup",
                      "random_delay_minutes", "heartbeat_url", "layout_check",
-                     "named_volumes_allowed", "layout_allowlist"})
+                     "named_volumes_allowed", "layout_allowlist",
+                     "prefetch_updates", "unused_images_warn_gb"})
 MAX_ALLOWLIST = 50
 MAX_HEARTBEAT_URL = 2000
 LOCAL_OFF_MESSAGE = "Turn on Microsoft sign-in first, or you won't be able to sign in"
@@ -96,6 +97,12 @@ FIELDS: list[Field] = [
           "Don't flag containers that use named Docker volumes."),
     Field("layout_allowlist", "Allowed folders", "checking", "path_list",
           f"Full paths, one per line (up to {MAX_ALLOWLIST}). Mounts under these are never flagged."),
+    Field("prefetch_updates", "Download updates ahead", "checking", "bool",
+          "After each check, download the images for updates on offer, so updating is quicker. "
+          "Nothing is applied until you click Update."),
+    Field("unused_images_warn_gb", "Unused images warning (GB)", "checking", "float",
+          "Show a card on the dashboard when unused images take up more than this. "
+          "0 turns the card off.", 0, 10000),
     Field("digest_schedule", "Schedule", "digest", "cron",
           "Five-part cron schedule, for example 0 8 * * MON for Mondays at 8am."),
     Field("digest_when_none", "Send the digest when everything is up to date", "digest", "bool",

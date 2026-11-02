@@ -401,3 +401,18 @@ def test_schedule_from_picker_round_trips():
         schedule_from_picker("", "08:00")
     with pytest.raises(ValueError, match="time"):
         schedule_from_picker("mon", "25:00")
+
+
+def test_prefetch_settings_defaults_and_bounds(settings, tmp_path):
+    from app.settings_service import UI_ONLY
+    s = svc(settings, tmp_path)
+    eff = s.effective()
+    assert eff.prefetch_updates is True
+    assert eff.unused_images_warn_gb == 10
+    assert {"prefetch_updates", "unused_images_warn_gb"} <= UI_ONLY
+    with pytest.raises(SettingsError) as exc:
+        s.save("checking", {**CHECKING, "unused_images_warn_gb": "-1"}, "me")
+    assert "unused_images_warn_gb" in exc.value.errors
+    s.save("checking", {**CHECKING, "prefetch_updates": "", "unused_images_warn_gb": "0"}, "me")
+    eff = s.effective()
+    assert eff.prefetch_updates is False and eff.unused_images_warn_gb == 0
