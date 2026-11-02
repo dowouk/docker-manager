@@ -1,6 +1,7 @@
 """Images on the server that no container uses, and the ones held back for a pending update."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +14,7 @@ from app.store import Store
 
 if TYPE_CHECKING:
     from app.checker import CheckResult
+    from app.jobs import JobContext
 
 
 @dataclass(frozen=True)
@@ -82,14 +84,68 @@ def scan(client, store: Store, visible: CheckResult | None, now: datetime) -> Im
 
     def row(image, tracked: bool) -> ImageRow:
         when, before = since[image.id] if tracked else (None, False)
-        tags = [t for t in image.attrs.get("RepoTags") or [] if t != "<none>:<none>"]
-        return ImageRow(image.id, tags, image.attrs.get("Size") or 0, when, before)
+        return ImageRow(image.id, _tags(image), image.attrs.get("Size") or 0, when, before)
 
     return ImagesReport(
         unused=sorted((row(i, True) for i in unused_images), key=lambda r: -r.size),
         waiting=sorted((row(i, False) for i in candidates if i.id in protected),
                        key=lambda r: -r.size),
     )
+
+
+def _tags(image) -> list[str]:
+    return [t for t in image.attrs.get("RepoTags") or [] if t != "<none>:<none>"]
+
+
+def _short(image_id: str) -> str:
+    return image_id.removeprefix("sha256:")[:12]
+
+
+async def delete_images(ctx: JobContext, client, store: Store, ids: list[str]) -> None:
+    """Delete each image by removing its tags, then the image itself – never forced, so
+    Docker refuses one a container uses. A refused image is skipped and the rest go ahead."""
+    used = {c.attrs["Image"] for c in await asyncio.to_thread(client.containers.list, all=True)}
+    gone: set[str] = set()
+    total = 0
+    for image_id in ids:
+        try:
+            image = await asyncio.to_thread(client.images.get, image_id)
+        except docker.errors.ImageNotFound:
+            ctx.log(f"Already deleted {_short(image_id)}\n")
+            gone.add(image_id)
+            continue
+        except docker.errors.APIError as exc:
+            ctx.log(f"Skipped {_short(image_id)} – {exc.explanation or exc}\n")
+            continue
+        size = image.attrs.get("Size") or 0
+        name = ImageRow(image.id, _tags(image), size, None, False).name
+        if image.id in used:  # a container started using it since the page was shown
+            ctx.log(f"Skipped {name} – a container uses it\n")
+            continue
+        try:
+            for tag in _tags(image):
+                # Only while the tag still points here: a tag pulled again since names a
+                # different image, and removing it would untag that one.
+                try:
+                    points_here = (await asyncio.to_thread(client.images.get, tag)).id == image.id
+                except docker.errors.ImageNotFound:
+                    points_here = False
+                if points_here:
+                    await asyncio.to_thread(client.images.remove, tag)
+            try:
+                await asyncio.to_thread(client.images.get, image.id)
+            except docker.errors.ImageNotFound:
+                pass  # the last tag took the image with it
+            else:
+                await asyncio.to_thread(client.images.remove, image.id)
+        except docker.errors.APIError as exc:  # e.g. 409: a container uses it
+            ctx.log(f"Skipped {name} – {exc.explanation or exc}\n")
+            continue
+        ctx.log(f"Deleted {name} ({human_size(size)})\n")
+        gone.add(image_id)
+        total += size
+    store.forget_unused_images(gone)
+    ctx.log(f"Freed {human_size(total)}\n")
 
 
 def human_size(n: int) -> str:

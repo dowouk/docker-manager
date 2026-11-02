@@ -219,6 +219,11 @@ table.data { width: 100%; border-collapse: collapse; }
 .data thead th { padding-top: 14px; padding-bottom: 14px; border-bottom-color: var(--line); font-size: 12px; font-weight: 500;
   text-transform: uppercase; letter-spacing: 0.06em; color: var(--subtle); white-space: nowrap; }
 .data .col-action { text-align: right; }
+.sort-button { padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-transform: inherit; cursor: pointer; }
+.sort-button::after { content: " ↕"; opacity: 0.5; }
+[aria-sort="descending"] > .sort-button::after { content: " ↓"; opacity: 1; }
+[aria-sort="ascending"] > .sort-button::after { content: " ↑"; opacity: 1; }
 .containers .image { color: var(--mono-fg); overflow-wrap: break-word; }
 .who { display: flex; align-items: center; gap: 12px; }
 .who-name { font-weight: 600; color: var(--fg-strong); overflow-wrap: anywhere; min-width: 0; }

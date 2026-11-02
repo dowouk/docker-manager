@@ -311,14 +311,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
 </section>
 {% endif %}
 
-<dialog id="confirm-dialog" aria-labelledby="confirm-title">
-  <h2 id="confirm-title"></h2>
-  <p id="confirm-detail" class="card-text"></p>
-  <form method="dialog" class="dialog-actions">
-    <button type="submit" value="cancel" class="button button-quiet">Cancel</button>
-    <button type="submit" value="confirm" id="confirm-button" class="button button-danger"></button>
-  </form>
-</dialog>
+{% include "_confirm_dialog.html" %}
 
 <dialog id="preview-dialog">
   <div id="preview-body"></div>

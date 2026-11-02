@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 
 from app.checker import CheckResult, ContainerStatus, Status
-from app.images import ImageRow, ImagesReport, UnusedSummary, human_size, protected_ids, scan
+from app.images import (
+    ImageRow, ImagesReport, UnusedSummary, delete_images, human_size, protected_ids, scan,
+)
 from app.store import Store
 from test_routes import CHECKED_AT, info
 
@@ -144,3 +146,134 @@ def test_human_size():
     assert human_size(412_000_000) == "412 MB"
     assert human_size(6_400_000_000) == "6.4 GB"
     assert human_size(0) == "0 B"
+
+
+# ---- delete_images ------------------------------------------------------------------
+
+
+class LogCtx:
+    def __init__(self):
+        self.logs: list[str] = []
+
+    def log(self, text):
+        self.logs.append(text)
+
+
+class RemovableImages:
+    """A small Docker image store: tags point at ids; removing the last tag removes the
+    image unless `keep_untagged`; `refuse` maps a ref to the error Docker gives for it."""
+
+    def __init__(self, images, refuse=None, keep_untagged=()):
+        self.images = {i.id: i for i in images}
+        self.refuse = refuse or {}
+        self.keep_untagged = set(keep_untagged)
+        self.removed: list[str] = []
+
+    def _find(self, ref):
+        import docker.errors
+        if ref in self.images:
+            return self.images[ref]
+        for image in self.images.values():
+            if ref in image.attrs["RepoTags"]:
+                return image
+        raise docker.errors.ImageNotFound(f"no such image: {ref}")
+
+    def get(self, ref):
+        return self._find(ref)
+
+    def remove(self, ref, force=False):
+        assert force is False
+        if ref in self.refuse:
+            raise self.refuse[ref]
+        image = self._find(ref)
+        self.removed.append(ref)
+        if ref == image.id:
+            del self.images[image.id]
+            return
+        image.attrs["RepoTags"].remove(ref)
+        if not image.attrs["RepoTags"] and image.id not in self.keep_untagged:
+            del self.images[image.id]
+
+
+def removable_client(images, used=(), **kw):
+    client = FakeClient([], used=used)
+    client.images = RemovableImages(images, **kw)
+    return client
+
+
+class RecordingStore:
+    def __init__(self):
+        self.forgotten: set[str] = set()
+
+    def forget_unused_images(self, ids):
+        self.forgotten |= set(ids)
+
+
+async def test_delete_removes_each_tag_then_the_image():
+    a = FakeImage("sha256:a", ["redis:7.0", "redis:7"], 2_000_000_000)
+    b = FakeImage("sha256:0123456789abcdef", [], 500_000_000)
+    c = FakeImage("sha256:c", ["nginx:1.25"], 300_000_000)
+    client = removable_client([a, b, c], keep_untagged={"sha256:c"})
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:a", "sha256:0123456789abcdef", "sha256:c"])
+    # Tags first (Docker won't remove a multi-tagged image by id without force), then the
+    # id only while the image is still there.
+    assert client.images.removed == ["redis:7.0", "redis:7", "sha256:0123456789abcdef",
+                                     "nginx:1.25", "sha256:c"]
+    assert client.images.images == {}
+    assert store.forgotten == {"sha256:a", "sha256:0123456789abcdef", "sha256:c"}
+    assert ctx.logs == [
+        "Deleted redis:7.0, redis:7 (2.0 GB)\n",
+        "Deleted untagged 0123456789ab (500 MB)\n",
+        "Deleted nginx:1.25 (300 MB)\n",
+        "Freed 2.8 GB\n",
+    ]
+
+
+async def test_delete_skips_an_image_docker_refuses_and_continues():
+    import docker.errors
+    a = FakeImage("sha256:a", ["redis:7.0"], 1_000_000)
+    b = FakeImage("sha256:b", ["nginx:1.25"], 2_000_000)
+    in_use = docker.errors.APIError("409", explanation="image is being used by a container")
+    client = removable_client([a, b], refuse={"redis:7.0": in_use})
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:a", "sha256:b"])
+    assert "sha256:a" in client.images.images and "sha256:b" not in client.images.images
+    assert store.forgotten == {"sha256:b"}
+    assert ctx.logs == [
+        "Skipped redis:7.0 – image is being used by a container\n",
+        "Deleted nginx:1.25 (2 MB)\n",
+        "Freed 2 MB\n",
+    ]
+
+
+async def test_delete_notes_an_image_already_gone():
+    client = removable_client([])
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:0123456789abcdef"])
+    assert ctx.logs == ["Already deleted 0123456789ab\n", "Freed 0 B\n"]
+    assert store.forgotten == {"sha256:0123456789abcdef"}
+
+
+async def test_delete_skips_an_image_a_container_started_using():
+    # A container picked the image up after the page was shown: leave it, tags and all.
+    a = FakeImage("sha256:a", ["redis:7.0", "redis:7"], 1_000_000)
+    client = removable_client([a], used=["sha256:a"])
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:a"])
+    assert client.images.removed == []
+    assert store.forgotten == set()
+    assert ctx.logs == ["Skipped redis:7.0, redis:7 – a container uses it\n", "Freed 0 B\n"]
+
+
+async def test_delete_leaves_a_tag_that_now_points_at_another_image():
+    # nginx:latest was re-pulled since the scan: untagging it would strip the new image.
+    old = FakeImage("sha256:old", ["nginx:latest"], 1_000_000)
+    client = removable_client([old])
+    new = FakeImage("sha256:new", ["nginx:latest"], 1_000_000)
+    old.attrs["RepoTags"] = ["nginx:latest"]
+    client.images.images = {"sha256:new": new, "sha256:old": old}  # tag lookup finds new first
+    ctx, store = LogCtx(), RecordingStore()
+    await delete_images(ctx, client, store, ["sha256:old"])
+    assert client.images.removed == ["sha256:old"]
+    assert "sha256:new" in client.images.images and new.attrs["RepoTags"] == ["nginx:latest"]

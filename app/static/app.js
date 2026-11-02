@@ -207,6 +207,32 @@
     });
   }
 
+  // Tables with data-sortable sort by a column when its header button is pressed: each cell
+  // carries its value in data-sort-<key>. Pressing again flips the order. Without JS the
+  // table stays in the server's order (biggest first).
+  function initSortable() {
+    document.querySelectorAll("table[data-sortable]").forEach(function (table) {
+      var body = table.tBodies[0];
+      var buttons = table.querySelectorAll("button[data-sort]");
+      buttons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          var key = button.getAttribute("data-sort");
+          var th = button.closest("th");
+          var descending = th.getAttribute("aria-sort") !== "descending";
+          var rows = Array.prototype.slice.call(body.rows);
+          rows.sort(function (a, b) {
+            var x = Number(a.querySelector("[data-sort-" + key + "]").getAttribute("data-sort-" + key));
+            var y = Number(b.querySelector("[data-sort-" + key + "]").getAttribute("data-sort-" + key));
+            return descending ? y - x : x - y;
+          });
+          rows.forEach(function (row) { body.appendChild(row); });
+          buttons.forEach(function (other) { other.closest("th").removeAttribute("aria-sort"); });
+          th.setAttribute("aria-sort", descending ? "descending" : "ascending");
+        });
+      });
+    });
+  }
+
   // Live job log over server-sent events.
   function initJobLog() {
     var log = document.getElementById("job-log");
@@ -339,6 +365,7 @@
     initFilter();
     initPreview();
     initConfirm();
+    initSortable();
     initJobLog();
   });
 })();
