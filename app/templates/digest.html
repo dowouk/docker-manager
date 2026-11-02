@@ -19,6 +19,9 @@
 {% if skipped %}
 <p style="margin:16px 0 0;font-size:13px;color:#5f6b7a;">{{ skipped }}</p>
 {% endif %}
+{% if unused_images %}
+<p style="margin:16px 0 0;font-size:13px;color:#5f6b7a;">{% if images_link %}<a href="{{ images_link }}" style="color:#1d4ed8;">{{ unused_images }}</a>{% else %}{{ unused_images }}{% endif %}</p>
+{% endif %}
 {% if layout_count %}
 <h2 style="font-size:16px;margin:20px 0 6px;">Layout</h2>
 <p style="margin:0 0 6px;font-size:14px;">{{ layout_summary }} on the server.</p>

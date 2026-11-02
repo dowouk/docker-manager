@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from app.checker import CheckResult, ContainerStatus, Status
 from app.config import Settings
+from app.images import human_size
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo
 from app.layout import LayoutProblem
@@ -149,6 +150,7 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
         headline = f"{count} update{'s' if count != 1 else ''} available"
     subject = f"{settings.server_name}: {headline}"
 
+    unused = result.unused_images
     local = result.checked_at.astimezone(ZoneInfo(settings.tz))
     ctx = {
         "server_name": settings.server_name,
@@ -158,6 +160,9 @@ def render_digest(result: CheckResult, settings: Settings, skipped: int = 0,
         "public_url": settings.public_url,
         "skipped": f"{skipped} update{'s' if skipped != 1 else ''} skipped or snoozed"
         if skipped > 0 else None,
+        "unused_images": f"{_plural(unused.count, 'unused image')}, {human_size(unused.size)}"
+        if unused and unused.count > 0 else None,
+        "images_link": settings.public_url.rstrip("/") + "/images" if settings.public_url else None,
         "layout_count": len(layout),
         "layout_summary": layout_summary(layout),
         "layout_lines": layout_lines(layout),

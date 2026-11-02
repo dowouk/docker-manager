@@ -201,3 +201,31 @@ def test_layout_subject_counts_problems_and_notices_separately(settings):
     r.layout = [prob("a")]
     r.containers[0].minor_update = "1.1"
     assert render_digest(r, settings)[0].endswith("1 update available")
+
+
+def _with_unused(r, count, size):
+    from app.images import UnusedSummary
+    r.unused_images = UnusedSummary(count, size)
+    return r
+
+
+def test_digest_has_unused_line(settings):
+    settings.public_url = "https://dm.test/"
+    r = _with_unused(result([cs("a", Status.NEWER_BUILD)]), 9, 6_400_000_000)
+    _, html, plain = render_digest(r, settings)
+    assert "9 unused images, 6.4 GB" in html
+    assert "9 unused images, 6.4 GB" in plain
+    assert "https://dm.test/images" in html
+    assert "https://dm.test/images" in plain
+
+
+def test_unused_line_singular_and_absent(settings):
+    _, html, _ = render_digest(_with_unused(result([cs("a", Status.NEWER_BUILD)]), 1, 412_000_000), settings)
+    assert "1 unused image, 412 MB" in html
+    _, html, _ = render_digest(_with_unused(result([cs("a", Status.NEWER_BUILD)]), 0, 0), settings)
+    assert "unused" not in html
+
+
+def test_unused_line_alone_does_not_send_digest(settings):
+    settings.digest_when_none = False
+    assert render_digest(_with_unused(result([cs("web")]), 9, 6_400_000_000), settings) is None

@@ -167,7 +167,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
   <h2 id="attention-heading">Needs attention</h2>
   <div class="attention">
     {% for card in attention %}
-    <article class="card attention-card" {% if card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
+    <article class="card attention-card" {% if card.state == "images" %}{% elif card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
       <div class="card-head">
         <span class="pill pill-{{ card.state }}">{{ card.badge }}</span>
         <span class="mono card-tag">{{ card.tag }}</span>
@@ -178,7 +178,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
         {% if card.cs %}{{ release_notes_link(card.cs) }}{% endif %}
       </div>
       <div class="card-actions">
-        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs), "") }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result), "") }}{% endif %}
+        {% if card.state == "images" %}<a class="button button-quiet" href="/images">Review</a>{% elif card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs), "") }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result), "") }}{% endif %}
       </div>
     </article>
     {% endfor %}

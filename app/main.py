@@ -647,7 +647,7 @@ def create_app(
             hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
             rows=view.by_urgency(shown) if shown else [],
             overview=view.overview(shown) if shown else None,
-            attention=view.attention(shown) if shown else [],
+            attention=view.attention(shown, app.state.settings.unused_images_warn_gb) if shown else [],
             greeting=view.greeting(datetime.now(ZoneInfo(app.state.settings.tz))),
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),

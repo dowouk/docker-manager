@@ -151,7 +151,7 @@ h2 { margin: 0; font-size: 18px; font-weight: 600; }
   font-size: 13px; font-weight: 500; line-height: 1.4; white-space: nowrap; }
 .pill { font-size: 12px; }
 .badge-current, .pill-current, .badge-succeeded { background: var(--ok-tint); color: var(--ok-text); }
-.badge-update, .pill-update, .badge-running { background: var(--upd-tint); color: var(--upd-text); }
+.badge-update, .pill-update, .pill-images, .badge-running { background: var(--upd-tint); color: var(--upd-text); }
 .badge-error, .pill-error, .badge-failed { background: var(--err-tint); color: var(--err-text); }
 .badge-muted { background: var(--surface-2); color: var(--muted); }
 .badge-succeeded .dot { background: var(--ok); }

@@ -17,6 +17,7 @@ from datetime import datetime
 
 from app.checker import CheckResult, ContainerStatus, MailcowStatus, Status
 from app.imageref import parse_image_ref
+from app.images import human_size
 from app.prefetch import State
 
 BUILD_UPDATE = (Status.NEWER_BUILD, Status.PULLED_NOT_RECREATED)
@@ -169,7 +170,7 @@ def overview(result: CheckResult) -> Overview:
 
 @dataclass
 class Attention:
-    """One "Needs attention" card. `cs` is None for the Mailcow card."""
+    """One "Needs attention" card. `cs` is None for the Mailcow and unused-images cards."""
     state: str
     badge: str
     tag: str
@@ -256,7 +257,7 @@ def prefetch_note(cs: ContainerStatus, state_for: Callable[[str], State | None],
     return PrefetchNote(None if pulled else ready_badge, text, True)
 
 
-def attention(result: CheckResult) -> list[Attention]:
+def attention(result: CheckResult, unused_warn_gb: float = 0) -> list[Attention]:
     cards: list[Attention] = []
     mc = result.mailcow
     if mc and mailcow_state(mc) == "update":
@@ -273,6 +274,10 @@ def attention(result: CheckResult) -> list[Attention]:
                                    cs.container.name, text, cs))
     if mc and mailcow_state(mc) == "error":
         cards.append(Attention("error", "Error", "mailcow", "Mailcow", mc.error or "The check failed."))
+    unused = result.unused_images
+    if unused_warn_gb > 0 and unused and unused.size > unused_warn_gb * 1_000_000_000:
+        cards.append(Attention("images", "Unused images", "", "Unused images",
+                               f"{unused.count} images, {human_size(unused.size)} could be freed."))
     return cards
 
 

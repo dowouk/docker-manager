@@ -224,3 +224,25 @@ def test_update_card_for_pulled_build_says_ready():
 def test_prefetch_note_just_downloaded_has_no_ago():
     note = view.prefetch_note(cs("web", Status.NEWER_BUILD), lambda k: _state("ready"), NOW)
     assert note.text == "Downloaded just now"
+
+
+def _unused_result(size, count=9):
+    from app.images import UnusedSummary
+    return CheckResult(NOW, [], None, unused_images=UnusedSummary(count, size))
+
+
+def test_card_shows_over_threshold():
+    cards = view.attention(_unused_result(6_400_000_000), unused_warn_gb=5)
+    assert [(c.state, c.name, c.text, c.cs) for c in cards] == [
+        ("images", "Unused images", "9 images, 6.4 GB could be freed.", None)]
+
+
+def test_no_card_under_threshold_or_when_off():
+    r = _unused_result(6_400_000_000)
+    assert view.attention(r, unused_warn_gb=10) == []
+    assert view.attention(r, unused_warn_gb=0) == []
+    assert view.attention(r) == []
+
+
+def test_no_card_when_scan_failed():
+    assert view.attention(CheckResult(NOW, [], None), unused_warn_gb=5) == []
