@@ -1473,3 +1473,24 @@ def test_dashboard_shows_prefetch_ready_only_while_setting_is_on(client_for, see
     assert "Downloaded just now" in html
     app.state.settings = app.state.settings.model_copy(update={"prefetch_updates": False})
     assert "16.3 ready" not in c.get("/").text
+
+
+def _result_with_unused():
+    from app.images import UnusedSummary
+    return CheckResult(CHECKED_AT, [], unused_images=UnusedSummary(9, 6_400_000_000))
+
+
+def test_dashboard_shows_unused_images_card_over_threshold(client_for):
+    c, app = client_for(result=_result_with_unused())
+    app.state.settings.unused_images_warn_gb = 5
+    html = c.get("/").text
+    assert "9 images, 6.4 GB could be freed." in html
+    assert 'href="/images"' in html and "Review" in html
+
+
+@pytest.mark.parametrize("warn", [0, 10])
+def test_dashboard_has_no_unused_images_card_when_off_or_under(client_for, warn):
+    c, app = client_for(result=_result_with_unused())
+    app.state.settings.unused_images_warn_gb = warn
+    assert "could be freed" not in c.get("/").text
+
