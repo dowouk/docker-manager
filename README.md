@@ -1,10 +1,8 @@
-<img src="app/static/icon-512.png" alt="" width="72" height="72" align="left">
-
 # Docker Manager
 
-<br clear="left">
+<img src="app/static/icon-512.png" alt="" width="72" height="72" align="left">
 
-A small web page, running on each of your servers, that shows whether your Docker containers are on the newest images – and lets you update them with one click.
+A small container that shows whether your Docker containers are on the newest images – and lets you update them with one click.
 
 - [What it does](#what-it-does)
 - [How it decides there's an update](#how-it-decides-theres-an-update)
