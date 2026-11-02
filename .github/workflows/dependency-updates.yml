@@ -170,16 +170,37 @@ jobs:
               done > "$RUNNER_TEMP/actions.md"
 
       # No fallback: a failed listing must fail the job, as an empty list
-      # would wrongly close the issue.
+      # would wrongly close the issue. `gh pr list --json commits` also asks
+      # for every commit's authors, which takes the query past GitHub's
+      # 500,000-node limit, so this asks only for what the build step reads.
       - name: List open Dependabot PRs
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh pr list --author app/dependabot --state open --limit 100 \
-            --json number,title,url,createdAt,labels,headRefName,commits \
-            > "$RUNNER_TEMP/prs.json"
+          set -o pipefail
+          # $q and $endCursor are GraphQL variables, not shell ones.
+          # shellcheck disable=SC2016
+          gh api graphql --paginate \
+            -f q="repo:$GH_REPO is:pr is:open author:app/dependabot" \
+            -f query='
+              query($q: String!, $endCursor: String) {
+                search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    ... on PullRequest {
+                      number title url createdAt headRefName
+                      labels(first: 20) { nodes { name } }
+                      commits(first: 10) { nodes { commit { messageHeadline messageBody } } }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.search.nodes[] | {number, title, url, createdAt,
+              labels: .labels.nodes, headRefName,
+              commits: [.commits.nodes[].commit]}' \
+            | jq -s . > "$RUNNER_TEMP/prs.json"
 
       # Best-effort: the alerts endpoint may refuse the workflow token, and
       # a repo can have alerts switched off. Any failure leaves an empty list;
