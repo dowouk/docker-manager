@@ -11,6 +11,10 @@ Last checked {{ checked_at }}
 
 {{ skipped }}
 {% endif %}
+{% if unused_images %}
+
+{{ unused_images }}{% if images_link %} – {{ images_link }}{% endif +%}
+{% endif %}
 {% if layout_count %}
 
 Layout: {{ layout_summary }}

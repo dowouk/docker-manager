@@ -151,4 +151,5 @@ def assert_all_routes_guarded(app: FastAPI, expected_auth: set | None = None) ->
 # A complete Checking form as the settings page posts it (bools "on" = ticked).
 CHECKING_FORM = {"check_interval_hours": "6", "health_timeout_seconds": "300",
                  "mailcow_dir": "/opt/mailcow-dockerized", "random_delay_minutes": "0",
-                 "check_on_startup": "on", "layout_check": "on"}
+                 "check_on_startup": "on", "layout_check": "on",
+                 "prefetch_updates": "on", "unused_images_warn_gb": "10"}

@@ -119,8 +119,17 @@ def _migration_6(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE users ADD COLUMN theme TEXT")
 
 
+def _migration_7(db: sqlite3.Connection) -> None:
+    # When each unused image was first seen; "before" marks those present at the first scan.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS image_unused (image_id TEXT PRIMARY KEY, "
+        "first_seen TEXT NOT NULL, before INTEGER NOT NULL DEFAULT 0)"
+    )
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
-    _migration_1, _migration_2, _migration_3, _migration_4, _migration_5, _migration_6]
+    _migration_1, _migration_2, _migration_3, _migration_4, _migration_5, _migration_6,
+    _migration_7]
 
 
 def _now() -> str:
@@ -233,6 +242,31 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    def sync_unused_images(self, ids: set[str], now: datetime) -> dict[str, tuple[datetime, bool]]:
+        """Record which images are unused. New ids get first_seen=now; ids seen during the
+        very first scan are flagged "before". Ids no longer in `ids` are dropped."""
+        with self.write_tx() as db:
+            known = {row[0]: (_from_iso(row[1]), bool(row[2])) for row in
+                     db.execute("SELECT image_id, first_seen, before FROM image_unused")}
+            first_scan = not known and db.execute(
+                "SELECT 1 FROM meta WHERE key = 'images_scanned'").fetchone() is None
+            for image_id in ids - known.keys():
+                db.execute("INSERT INTO image_unused (image_id, first_seen, before) VALUES (?, ?, ?)",
+                           (image_id, _to_iso(now), int(first_scan)))
+                known[image_id] = (now, first_scan)
+            for image_id in known.keys() - ids:
+                db.execute("DELETE FROM image_unused WHERE image_id = ?", (image_id,))
+            db.execute(
+                "INSERT INTO meta (key, value) VALUES ('images_scanned', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (_to_iso(now),))
+        return {image_id: known[image_id] for image_id in ids}
+
+    def forget_unused_images(self, ids: set[str]) -> None:
+        if not ids:
+            return
+        with self.write_tx() as db:
+            db.executemany("DELETE FROM image_unused WHERE image_id = ?", [(i,) for i in ids])
 
     def load_settings(self) -> dict[str, object]:
         with self._lock:

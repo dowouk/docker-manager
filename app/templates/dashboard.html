@@ -167,7 +167,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
   <h2 id="attention-heading">Needs attention</h2>
   <div class="attention">
     {% for card in attention %}
-    <article class="card attention-card" {% if card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
+    <article class="card attention-card" {% if card.state == "images" %}{% elif card.cs %}{{ filter_attrs(card.cs.container.name, card.cs.container.image_ref, card.cs.container.project or "", filter_state(card.cs), false, layout_problems(result, card.cs)) }}{% else %}{{ filter_attrs("mailcow", "", "", "needs-update" if card.state == "update" else card.state, false, 0) }}{% endif %}>
       <div class="card-head">
         <span class="pill pill-{{ card.state }}">{{ card.badge }}</span>
         <span class="mono card-tag">{{ card.tag }}</span>
@@ -178,7 +178,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
         {% if card.cs %}{{ release_notes_link(card.cs) }}{% endif %}
       </div>
       <div class="card-actions">
-        {% if card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs), "") }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result), "") }}{% endif %}
+        {% if card.state == "images" %}<a class="button button-quiet" href="/images">Review</a>{% elif card.cs %}{{ actions(card.cs) }}{% if card.state == "update" %}{{ skip_menu(skip_items(card.cs), "") }}{% endif %}{% elif card.state == "update" %}{{ mailcow_action() }}{{ skip_menu(mailcow_skip_items(result), "") }}{% endif %}
       </div>
     </article>
     {% endfor %}
@@ -257,6 +257,9 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
           <td data-label="Status">
             {% if c.id in hidden_by_id and state == "current" %}{{ status_badge("muted", skip_badge(hidden_by_id[c.id])) }}
             {% else %}{{ status_badge("muted" if state in ("unchecked", "not_watched") else state, STATUS_LABELS[cs.status]) }}{% endif %}
+            {% set note = prefetch_notes.get(c.id) %}
+            {% if note and note.badge %}<div>{{ status_badge("current" if note.ready else "muted", note.badge) }}</div>{% endif %}
+            {% if note and note.text %}<div class="meta">{{ note.text }}</div>{% endif %}
             {% if cs.message %}<div class="meta">{{ cs.message }}</div>{% endif %}
           </td>
           {% set has_action = (not cs.updatable and state not in ("unchecked", "not_watched")) or (can(user, Role.OPERATOR) and (state == "error" or cs.status in BUILD_UPDATE or cs.minor_update or cs.major_update)) %}
@@ -308,14 +311,7 @@ data-name="{{ name | lower }}" data-image="{{ image | lower }}" data-project="{{
 </section>
 {% endif %}
 
-<dialog id="confirm-dialog" aria-labelledby="confirm-title">
-  <h2 id="confirm-title"></h2>
-  <p id="confirm-detail" class="card-text"></p>
-  <form method="dialog" class="dialog-actions">
-    <button type="submit" value="cancel" class="button button-quiet">Cancel</button>
-    <button type="submit" value="confirm" id="confirm-button" class="button button-danger"></button>
-  </form>
-</dialog>
+{% include "_confirm_dialog.html" %}
 
 <dialog id="preview-dialog">
   <div id="preview-body"></div>

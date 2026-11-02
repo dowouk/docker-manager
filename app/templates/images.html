@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Images{% endblock %}
+{% block content %}
+<section class="intro">
+  <div>
+    <h1>Images</h1>
+    <p class="lede">Images on this server that no container uses, running or stopped. Deleting one frees its space; Docker downloads it again if it's needed.</p>
+  </div>
+</section>
+{% if flash %}{% set text, level = flash %}{% if level == "ok" %}<p class="notice notice-ok" role="status">{{ text }}</p>{% else %}<p class="notice notice-error" role="alert">{{ text }}</p>{% endif %}{% endif %}
+{% if error %}<p class="notice notice-error" role="alert">{{ error }}</p>{% endif %}
+
+{% if report %}
+<section class="block" aria-labelledby="unused-heading">
+  <div class="block-head">
+    <h2 id="unused-heading">Unused images · {{ summary.count }} · {{ summary.size | human_size }}</h2>
+    {% if can_delete and report.unused %}
+    <form method="post" action="/images/tidy" data-confirm="Delete all {{ summary.count }} unused image{{ '' if summary.count == 1 else 's' }}?" data-confirm-detail="This frees {{ summary.size | human_size }}. Any a container starts using in the meantime are skipped." data-confirm-button="Tidy all unused">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="submit" class="button button-danger">Tidy all unused</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if report.unused %}
+  <div class="table-wrap">
+    <table class="data" data-sortable>
+      <thead>
+        <tr>
+          <th scope="col">Image</th>
+          <th scope="col" aria-sort="descending"><button type="button" class="sort-button" data-sort="size">Size</button></th>
+          <th scope="col"><button type="button" class="sort-button" data-sort="since">Unused since</button></th>
+          {% if can_delete %}<th scope="col" class="col-action">Action</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in report.unused %}
+        <tr>
+          <td data-label="Image"><span class="mono">{{ r.name | breakable }}</span></td>
+          <td data-label="Size" data-sort-size="{{ r.size }}">{{ r.size | human_size }}</td>
+          <td data-label="Unused since" data-sort-since="{{ r.unused_since.timestamp() | int if r.unused_since else 0 }}">{% if r.before %}before {% endif %}{{ r.unused_since | uk_day }}</td>
+          {% if can_delete %}
+          <td data-label="Action" class="col-action">
+            <form method="post" action="/images/{{ r.id }}/delete" data-confirm="Delete {{ r.name }}?" data-confirm-detail="This frees {{ r.size | human_size }}." data-confirm-button="Delete">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <button type="submit" class="button button-quiet button-small">Delete</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="notice">No unused images.</p>
+  {% endif %}
+</section>
+
+{% if report.waiting %}
+<section class="block" aria-labelledby="waiting-heading">
+  <div class="block-head">
+    <h2 id="waiting-heading">Waiting to be applied</h2>
+  </div>
+  <p class="card-text">Downloaded ahead for an update that's still on offer. They're kept until the update is applied, skipped or overtaken by something newer.</p>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th scope="col">Image</th><th scope="col">Size</th></tr></thead>
+      <tbody>
+        {% for r in report.waiting %}
+        <tr>
+          <td data-label="Image"><span class="mono">{{ r.name | breakable }}</span></td>
+          <td data-label="Size">{{ r.size | human_size }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+{% include "_confirm_dialog.html" %}
+{% endblock %}

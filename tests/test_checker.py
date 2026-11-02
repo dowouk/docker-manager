@@ -361,3 +361,20 @@ async def test_check_all_marks_the_proxy(tmp_path, settings):
     assert flags == {"dash": False, "caddy": True, "db": False}
     again = CheckResult.from_dict(json.loads(json.dumps(result.to_dict())))
     assert [cs.fronts_dashboard for cs in again.containers] == [False, True, False]
+
+
+def test_unused_images_round_trip():
+    from app.images import UnusedSummary
+    result = CheckResult(datetime(2026, 11, 2, tzinfo=timezone.utc), [],
+                         unused_images=UnusedSummary(9, 6_400_000_000))
+    data = result.to_dict()
+    assert data["unused_images"] == {"count": 9, "size": 6_400_000_000}
+    assert CheckResult.from_dict(json.loads(json.dumps(data))).unused_images == UnusedSummary(9, 6_400_000_000)
+
+
+def test_unused_images_missing_or_none_loads_as_none():
+    result = CheckResult(datetime(2026, 11, 2, tzinfo=timezone.utc), [])
+    data = result.to_dict()
+    assert data["unused_images"] is None
+    del data["unused_images"]
+    assert CheckResult.from_dict(data).unused_images is None

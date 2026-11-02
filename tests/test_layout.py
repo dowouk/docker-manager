@@ -282,3 +282,27 @@ def test_own_registry_login_mount_is_allowed():
     assert [p.kind for p in layout_problems([elsewhere], settings, lambda c: Rules(), "/data", MAILCOW)] == ["bind_outside"]
     unset = Settings(_env_file=None)
     assert [p.kind for p in layout_problems([me], unset, lambda c: Rules(), "/data", MAILCOW)] == ["bind_outside"]
+
+
+async def test_run_check_saves_when_the_image_scan_fails(settings, tmp_path, monkeypatch, caplog):
+    import docker.errors
+    from app.main import run_check
+    from test_routes import StubDocker
+    app = make_app(settings, tmp_path)
+    docker_stub = StubDocker()
+
+    def broken_list():
+        raise docker.errors.APIError("daemon unhappy")
+
+    docker_stub.images.list = broken_list
+    app.state.docker = docker_stub
+    c = make(mounts=[bind("/srv/a", "/a")])
+
+    async def fake_check_all(containers, *a, **kw):
+        return CheckResult(CHECKED_AT, [ContainerStatus(c, Status.UP_TO_DATE)])
+
+    monkeypatch.setattr("app.main.check_all", fake_check_all)
+    monkeypatch.setattr("app.main.list_containers", lambda docker, self_id: [c])
+    result = await run_check(app)
+    assert result.unused_images is None
+    assert CheckResult.from_dict(app.state.store.latest_check()[1]).unused_images is None

@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from app.config import Settings
 from app.imageref import parse_image_ref
+from app.images import UnusedSummary
 from app.inventory import ContainerInfo, Mount, is_mailcow
 from app.layout import LayoutProblem
 from app.registry import NotFoundError, RegistryClient
@@ -61,6 +62,7 @@ class CheckResult:
     containers: list[ContainerStatus]
     mailcow: MailcowStatus | None = None
     layout: list[LayoutProblem] | None = None  # None: no layout check has run
+    unused_images: UnusedSummary | None = None  # None: the image scan hasn't run or failed
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +72,7 @@ class CheckResult:
             ],
             "mailcow": asdict(self.mailcow) if self.mailcow else None,
             "layout": None if self.layout is None else [asdict(p) for p in self.layout],
+            "unused_images": asdict(self.unused_images) if self.unused_images else None,
         }
 
     @classmethod
@@ -86,7 +89,8 @@ class CheckResult:
         ]
         mailcow = MailcowStatus(**data["mailcow"]) if data.get("mailcow") else None
         layout = None if data.get("layout") is None else [LayoutProblem(**p) for p in data["layout"]]
-        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow, layout)
+        unused = UnusedSummary(**data["unused_images"]) if data.get("unused_images") else None
+        return cls(datetime.fromisoformat(data["checked_at"]), containers, mailcow, layout, unused)
 
     def summary(self) -> dict[str, int]:
         updates = majors = errors = up_to_date = 0

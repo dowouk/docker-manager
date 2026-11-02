@@ -42,10 +42,15 @@ def host_cmd(mailcow_dir: str, script: str) -> list[str]:
     ]
 
 
-async def run_capture(cmd: list[str], timeout: float = 300) -> tuple[int, str]:
+async def run_capture(cmd: list[str], timeout: float = 300, cwd: str | None = None) -> tuple[int, str]:
+    env = subprocess_env()
+    if cwd is not None:
+        # As a shell would: compose files use ${PWD} for the project folder.
+        env["PWD"] = cwd
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        env=subprocess_env(),
+        cwd=cwd,
+        env=env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,

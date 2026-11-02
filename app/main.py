@@ -9,7 +9,7 @@ import re
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import docker
@@ -39,6 +39,7 @@ from app.notify.providers import (
     LOGIN_REFUSED, NO_ANSWER, NOT_PRIVATE, PROVIDERS, REJECTED, SMTP_PRESETS, UNREACHABLE,
     shutdown_notify_executor,
 )
+from app import images, prefetch
 from app.imageref import parse_image_ref
 from app.inventory import ContainerInfo, container_key, detect_self_id, list_containers
 from app.links import release_notes_url
@@ -100,6 +101,8 @@ FLASH = {
     "skip_removed": ("Skip removed – the update shows again", "ok"),
     "rules_saved": ("Watch settings saved – they apply from the next check", "ok"),
     "self_updated": (f"The dashboard restarted – now running version {__version__}", "ok"),
+    "tidy_nothing": ("Nothing to tidy", "ok"),
+    "images_failed": ("Couldn't read the images from Docker – see the server logs", "error"),
 }
 
 # Same idea for the Settings page.
@@ -137,7 +140,7 @@ def known_reason(reason: str | None) -> str:
 STATUS_LABELS = {
     Status.UP_TO_DATE: "Up to date",
     Status.NEWER_BUILD: "Newer build available",
-    Status.PULLED_NOT_RECREATED: "Pulled – not recreated",
+    Status.PULLED_NOT_RECREATED: "Newer build ready",
     Status.NOT_CHECKABLE: "Can't check",
     Status.ERROR: "Error",
     Status.NOT_WATCHED: "Not watched",
@@ -153,6 +156,7 @@ JOB_KIND_LABELS = {
     "stop": "Stop",
     "start": "Start",
     "config": "Apply config",
+    "tidy": "Tidy images",
 }
 SELF_RESTART_WAIT = 600.0
 SELF_UPDATE_GRACE = 30.0
@@ -187,11 +191,27 @@ async def run_check(app: FastAPI) -> CheckResult:
                 containers, state.settings, rules_for,
                 state.settings.data_dir, state.settings.mailcow_dir,
             ) if state.settings.layout_check else None
+            visible = None
+            try:
+                visible = skips_mod.visible_result(result, state.skips)[0]
+                result.unused_images = (await asyncio.to_thread(
+                    images.scan, state.docker, state.store, visible, datetime.now(timezone.utc),
+                )).summary()
+            except Exception:
+                log.warning("Couldn't scan for unused images", exc_info=True)
             state.store.save_check(result.to_dict(), result.checked_at)
     except Exception:
         state.notifier.after_check(None, True)  # never raises; may alert about repeat failures
         raise
     state.notifier.after_check(result, False)
+    if state.settings.prefetch_updates and visible is not None:
+        try:
+            # Reads compose files, so off the event loop.
+            found = await asyncio.to_thread(
+                prefetch.targets, visible, containers, prefetch.compose_editable)
+            state.prefetcher.request(found)
+        except Exception:
+            log.warning("Couldn't start to download updates ahead", exc_info=True)
     return result
 
 
@@ -205,6 +225,31 @@ def _latest(app: FastAPI) -> CheckResult | None:
         # Saved by an older version in a different shape: treat as no check yet.
         log.warning("Ignoring a stored check that can't be read", exc_info=True)
         return None
+
+
+async def _visible_now(app: FastAPI) -> CheckResult:
+    """The latest check as the dashboard shows it (skipped updates cleared), checking first
+    when there is none. What the Images routes protect from: never scan without it, or
+    nothing is protected. Raises when the check fails."""
+    result = _latest(app) or await run_check(app)
+    return skips_mod.visible_result(result, app.state.skips)[0]
+
+
+async def _scan_images(app: FastAPI, visible: CheckResult) -> images.ImagesReport:
+    return await asyncio.to_thread(
+        images.scan, app.state.docker, app.state.store, visible, datetime.now(timezone.utc))
+
+
+async def _refresh_unused_images(app: FastAPI) -> None:
+    """Bring the stored check's unused-images summary up to date after a tidy, so the card
+    is current without a full check. Saves the same check again: no notifications."""
+    latest = app.state.store.latest_check()
+    if not latest:
+        return
+    result = CheckResult.from_dict(latest[1])
+    visible = skips_mod.visible_result(result, app.state.skips)[0]
+    result.unused_images = (await _scan_images(app, visible)).summary()
+    app.state.store.save_check(result.to_dict(), result.checked_at)
 
 
 def _offers_project(result: CheckResult | None, cs: ContainerStatus) -> bool:
@@ -393,6 +438,21 @@ def create_app(
     app.state.boot_id = secrets.token_hex(8)
     app.state.check_lock = asyncio.Lock()
     app.state.background = set()
+
+    def spawn_background(coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        app.state.background.add(task)
+        task.add_done_callback(app.state.background.discard)
+        task.add_done_callback(_log_task_failure)
+        return task
+
+    app.state.prefetcher = prefetch.Prefetcher(
+        prefetch.run_pull,
+        functools.partial(prefetch.image_present, docker_client),
+        lambda: datetime.now(timezone.utc),
+        platform=functools.partial(prefetch.image_platform, docker_client),
+        spawn=spawn_background,
+    )
     backup_dir = os.path.join(settings.data_dir, "backups")
 
     app.state.users = UserStore(store, settings_service._box)
@@ -434,6 +494,15 @@ def create_app(
         return f"{local.day} {local:%b %Y, %H:%M}"
 
     env.filters["uk_date"] = uk_date
+
+    def uk_day(dt: datetime | None) -> str:
+        if dt is None:
+            return "–"
+        local = dt.astimezone(ZoneInfo(app.state.settings.tz))
+        return f"{local.day} {local:%b %Y}"
+
+    env.filters["uk_day"] = uk_day
+    env.filters["human_size"] = images.human_size
 
     def breakable(text) -> Markup:
         # Long image names wrap after / and : rather than mid-word. Escaped first.
@@ -562,9 +631,15 @@ def create_app(
         rules_for = app.state.rules.snapshot()
         notes = {cs.container.id: release_notes_url(cs.container, rules_for(cs.container))
                  for cs in (shown.containers if shown else [])}
+        prefetcher = app.state.prefetcher
+        state_for = prefetcher.state if app.state.settings.prefetch_updates else (lambda key: None)
+        now = datetime.now(timezone.utc)
+        prefetch_notes = {cs.container.id: n for cs in (shown.containers if shown else [])
+                          if (n := view.prefetch_note(cs, state_for, now))}
         return render(
             request, "dashboard.html", user,
             result=shown,
+            prefetch_notes=prefetch_notes,
             skipped=app.state.skips.active(),
             notes_by_id={k: v for k, v in notes.items() if v},
             has_layout=view.has_layout_data(shown),
@@ -572,7 +647,7 @@ def create_app(
             hidden_by_id={(cs.container.id if cs else "mailcow"): sk for cs, sk in hidden},
             rows=view.by_urgency(shown) if shown else [],
             overview=view.overview(shown) if shown else None,
-            attention=view.attention(shown) if shown else [],
+            attention=view.attention(shown, app.state.settings.unused_images_warn_gb) if shown else [],
             greeting=view.greeting(datetime.now(ZoneInfo(app.state.settings.tz))),
             first_name=view.first_name(user.name),
             flash=FLASH.get(msg),
@@ -1394,6 +1469,82 @@ def create_app(
             compose_root=settings.compose_root,
             groups=view.layout_groups(problems or []),
         )
+
+    def tidy_work(ids: list[str]) -> Callable[[JobContext], Awaitable[None]]:
+        async def work(ctx: JobContext) -> None:
+            # A check since the page was shown may have put an image on offer again. If this
+            # raises, the job fails and nothing is deleted.
+            latest = _latest(app)
+            protected: set[str] = set()
+            if latest is not None:
+                visible = skips_mod.visible_result(latest, app.state.skips)[0]
+                protected = await asyncio.to_thread(
+                    images.protected_ids, visible, images._image_id_for(app.state.docker))
+            await images.delete_images(ctx, app.state.docker, store, ids, protected)
+            try:
+                await _refresh_unused_images(app)
+            except Exception:  # noqa: BLE001 – the deletes stand; the next check catches up
+                log.warning("Couldn't update the unused images after a tidy", exc_info=True)
+        return work
+
+    async def images_report() -> images.ImagesReport | RedirectResponse:
+        """A fresh scan for the delete routes, or where to send the user when there's none."""
+        try:
+            visible = await _visible_now(app)
+        except Exception:  # noqa: BLE001
+            log.exception("The check before deleting images failed")
+            return _redirect("/images?msg=check_failed")
+        try:
+            return await _scan_images(app, visible)
+        except Exception:  # noqa: BLE001
+            log.exception("Couldn't read the images from Docker")
+            return _redirect("/images?msg=images_failed")
+
+    @app.get("/images", response_class=HTMLResponse)
+    async def images_page(request: Request, msg: str = "",
+                          user: User = Depends(require_role(Role.VIEWER))):
+        report, error = None, None
+        try:
+            visible = await _visible_now(app)
+        except Exception as exc:  # noqa: BLE001 – show the page even if docker is down
+            log.exception("Check failed while loading the Images page")
+            error = f"The check could not be completed: {str(exc) or type(exc).__name__}"
+        else:
+            try:
+                report = await _scan_images(app, visible)
+            except Exception:  # noqa: BLE001
+                log.exception("Couldn't read the images from Docker")
+                error = FLASH["images_failed"][0]
+        return render(
+            request, "images.html", user,
+            report=report,
+            summary=report.summary() if report else None,
+            can_delete=user.role >= Role.OPERATOR,
+            flash=FLASH.get(msg),
+            error=error,
+        )
+
+    @app.post("/images/tidy", dependencies=[Depends(verify_csrf)])
+    async def images_tidy(user: User = Depends(require_role(Role.OPERATOR))):
+        report = await images_report()
+        if isinstance(report, RedirectResponse):
+            return report
+        ids = [r.id for r in report.unused]
+        if not ids:
+            return _redirect("/images?msg=tidy_nothing")
+        noun = "unused image" if len(ids) == 1 else "unused images"
+        return submit("tidy", f"{len(ids)} {noun}", user, tidy_work(ids))
+
+    @app.post("/images/{image_id}/delete", dependencies=[Depends(verify_csrf)])
+    async def image_delete(image_id: str, user: User = Depends(require_role(Role.OPERATOR))):
+        report = await images_report()
+        if isinstance(report, RedirectResponse):
+            return report
+        # Only an unused one: a protected or in-use image is never deletable this way.
+        row = next((r for r in report.unused if r.id == image_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Not an unused image")
+        return submit("tidy", row.name, user, tidy_work([row.id]))
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz():
