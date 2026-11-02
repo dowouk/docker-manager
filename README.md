@@ -11,6 +11,8 @@ A small web page, running on each of your servers, that shows whether your Docke
 - [Watch rules](#watch-rules)
 - [Skip and snooze](#skip-and-snooze)
 - [Release notes](#release-notes)
+- [Download updates ahead](#download-updates-ahead)
+- [Images](#images)
 - [Filters and search](#filters-and-search)
 - [Checking settings](#checking-settings)
 - [Layout check](#layout-check)
@@ -42,7 +44,7 @@ You install one copy of the dashboard on **each** server. It only sees the conta
 - Sends notifications by email through Azure Communication Services, SMTP2GO or any SMTP server: a weekly digest (Monday 08:00 by default) of what needs updating, and alerts for failed updates, failing checks, new updates and people waiting for approval. See [Notifications](#notifications).
 - Signs people in with a local account (email and password, with two-step sign-in) or with Microsoft 365 / Entra ID, and gives each person a role: Viewer, Operator or Admin. See [Accounts and sign-in](#accounts-and-sign-in).
 
-It never updates anything on its own – every update is a click by a signed-in Operator or Admin.
+It never updates or deletes anything on its own – every update, and every image deleted, is a click by a signed-in Operator or Admin.
 
 ## How it decides there's an update
 
@@ -50,7 +52,7 @@ For each container it checks two things:
 
 **Newer build** – the tag you use (for example `nginx:latest` or `postgres:16`) now points to a newer image in the registry than the one your container is running. The button runs `docker compose pull` and `docker compose up -d --no-deps` for that service only (the services it depends on are left alone). If several services in the project use the same image, there's also **Update whole project** (not offered for the dashboard's own project). A stopped container shows **Stopped – updating will start it**.
 
-If the newer image has already been pulled but the container was never recreated, it shows **Pulled – not recreated**; the same button recreates it on the newer image.
+If the newer image has already been downloaded but the container was never recreated, it shows **Newer build ready**; the same button recreates it on the newer image. See [Download updates ahead](#download-updates-ahead).
 
 **Newer version** – the tag is a version number (for example `postgres:16.2` or `1.25.4-alpine`) and a higher version exists. Only tags that look the same are compared – same `v` prefix or not, same ending (`-alpine`, `-bookworm` and so on) and the same number of parts – and test releases (`rc`, `beta`, `alpha`, `dev`, `nightly`, `preview`, `snapshot`) are ignored.
 
@@ -176,6 +178,34 @@ Update rows have a **Release notes** link, and the digest has one beside each up
 
 Images from other registries with no label and no rule have no link. Links open in a new tab. Everyone who can see the dashboard sees them.
 
+## Download updates ahead
+
+Most of the wait when you press **Update** is the image download. With **Download updates ahead** on (the default), the dashboard downloads the images for the updates it finds in the background after each check, so **Update** only has to recreate the container. Nothing is applied until someone presses **Update**.
+
+What is downloaded:
+
+- **A newer build** of the tag a container uses – but only when every container on the server using that exact tag is watched and doesn't have that update skipped or snoozed. The tag moves for all of them, so if any one is unwatched, skipped or snoozed, it is left until someone presses **Update**.
+- **A new minor or patch version** – but only when no other container already uses that version's tag, unless that container is also a newer build that qualifies under the rule above. The compose file isn't touched until you press **Update**.
+
+Not downloaded ahead: major versions, Mailcow, containers not started by `docker compose`, the dashboard's own image, and versions set by a variable.
+
+The row shows what is happening, under the status – for example **16.4 ready** or **Newer build ready** with "Downloaded 2 hours ago", **16.4 – downloading…**, or **Couldn't download ahead – will try again at the next check**. These notes only show while **Download updates ahead** is on. If a container has both a newer build and a new version, the row shows the newer build's download. Downloads run one at a time in the background and never stop you updating, restarting or editing anything.
+
+- **Update still checks the registry first.** It is quick when the image is already there, but if the registry is down or rate-limiting at that moment, **Update** can still fail.
+- **`docker compose up -d` uses the downloaded build.** Once a newer build is downloaded, running `docker compose up -d` by hand, or **Save and apply** in [Edit config](#edit-config), starts that container on it. This is how Docker treats any downloaded tag.
+
+Turn the setting off under **Settings → Checking**.
+
+## Images
+
+The **Images** page (in the menu, between Layout and Users) lists the images on the server that no container uses, running or stopped, including untagged ones. Everyone can see it. Each row shows the image's tags, its size and **Unused since**. Docker doesn't record when an image stopped being used, so the dashboard notes the first time it sees it unused; images already unused when it first looked show "before <date>". The heading shows the count and total size, and you can sort by size or by unused since.
+
+**Waiting to be applied** is a shorter list of images downloaded ahead for an update that is still on offer. They have no Delete button and are never tidied. Once the update is applied, skipped or overtaken by something newer, the image moves to the unused list after the next check.
+
+Operators and Admins can press **Delete** on one image or **Tidy all unused**; both ask you to confirm. They run as a **Tidy images** job in **History**, with who, which images and how much space was freed. An image a container started using since the page loaded is skipped, and the rest go ahead. Sizes can overlap (images share layers), so the space freed may be less than the total shown.
+
+When the unused images take up more than **Unused images warning (GB)** under **Settings → Checking** (10 by default, 0 turns it off), the dashboard shows an **Unused images** card under the attention cards with a **Review** button, and the [weekly digest](#notifications) gets a line such as "9 unused images, 6.4 GB". That line alone never makes the digest send.
+
 ## Filters and search
 
 Above the container list, filter chips narrow it down: **Needs update**, **Major only**, **Errors**, **Stopped**, **Not checkable**, **Skipped** and, when the layout check is on, **Layout problems**. Each chip shows a count. Press one or more chips to show containers matching any of them; press again to switch off. The search box matches the name, image or project. Your choice is remembered in your browser (not on the server), so it is still there next time, and **Esc** clears the search. The attention cards at the top follow the same filter.
@@ -187,6 +217,8 @@ Above the container list, filter chips narrow it down: **Needs update**, **Major
 - **Check when the dashboard starts** (on by default). Switch off to wait one full interval after a restart before the first check.
 - **Random delay before scheduled checks** (0 to 60 minutes, 0 by default). Each scheduled check waits a random time up to this long first, so many servers on one schedule don't all call the registries at the same moment. **Check now** is never delayed.
 - **Heartbeat address** (optional). After each **scheduled** check the dashboard fetches this address: the address itself when the check worked, or the address with `/fail` added to the path (your query string is kept) when it failed – the same "failed" as the **Check failing or recovered** message. It waits up to 10 seconds, doesn't retry, and never delays or fails the check; a failed ping is only logged. Use `https://` or `http://`, with no username or password in the address. The address may hold a secret key, so it is never shown in History.
+- **Download updates ahead** (on by default) – see [Download updates ahead](#download-updates-ahead).
+- **Unused images warning (GB)** (10 by default, 0 turns the card off) – see [Images](#images).
 - **Check container layout**, **Allow named volumes** and **Allowed folders** – see [Layout check](#layout-check).
 
 **Healthchecks.io** works directly: use the ping address, for example `https://hc-ping.com/your-uuid`. A failed check pings `https://hc-ping.com/your-uuid/fail`, which marks the check as failed straight away. Set the check's period a little longer than your interval (plus the random delay).
@@ -276,8 +308,8 @@ Microsoft sign-in can't skip the token – the token step always comes first. Un
 
 | Role | Can do |
 | --- | --- |
-| **Viewer** | See the dashboard, the Layout page, release-notes links, the Skipped list, the History list of updates (without logs) and their own Account page |
-| **Operator** | Everything a Viewer can, plus Check now, Watch settings, skip and snooze, all container, project and version updates and previews, restart, stop and start, Edit config (including `.env` values), and job logs and live logs |
+| **Viewer** | See the dashboard, the Layout page, the Images page, release-notes links, the Skipped list, the History list of updates (without logs) and their own Account page |
+| **Operator** | Everything a Viewer can, plus Check now, Watch settings, skip and snooze, all container, project and version updates and previews, delete unused images, restart, stop and start, Edit config (including `.env` values), and job logs and live logs |
 | **Admin** | Everything an Operator can, plus Settings, Users, the History **Changes** tab, Send digest now, the Mailcow update and the dashboard's own update |
 
 There is also a **Waiting for approval** state with no access at all.
@@ -398,7 +430,7 @@ Each channel ticks the events it should carry. A new channel starts with the tic
 
 | Event | Ticked for a new channel | Sent when |
 | --- | --- | --- |
-| **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating, a count of skipped or snoozed updates, layout problems and what couldn't be checked, with release-notes links, and goes to every channel that has this ticked |
+| **Weekly digest** | Yes | On the schedule on the **Weekly digest** card (and **Send digest now**). It lists what needs updating, a count of skipped or snoozed updates, layout problems and what couldn't be checked, with release-notes links and a line for any unused images, and goes to every channel that has this ticked |
 | **Updates found** | No | A check finds updates that haven't been reported yet (skipped and snoozed ones are left out). It only lists updates you haven't already been told about. Each new update waits **an hour** first, and is left out if it was applied, skipped or replaced by a newer one in that time – so updating straight away, and the checks each update runs, don't send messages. When you first turn it on, it starts from what is already known, so only later updates are sent |
 | **Update failed** | Yes | An update, rollback or Mailcow update ends in failure. Self-updates and jobs interrupted by a restart don't send a message |
 | **Update finished** | No | An update finishes successfully (self-updates and interrupted jobs don't send a message) |
@@ -670,6 +702,7 @@ You don't need a Docker Hub account – everything works anonymously.
 - Checking for a newer build uses `HEAD` requests, which Docker Hub doesn't count towards its pull limit.
 - Lists of version tags are cached for 24 hours. Only the newest 1,000 tags of an image are read (Docker Hub doesn't give more without an account), which is plenty for finding newer versions. If a tag list can't be read, the dashboard waits 15 minutes before asking again, and the email lists the image under **Couldn't check**.
 - **Updates are real pulls** and do count towards Docker Hub's anonymous limit for your server's IP address. Normal use is well within it.
+- **Downloading ahead is also real pulls.** One that is overtaken before you use it (a newer build appears, or you skip the update) costs a pull for nothing. Normal use is still well within the limit; switch off **Download updates ahead** if you are close to it.
 
 If the limit is reached, the update stops with the message **"Docker Hub rate limit reached – try again later"**. Nothing is broken – wait a few hours and try again.
 
