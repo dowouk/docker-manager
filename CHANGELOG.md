@@ -5,6 +5,12 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Change Log](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Untagged images on the Images page show what they were, for example "ghcr.io/browserless/chromium (untagged a631d6fcf9da)", instead of only an ID. The name comes from the image's digest, what a container last ran it as, or its labels.
+
 ## [0.5.9] - 2026-11-02
 
 ### Added

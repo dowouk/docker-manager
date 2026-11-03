@@ -24,10 +24,14 @@ class ImageRow:
     size: int  # bytes
     unused_since: datetime | None
     before: bool  # already unused at the first scan: shown as "before <date>"
+    origin: str | None = None  # untagged only: what it was, from its digest, a container or labels
 
     @property
     def name(self) -> str:
-        return ", ".join(self.tags) or f"untagged {self.id.removeprefix('sha256:')[:12]}"
+        if self.tags:
+            return ", ".join(self.tags)
+        untagged = f"untagged {self.id.removeprefix('sha256:')[:12]}"
+        return f"{self.origin} ({untagged})" if self.origin else untagged
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,11 @@ def _image_id_for(client) -> Callable[[str], str | None]:
 
 def scan(client, store: Store, visible: CheckResult | None, now: datetime) -> ImagesReport:
     images = client.images.list()
-    used = {c.attrs["Image"] for c in client.containers.list(all=True)}
+    containers = client.containers.list(all=True)
+    used = {c.attrs["Image"] for c in containers}
+    run_as = {c.attrs["Image"]: ref for c in containers
+              if (ref := (c.attrs.get("Config") or {}).get("Image"))}
+    remembered = store.sync_image_names(run_as, {i.id for i in images})
     protected = protected_ids(visible, _image_id_for(client)) if visible else set()
     candidates = [i for i in images if i.id not in used]
     unused_images = [i for i in candidates if i.id not in protected]
@@ -86,7 +94,9 @@ def scan(client, store: Store, visible: CheckResult | None, now: datetime) -> Im
 
     def row(image, tracked: bool) -> ImageRow:
         when, before = since[image.id] if tracked else (None, False)
-        return ImageRow(image.id, _tags(image), image.attrs.get("Size") or 0, when, before)
+        tags = _tags(image)
+        origin = None if tags else _origin(image, remembered.get(image.id))
+        return ImageRow(image.id, tags, image.attrs.get("Size") or 0, when, before, origin)
 
     return ImagesReport(
         unused=sorted((row(i, True) for i in unused_images), key=lambda r: -r.size),
@@ -99,6 +109,26 @@ def _tags(image) -> list[str]:
     return [t for t in image.attrs.get("RepoTags") or [] if t != "<none>:<none>"]
 
 
+_TITLE_LABEL = "org.opencontainers.image.title"
+_SOURCE_LABEL = "org.opencontainers.image.source"
+
+
+def _origin(image, remembered: str | None) -> str | None:
+    """What an untagged image was: the repository in its digest, else what a container last
+    ran it as, else its title or source label."""
+    for digest in image.attrs.get("RepoDigests") or []:
+        repo = digest.rsplit("@", 1)[0]
+        if repo and repo != "<none>":
+            return repo
+    if remembered:
+        return remembered
+    labels = (image.attrs.get("Config") or {}).get("Labels") or {}
+    if labels.get(_TITLE_LABEL):
+        return labels[_TITLE_LABEL]
+    source = labels.get(_SOURCE_LABEL) or ""
+    return source.split("://", 1)[-1].removesuffix(".git").rstrip("/") or None
+
+
 def _short(image_id: str) -> str:
     return image_id.removeprefix("sha256:")[:12]
 
@@ -109,6 +139,7 @@ async def delete_images(ctx: JobContext, client, store: Store, ids: list[str],
     Docker refuses one a container uses. A refused image is skipped and the rest go ahead,
     as is one in `protected` (waiting to be applied since the page was shown)."""
     used = {c.attrs["Image"] for c in await asyncio.to_thread(client.containers.list, all=True)}
+    remembered = store.image_names()
     gone: set[str] = set()
     total = 0
     for image_id in ids:
@@ -122,7 +153,9 @@ async def delete_images(ctx: JobContext, client, store: Store, ids: list[str],
             ctx.log(f"Skipped {_short(image_id)} – {exc.explanation or exc}\n")
             continue
         size = image.attrs.get("Size") or 0
-        name = ImageRow(image.id, _tags(image), size, None, False).name
+        tags = _tags(image)
+        origin = None if tags else _origin(image, remembered.get(image.id))
+        name = ImageRow(image.id, tags, size, None, False, origin).name
         if image.id in used:  # a container started using it since the page was shown
             ctx.log(f"Skipped {name} – a container uses it\n")
             continue
