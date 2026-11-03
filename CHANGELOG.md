@@ -5,7 +5,7 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Change Log](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.10] - 2026-11-03
 
 ### Changed
 
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- Dpendency Updates
+- Dependency updates
 
 ## [0.5.8] - 2026-10-27
 
