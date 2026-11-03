@@ -1475,11 +1475,13 @@ def create_app(
             # A check since the page was shown may have put an image on offer again. If this
             # raises, the job fails and nothing is deleted.
             latest = _latest(app)
-            protected: set[str] = set()
-            if latest is not None:
-                visible = skips_mod.visible_result(latest, app.state.skips)[0]
-                protected = await asyncio.to_thread(
-                    images.protected_ids, visible, images._image_id_for(app.state.docker))
+            if latest is None:
+                # Without a check there's no telling what's waiting to be applied.
+                raise RuntimeError("There's no check to work out which images are waiting to "
+                                   "be applied, so nothing was deleted – check again and retry")
+            visible = skips_mod.visible_result(latest, app.state.skips)[0]
+            protected = await asyncio.to_thread(
+                images.protected_ids, visible, images._image_id_for(app.state.docker))
             await images.delete_images(ctx, app.state.docker, store, ids, protected)
             try:
                 await _refresh_unused_images(app)

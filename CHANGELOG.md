@@ -5,6 +5,12 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Change Log](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Tidy all unused** and **Delete** no longer risk removing an image that's waiting to be applied when Docker has a hiccup while it's being looked up, or when no check is stored. The Images page shows an error instead, and the tidy stops without deleting anything.
+
 ## [0.5.9] - 2026-11-02
 
 ### Added

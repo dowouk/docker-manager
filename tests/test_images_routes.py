@@ -240,3 +240,17 @@ def test_nav_has_images_between_layout_and_users(client_for, seeded):  # noqa: F
 def test_job_kind_label():
     from app.main import JOB_KIND_LABELS
     assert JOB_KIND_LABELS["tidy"] == "Tidy images"
+
+
+def test_tidy_deletes_nothing_when_the_stored_check_is_gone(images_client, monkeypatch):
+    # Without a check there's no telling what's waiting to be applied, so the job must stop
+    # rather than treat nothing as protected.
+    runner = FakeRunner()
+    c, app = images_client(runner=runner)
+    c.post("/images/tidy", data={"csrf_token": CSRF})
+    _, _, _, work = runner.submitted[0]
+    monkeypatch.setattr("app.main._latest", lambda app: None)
+    before = set(app.state.docker.images.images)
+    with pytest.raises(Exception, match="nothing was deleted"):
+        asyncio.run(work(LogCtx()))
+    assert set(app.state.docker.images.images) == before
