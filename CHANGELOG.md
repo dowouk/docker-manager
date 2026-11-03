@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Untagged images on the Images page show what they were, for example "ghcr.io/browserless/chromium (untagged a631d6fcf9da)", instead of only an ID. The name comes from the image's digest, what a container last ran it as, or its labels.
 
+### Fixed
+
+- The **Tidy all unused** confirm box reads properly: "Images a container starts using in the meantime are skipped", and "Delete the unused image?" when there's only one.
+
 ## [0.5.9] - 2026-11-02
 
 ### Added

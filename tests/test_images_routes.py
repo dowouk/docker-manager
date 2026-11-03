@@ -240,3 +240,10 @@ def test_nav_has_images_between_layout_and_users(client_for, seeded):  # noqa: F
 def test_job_kind_label():
     from app.main import JOB_KIND_LABELS
     assert JOB_KIND_LABELS["tidy"] == "Tidy images"
+
+
+def test_tidy_confirm_wording(images_client):
+    c, _ = images_client()
+    html = c.get("/images").text
+    assert 'data-confirm="Delete all 2 unused images?"' in html
+    assert "Images a container starts using in the meantime are skipped." in html

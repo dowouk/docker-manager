@@ -15,7 +15,7 @@
   <div class="block-head">
     <h2 id="unused-heading">Unused images · {{ summary.count }} · {{ summary.size | human_size }}</h2>
     {% if can_delete and report.unused %}
-    <form method="post" action="/images/tidy" data-confirm="Delete all {{ summary.count }} unused image{{ '' if summary.count == 1 else 's' }}?" data-confirm-detail="This frees {{ summary.size | human_size }}. Any a container starts using in the meantime are skipped." data-confirm-button="Tidy all unused">
+    <form method="post" action="/images/tidy" data-confirm="{{ 'Delete the unused image?' if summary.count == 1 else 'Delete all %d unused images?' % summary.count }}" data-confirm-detail="This frees {{ summary.size | human_size }}. Images a container starts using in the meantime are skipped." data-confirm-button="Tidy all unused">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <button type="submit" class="button button-danger">Tidy all unused</button>
     </form>
