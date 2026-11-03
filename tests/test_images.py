@@ -237,6 +237,9 @@ class RecordingStore:
     def forget_unused_images(self, ids):
         self.forgotten |= set(ids)
 
+    def image_names(self):
+        return {}
+
 
 async def test_delete_removes_each_tag_then_the_image():
     a = FakeImage("sha256:a", ["redis:7.0", "redis:7"], 2_000_000_000)
@@ -321,6 +324,67 @@ async def test_delete_skips_an_image_now_waiting_to_be_applied():
         "Deleted nginx:1.25 (2 MB)\n",
         "Freed 2 MB\n",
     ]
+
+
+def _untagged(image_id, digests=(), labels=None, size=1000):
+    img = FakeImage(image_id, [], size)
+    img.attrs["RepoDigests"] = list(digests)
+    img.attrs["Config"] = {"Labels": labels}
+    return img
+
+
+OLD = "sha256:a631d6fcf9da" + "0" * 52
+
+
+def test_untagged_image_is_named_from_its_digest(tmp_path):
+    img = _untagged(OLD, ["ghcr.io/browserless/chromium@sha256:" + "b" * 64])
+    report = scan(FakeClient([img]), Store(str(tmp_path / "s.db")), None, NOW)
+    assert report.unused[0].name == "ghcr.io/browserless/chromium (untagged a631d6fcf9da)"
+
+
+def test_untagged_image_is_named_after_the_container_that_last_used_it(tmp_path):
+    # With the containerd image store an image left behind by an update loses its
+    # RepoDigests, so the dashboard remembers what each container ran.
+    store = Store(str(tmp_path / "s.db"))
+    img = _untagged(OLD)
+    browserless = FakeContainer(OLD)
+    browserless.attrs["Config"] = {"Image": "ghcr.io/browserless/chromium:latest"}
+    client = FakeClient([img])
+    client.containers.items = [browserless]
+    scan(client, store, None, NOW)
+    client.containers.items = []  # updated: the container moved to a newer image
+    report = scan(client, store, None, NOW)
+    assert report.unused[0].name == "ghcr.io/browserless/chromium:latest (untagged a631d6fcf9da)"
+
+
+def test_untagged_image_is_named_from_its_labels(tmp_path):
+    img = _untagged(OLD, labels={"org.opencontainers.image.source": "https://github.com/browserless/browserless"})
+    report = scan(FakeClient([img]), Store(str(tmp_path / "s.db")), None, NOW)
+    assert report.unused[0].name == "github.com/browserless/browserless (untagged a631d6fcf9da)"
+    titled = _untagged(OLD, labels={"org.opencontainers.image.title": "Browserless",
+                                    "org.opencontainers.image.source": "https://github.com/x/y"})
+    report = scan(FakeClient([titled]), Store(str(tmp_path / "t.db")), None, NOW)
+    assert report.unused[0].name == "Browserless (untagged a631d6fcf9da)"
+
+
+def test_untagged_image_with_nothing_to_go_on_keeps_its_id(tmp_path):
+    report = scan(FakeClient([_untagged(OLD)]), Store(str(tmp_path / "s.db")), None, NOW)
+    assert report.unused[0].name == "untagged a631d6fcf9da"
+
+
+def test_remembered_names_are_dropped_once_the_image_is_gone(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    store.sync_image_names({OLD: "redis:7.0"}, present={OLD})
+    assert store.sync_image_names({}, present={OLD}) == {OLD: "redis:7.0"}
+    assert store.sync_image_names({}, present=set()) == {}
+
+
+async def test_delete_job_names_an_untagged_image(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    store.sync_image_names({OLD: "ghcr.io/browserless/chromium:latest"}, present={OLD})
+    ctx = LogCtx()
+    await delete_images(ctx, removable_client([_untagged(OLD, size=3_600_000_000)]), store, [OLD])
+    assert "Deleted ghcr.io/browserless/chromium:latest (untagged a631d6fcf9da) (3.6 GB)\n" in ctx.logs
 
 
 class LookupImages:

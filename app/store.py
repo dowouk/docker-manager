@@ -127,9 +127,14 @@ def _migration_7(db: sqlite3.Connection) -> None:
     )
 
 
+def _migration_8(db: sqlite3.Connection) -> None:
+    # What each image was last run as, to name it once an update leaves it untagged.
+    db.execute("CREATE TABLE IF NOT EXISTS image_names (image_id TEXT PRIMARY KEY, ref TEXT NOT NULL)")
+
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_1, _migration_2, _migration_3, _migration_4, _migration_5, _migration_6,
-    _migration_7]
+    _migration_7, _migration_8]
 
 
 def _now() -> str:
@@ -261,6 +266,23 @@ class Store:
                 "INSERT INTO meta (key, value) VALUES ('images_scanned', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (_to_iso(now),))
         return {image_id: known[image_id] for image_id in ids}
+
+    def sync_image_names(self, seen: dict[str, str], present: set[str]) -> dict[str, str]:
+        """Remember the ref each image in `seen` is run as, forget images no longer on the
+        server, and return what's remembered for the images in `present`."""
+        with self.write_tx() as db:
+            db.executemany(
+                "INSERT INTO image_names (image_id, ref) VALUES (?, ?) "
+                "ON CONFLICT(image_id) DO UPDATE SET ref = excluded.ref",
+                [(i, ref) for i, ref in seen.items() if i in present])
+            rows = db.execute("SELECT image_id, ref FROM image_names").fetchall()
+            gone = [(i,) for i, _ in rows if i not in present]
+            db.executemany("DELETE FROM image_names WHERE image_id = ?", gone)
+        return {i: ref for i, ref in rows if i in present}
+
+    def image_names(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._db.execute("SELECT image_id, ref FROM image_names").fetchall())
 
     def forget_unused_images(self, ids: set[str]) -> None:
         if not ids:

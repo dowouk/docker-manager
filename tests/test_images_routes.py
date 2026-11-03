@@ -242,6 +242,13 @@ def test_job_kind_label():
     assert JOB_KIND_LABELS["tidy"] == "Tidy images"
 
 
+def test_tidy_confirm_wording(images_client):
+    c, _ = images_client()
+    html = c.get("/images").text
+    assert 'data-confirm="Delete all 2 unused images?"' in html
+    assert "Images a container starts using in the meantime are skipped." in html
+
+
 def test_tidy_deletes_nothing_when_the_stored_check_is_gone(images_client, monkeypatch):
     # Without a check there's no telling what's waiting to be applied, so the job must stop
     # rather than treat nothing as protected.

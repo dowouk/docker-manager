@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Untagged images on the Images page show what they were, for example "ghcr.io/browserless/chromium (untagged a631d6fcf9da)", instead of only an ID. The name comes from the image's digest, what a container last ran it as, or its labels.
+
 ### Fixed
 
 - **Tidy all unused** and **Delete** no longer risk removing an image that's waiting to be applied when Docker has a hiccup while it's being looked up, or when no check is stored. The Images page shows an error instead, and the tidy stops without deleting anything.
+- The **Tidy all unused** confirm box reads properly: "Images a container starts using in the meantime are skipped", and "Delete the unused image?" when there's only one.
 
 ## [0.5.9] - 2026-11-02
 
