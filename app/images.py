@@ -70,8 +70,10 @@ def _image_id_for(client) -> Callable[[str], str | None]:
     def lookup(ref: str) -> str | None:
         try:
             return client.images.get(ref).id
-        except docker.errors.APIError:  # includes ImageNotFound
+        except docker.errors.ImageNotFound:
             return None
+        # Any other Docker error raises: reading it as "not on the server" would leave a
+        # download waiting to be applied unprotected, and Tidy could delete it.
 
     return lookup
 

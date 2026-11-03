@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+import docker.errors
+import pytest
+
 from app.checker import CheckResult, ContainerStatus, Status
 from app.images import (
     ImageRow, ImagesReport, UnusedSummary, delete_images, human_size, protected_ids, scan,
@@ -318,3 +321,32 @@ async def test_delete_skips_an_image_now_waiting_to_be_applied():
         "Deleted nginx:1.25 (2 MB)\n",
         "Freed 2 MB\n",
     ]
+
+
+class LookupImages:
+    """images.get that finds nothing for one ref and fails outright for another."""
+    def __init__(self, error):
+        self.error = error
+
+    def get(self, ref):
+        raise self.error
+
+
+def test_image_lookup_treats_only_not_found_as_absent():
+    from app.images import _image_id_for
+    missing = _image_id_for(FakeClientWith(LookupImages(docker.errors.ImageNotFound("no such image"))))
+    assert missing("redis:7.4") is None
+
+
+def test_image_lookup_lets_other_docker_errors_through():
+    # A Docker hiccup must not read as "not on the server": that would leave a download
+    # waiting to be applied unprotected, and Tidy could delete it.
+    from app.images import _image_id_for
+    broken = _image_id_for(FakeClientWith(LookupImages(docker.errors.APIError("500 Server Error"))))
+    with pytest.raises(docker.errors.APIError):
+        broken("redis:7.4")
+
+
+class FakeClientWith:
+    def __init__(self, images):
+        self.images = images
