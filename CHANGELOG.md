@@ -5,6 +5,12 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Change Log](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.11] - 2026-11-11
+
+### Changed
+
+- Updated dependencies: joserfc 1.8 (#15).
+
 ## [0.5.10] - 2026-11-03
 
 ### Changed
