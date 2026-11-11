@@ -12,7 +12,7 @@ dependencies = [
     "jinja2==3.1.*",
     "httpx==0.28.*",
     "authlib==1.9.*",
-    "joserfc==1.7.*",
+    "joserfc==1.8.*",
     "docker==7.2.*",
     "apscheduler==3.11.*",
     "azure-communication-email==1.1.*",
