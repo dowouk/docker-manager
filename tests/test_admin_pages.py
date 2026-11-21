@@ -333,7 +333,7 @@ def test_reissued_invite_ends_the_users_other_sessions(app):
 
 def test_reissued_invite_for_two_step_user_still_asks_for_the_code(app):
     ann = local(app)
-    app.state.users.set_totp(ann.id, "JBSWY3DPEHPK3PXP", True)
+    app.state.users.set_totp(ann.id, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", True)
     app.state.sessions.create({"user_id": ann.id, "csrf": "x"})
     token = app.state.users.create_invite(ann.id)
     with anonymous(app) as c:
@@ -343,7 +343,7 @@ def test_reissued_invite_for_two_step_user_still_asks_for_the_code(app):
         assert _session_count(app, ann.id) == 0  # the earlier device is out too
         csrf = anon_csrf(c, "/auth/totp")
         ok = c.post("/auth/totp", data={"csrf_token": csrf,
-                                        "code": pyotp.TOTP("JBSWY3DPEHPK3PXP").now()})
+                                        "code": pyotp.TOTP("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP").now()})
         assert ok.status_code == 303 and ok.headers["location"] == "/"
         assert c.get("/", headers=HTML).status_code == 200
 
@@ -500,13 +500,13 @@ def test_sign_out_everywhere_kills_other_sessions_and_this_one(app):
 def test_no_secrets_in_any_rendered_page(app, admin):
     boss = other_admin(app)
     ann = local(app)
-    app.state.users.set_totp(ann.id, "JBSWY3DPEHPK3PXP", True)
+    app.state.users.set_totp(ann.id, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", True)
     app.state.users.set_recovery_codes(ann.id, [totp.hash_recovery_code("abcde-fghij")])
     pages = [admin.get("/users").text, admin.get("/account").text]
     with TestClient(app, base_url="https://testserver") as c:
         set_session(c, app, {"user_id": ann.id, "csrf": CSRF})
         pages.append(c.get("/account").text)
-    forbidden = [ann.password_hash, boss.password_hash or "\0", "JBSWY3DPEHPK3PXP",
+    forbidden = [ann.password_hash, boss.password_hash or "\0", "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
                  totp.hash_recovery_code("abcde-fghij"), "$argon2"]
     for html in pages:
         for bad in forbidden:
@@ -595,7 +595,7 @@ def test_outstanding_invites_die_on_reset_password_disable_and_delete(app, admin
 def test_clear_two_step_clears_everything_in_one_go(app):
     ann = local(app)
     users = app.state.users
-    users.set_totp(ann.id, "JBSWY3DPEHPK3PXP", True)
+    users.set_totp(ann.id, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", True)
     users.set_totp_last_step(ann.id, 5)
     users.set_recovery_codes(ann.id, ["x", "y"])
     users.clear_two_step(ann.id)

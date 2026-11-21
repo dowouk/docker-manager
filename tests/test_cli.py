@@ -71,7 +71,7 @@ def test_resets_an_existing_account(tmp_path, capsys):
                        password_hash=hash_password("old password here"))
     users.update(rec.id, disabled=True)
     users.create("local", "other@example.com", "O", "admin")  # keeps last-admin rules happy
-    users.set_totp(rec.id, "JBSWY3DPEHPK3PXP", True)
+    users.set_totp(rec.id, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", True)
     users.set_recovery_codes(rec.id, ["x"])
     from app.sessions import SessionStore
     sessions = SessionStore(store)

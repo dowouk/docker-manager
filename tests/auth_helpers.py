@@ -14,7 +14,7 @@ CSRF = "test-csrf-token"
 EMAIL = "test@example.com"
 
 
-TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
+TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
 
 def _give_totp(users, rec):
