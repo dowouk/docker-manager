@@ -5,6 +5,12 @@ All notable changes to Docker Manager are recorded in this file.
 The format is based on [Keep a Change Log](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.12] - 2026-11-21
+
+### Changed
+
+- Updated dependencies: fastapi 0.163 (#20), pyotp 2.12 (#22).
+
 ## [0.5.11] - 2026-11-11
 
 ### Changed
