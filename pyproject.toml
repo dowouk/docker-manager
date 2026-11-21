@@ -20,7 +20,7 @@ dependencies = [
     "python-multipart==0.0.*",
     "cryptography==50.*",
     "argon2-cffi==25.*",
-    "pyotp==2.*",
+    "pyotp==2.12.*",
     "segno==1.*",
     "regex==2026.*",
 ]

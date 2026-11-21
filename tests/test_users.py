@@ -141,11 +141,11 @@ def test_delete_removes_sessions_and_invites(users, store, clock):
 
 def test_totp_secret_encrypted_at_rest(users, store):
     u = admin(users)
-    users.set_totp(u.id, "JBSWY3DPEHPK3PXP", True)
+    users.set_totp(u.id, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", True)
     raw = store._db.execute("SELECT * FROM users").fetchall()
     assert "JBSW" not in repr(raw)
     u = users.get(u.id)
-    assert u.totp_enabled and users.totp_secret(u) == "JBSWY3DPEHPK3PXP"
+    assert u.totp_enabled and users.totp_secret(u) == "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
     users.set_totp(u.id, None, False)
     u = users.get(u.id)
     assert not u.totp_enabled and users.totp_secret(u) is None
