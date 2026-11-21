@@ -73,7 +73,7 @@ def test_qr_svg():
 
 def test_qr_svg_scales_to_its_box():
     # A viewBox and no fixed size, so CSS can stretch it to fill the white box.
-    svg = totp.qr_svg("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP")
+    svg = totp.qr_svg("otpauth://totp/x?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")
     head = svg.split(">", 1)[0]
     assert "viewBox=" in head
     assert "width=" not in head and "height=" not in head

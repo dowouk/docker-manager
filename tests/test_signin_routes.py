@@ -16,7 +16,7 @@ from app.store import Store
 from auth_helpers import CSRF, assert_all_routes_guarded, set_session
 
 PASSWORD = "correct horse battery"
-SECRET = "JBSWY3DPEHPK3PXP"
+SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 HTML = {"Accept": "text/html"}
 
 
