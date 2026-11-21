@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Updated dependencies: fastapi 0.163 (#20).
+- Updated dependencies: fastapi 0.163 (#20), pyotp 2.12 (#22).
 
 ## [0.5.11] - 2026-11-11
 
