@@ -7,7 +7,7 @@ name = "docker-manager"
 dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.163.*",
+    "fastapi>=0.163,<0.166",
     "uvicorn[standard]==0.54.*",
     "jinja2==3.1.*",
     "httpx==0.28.*",
